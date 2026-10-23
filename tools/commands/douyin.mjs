@@ -34,6 +34,13 @@ function douyinDry(cfg) {
   return cfg.douyin?.dryRun !== false
 }
 
+// @主人 前缀（仿 B站：正文开头 @昵称）
+function withOwner(msg, cfg) {
+  const owner = cfg.douyin?.owner?.name
+  if (owner && !msg.startsWith('@')) return `@${owner} ${msg}`
+  return msg
+}
+
 function runPy(argv, cfg) {
   const cmd = [scriptPath(cfg), ...argv, '--cookie', cookiePath(cfg)]
   try {
@@ -87,23 +94,28 @@ export function run(argv = []) {
     console.log(runPy(['comments', '--vid', vid, '--headed'], cfg))
     return
   }
+  if (cmd === 'cdp-start') {
+    console.log(runPy(['cdp-start'], cfg))
+    return
+  }
   if (cmd === 'comment') {
     const vid = arg(argv, '--vid')
-    const message = arg(argv, '--message')
-    if (!vid || !message) { console.error('用法：node feiyu.mjs douyin comment --vid <id> --message "…" [--go]'); process.exit(2) }
+    const message = withOwner(arg(argv, '--message'), cfg)
+    if (!vid || !message) { console.error('用法：node feiyu.mjs douyin comment --vid <id> --message "…" [--go] [--cdp]'); process.exit(2) }
     const go = argv.includes('--go')
+    const cdp = argv.includes('--cdp')
     const dry = douyinDry(cfg) || !go   // 抖音独立 DRY，或未显式 --go 都拦
     if (dry) {
       console.log(`【干跑 ✓】不真发评论 → ${vid}\n  内容：${message}`)
       return
     }
-    console.log(runPy(['comment', '--vid', vid, '--message', message, '--go'], cfg))
+    console.log(runPy(['comment', '--vid', vid, '--message', message, '--go', ...(cdp ? ['--cdp'] : [])], cfg))
     return
   }
   if (cmd === 'interact') {
     return runInteract(cfg)
   }
-  console.log('用法：login | feed [--headed] | comments --vid | comment --vid --message [--go] | interact')
+  console.log('用法：login | cdp-start | feed [--headed] | comments --vid | comment --vid --message [--go --cdp] | interact')
 }
 
 // 全流程：feed → 口味过滤 → 读热评 → LLM 生成评论 → 干跑发评论
@@ -145,12 +157,13 @@ async function runInteract(cfg) {
       continue
     }
     if (!comment) { console.log('  ✗ 评论为空，跳过'); continue }
+    comment = withOwner(comment, cfg)   // @主人 前缀
     const dry = douyinDry(cfg)
     if (dry) {
       console.log(`  【干跑 ✓】${v.vid} → ${comment}`)
     } else {
-      console.log(`  【真发】${v.vid} → ${comment}`)
-      console.log(runPy(['comment', '--vid', v.vid, '--message', comment, '--go'], cfg))
+      console.log(`  【真发 CDP】${v.vid} → ${comment}`)
+      console.log(runPy(['comment', '--vid', v.vid, '--message', comment, '--go', '--cdp'], cfg))
     }
   }
   console.log('\n[interact] 完成。DRY_RUN 开着时只打印不真发；确认选题准了把 guard.dryRun 改 false 再跑 interact。')
