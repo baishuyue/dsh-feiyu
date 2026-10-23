@@ -144,9 +144,10 @@ async function runInteract(cfg) {
   const feed = parseFeedJson(feedOut)
   let videos = (feed.videos || []).filter(v => v.desc && v.author).filter(v => matchPrefs(v, cfg))
   if (!videos.length) videos = (feed.videos || []).filter(v => v.desc && v.author)
-  console.log(`[interact] 口味过滤后剩 ${videos.length} 个候选，取前 2 个（抖音风控严，控量）`)
+  const perRun = Math.max(1, Math.min(5, Number(cfg.douyin?.maxPerRun) || 2))
+  console.log(`[interact] 口味过滤后剩 ${videos.length} 个候选，取前 ${perRun} 个（抖音风控严，控量）`)
 
-  const top = videos.slice(0, 2)
+  const top = videos.slice(0, perRun)
   for (const v of top) {
     console.log(`\n[interact] ② 看视频《${v.desc.slice(0, 40)}》（${v.author}）`)
     const commentsOut = runPy(['comments', '--vid', v.vid, '--headed'], cfg)

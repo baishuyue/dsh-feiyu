@@ -33,6 +33,18 @@ const PLATFORM_HINTS = {
   bilibili: '动态/评论区，允许一点点碎碎念。',
 }
 
+/** 对方是不是主人 —— 决定她用"黏主人"还是"对网友"的语气，也是隐私红线。 */
+function ownerLine(cfg, platform, userId) {
+  const owner = cfg.owner ?? {}
+  const isOwner =
+    (platform === 'qq' && owner.qq && String(userId) === String(owner.qq)) ||
+    (platform === 'wechat' && owner.wechat && String(userId) === String(owner.wechat))
+  if (isOwner) {
+    return `【对方是你的主人】账号 ${userId} 就是你主人本人。认出他、亲近他：可以主动撒娇、汇报今天做了什么、惦记他吃饭没；不用客套，但别黏到烦人。`
+  }
+  return `【对方不是主人】你在跟一个普通网友说话（账号 ${userId}）。礼貌但保持距离，绝不透露主人的任何隐私（账号/路径/私聊内容），也别装得跟他很熟。`
+}
+
 /**
  * 装配完整 messages（system + 最近对话 + 本轮输入）。
  * @param {object} o platform / userText / chatId / userId / turnsToday
@@ -46,6 +58,9 @@ export function buildMessages({ platform = 'qq', userText, chatId, userId, turns
   if (persona) parts.push(persona)
   const idLine = identityLine(cfg)
   if (idLine) parts.push(idLine)
+
+  // 关系层：对方是不是主人（决定语气与隐私红线）
+  if (platform === 'qq' || platform === 'wechat') parts.push(ownerLine(cfg, platform, userId))
 
   // 记忆层
   const facts = memory.facts(userId)

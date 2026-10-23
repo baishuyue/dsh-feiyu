@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>大肥鱼 · 设置</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 24px 20px 60px; font: 14px/1.6 -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+    background: #16181d; color: #e6e8ee; max-width: 920px; margin-inline: auto;
+  }
+  h1 { font-size: 20px; margin: 0 0 4px; display: flex; align-items: center; gap: 8px; }
+  h2 { font-size: 14px; margin: 0 0 12px; color: #9aa4b2; font-weight: 600; letter-spacing: .02em; }
+  .sub { color: #6b7480; font-size: 12px; margin-bottom: 22px; }
+  .card {
+    background: #1d2027; border: 1px solid #2a2e37; border-radius: 12px;
+    padding: 16px 18px; margin-bottom: 14px;
+  }
+  .row { display: flex; align-items: center; gap: 10px; margin: 8px 0; flex-wrap: wrap; }
+  .row > label { min-width: 88px; color: #9aa4b2; font-size: 13px; }
+  input[type=text], input[type=number], select, textarea {
+    background: #12141a; border: 1px solid #313641; color: #e6e8ee;
+    border-radius: 8px; padding: 7px 10px; font: inherit; min-width: 0;
+  }
+  input[type=text], input[type=number] { width: 200px; }
+  select { width: 260px; }
+  textarea { width: 100%; min-height: 120px; resize: vertical; line-height: 1.6; }
+  input:focus, select:focus, textarea:focus { outline: none; border-color: #4a7dff; }
+  .grow { flex: 1; }
+  button {
+    background: #2a2e37; border: 1px solid #3a4050; color: #e6e8ee;
+    border-radius: 8px; padding: 7px 14px; font: inherit; cursor: pointer;
+  }
+  button:hover { background: #343a46; }
+  button.primary { background: #3b6cf6; border-color: #3b6cf6; color: #fff; }
+  button.primary:hover { background: #4a7dff; }
+  .switches { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; }
+  .sw {
+    display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    background: #12141a; border: 1px solid #262b34; border-radius: 10px; padding: 10px 12px;
+  }
+  .sw span { font-size: 13px; }
+  .sw small { display: block; color: #6b7480; font-size: 11px; }
+  .toggle { position: relative; width: 40px; height: 22px; flex: none; }
+  .toggle input { opacity: 0; width: 0; height: 0; position: absolute; }
+  .toggle i {
+    position: absolute; inset: 0; background: #333845; border-radius: 22px; transition: .18s; cursor: pointer;
+  }
+  .toggle i::after {
+    content: ""; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px;
+    background: #9aa4b2; border-radius: 50%; transition: .18s;
+  }
+  .toggle input:checked + i { background: #3b6cf6; }
+  .toggle input:checked + i::after { left: 21px; background: #fff; }
+  .mem { max-height: 260px; overflow: auto; font-size: 12px; line-height: 1.7; }
+  .mem-item { padding: 4px 0; border-bottom: 1px dashed #262b34; color: #b9c1cd; }
+  .mem-item b { color: #7f8b9b; font-weight: 500; margin-right: 6px; }
+  .tag { display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 6px; background: #262b34; color: #8b95a5; }
+  .toast {
+    position: fixed; left: 50%; bottom: 26px; transform: translateX(-50%) translateY(10px);
+    background: #2b7a4b; color: #fff; padding: 9px 18px; border-radius: 8px; font-size: 13px;
+    opacity: 0; pointer-events: none; transition: .22s;
+  }
+  .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+  .toast.err { background: #a13b3b; }
+  .hint { color: #6b7480; font-size: 11.5px; margin-top: 6px; }
+</style>
+</head>
+<body>
+  <h1>🐟 大肥鱼 · 设置</h1>
+  <div class="sub">改动即时保存到 <code id="cfgpath">feiyu.config.json</code>（下次唤醒/重启生效）</div>
+
+  <div class="card">
+    <h2>平台开关</h2>
+    <div class="switches" id="platforms"></div>
+    <div class="hint">关掉的平台不会启动：QQ/微信 = 常驻聊天服务；B站 = 夜间定时养鱼；抖音 = 定时刷视频发评论</div>
+  </div>
+
+  <div class="card">
+    <h2>主人</h2>
+    <div class="row"><label>QQ 号</label><input type="text" id="owner_qq" placeholder="3082864371"></div>
+    <div class="row"><label>B站 mid</label><input type="text" id="owner_mid" placeholder="B站数字 UID"></div>
+    <div class="row"><label>称呼</label><input type="text" id="owner_name" placeholder="B站昵称 / 她怎么叫你"></div>
+    <div class="row"><label>微信 wxid</label><input type="text" id="owner_wechat" placeholder="（可选）主人微信 wxid"></div>
+    <div class="hint">QQ 号填上后，她就能认出「这个人是我主人」，对网友则保持距离、不泄隐私</div>
+  </div>
+
+  <div class="card">
+    <h2>音色（QQ / 微信语音）</h2>
+    <div class="row">
+      <label>音色</label>
+      <select id="voice_sel"></select>
+      <button id="voice_test">试听</button>
+    </div>
+    <div class="row"><label>语音概率</label>
+      <input type="number" id="voice_chance" min="0" max="1" step="0.05" style="width:100px">
+      <span class="hint" style="margin:0">0~1，QQ 每条回复走语音的概率（如 0.5 = 一半）</span>
+    </div>
+    <div class="hint" id="voice_hint"></div>
+  </div>
+
+  <div class="card">
+    <h2>作息与限额（B站 / 抖音定时）</h2>
+    <div class="row">
+      <label>醒来窗口</label>
+      <input type="text" id="night_start" placeholder="20:00" style="width:90px">
+      <span>→</span>
+      <input type="text" id="night_end" placeholder="24:00" style="width:90px">
+      <label style="min-width:auto">次数</label>
+      <input type="number" id="night_wakes" min="1" max="5" style="width:70px">
+    </div>
+    <div class="row">
+      <label>每天分享上限</label>
+      <input type="number" id="share_daily" min="0" max="10" style="width:90px">
+      <label style="min-width:auto">抖音每次条数</label>
+      <input type="number" id="douyin_count" min="1" max="5" style="width:90px">
+    </div>
+    <div class="hint">窗口内随机挑一个时间醒来（拟人，不整点）；抖音和 B站共用这个窗口</div>
+  </div>
+
+  <div class="card">
+    <h2>角色设定（她的人格 / 自我迭代的记忆）</h2>
+    <textarea id="persona" placeholder="写下她是谁、怎么说话、在意什么……她每次醒来都会读这份设定"></textarea>
+    <div class="row" style="margin-top:10px">
+      <button class="primary" id="save_persona">保存角色设定</button>
+      <span class="hint" style="margin:0">这是她「自我迭代」的基础：你改她的设定，她会照新的活</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>记忆库</h2>
+    <div class="row" style="margin-top:0">
+      <button id="refresh_mem">刷新</button>
+      <span class="hint" style="margin:0" id="mem_stats"></span>
+    </div>
+    <div class="mem" id="mem_list"></div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+<script>
+const API = '/dsh-feiyu/api';
+const $ = (id) => document.getElementById(id);
+let state = { config: {}, voices: [] };
+
+function toast(msg, isErr) {
+  const t = $('toast');
+  t.textContent = msg;
+  t.className = 'toast show' + (isErr ? ' err' : '');
+  clearTimeout(t._timer);
+  t._timer = setTimeout(() => { t.className = 'toast'; }, 2200);
+}
+
+async function api(path, opts) {
+  const r = await fetch(API + path, Object.assign({ headers: { 'Content-Type': 'application/json' } }, opts || {}));
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok || j.ok === false) throw new Error(j.error || ('HTTP ' + r.status));
+  return j;
+}
+
+const PLATFORMS = [
+  ['bilibili', 'B站', '定时养鱼：看视频写评论'],
+  ['qq', 'QQ', '常驻聊天 + 语音 + 说说'],
+  ['wechat', '微信', '私聊秒回（UI 自动化慢一点）'],
+  ['douyin', '抖音', '定时刷视频发评论'],
+];
+
+function renderPlatforms() {
+  const box = $('platforms');
+  box.innerHTML = '';
+  const p = state.config.platforms || {};
+  for (const [key, label, desc] of PLATFORMS) {
+    const on = p[key] !== false;
+    const sw = document.createElement('label');
+    sw.className = 'sw';
+    sw.innerHTML = `<span>${label}<small>${desc}</small></span>
+      <span class="toggle"><input type="checkbox" data-p="${key}" ${on ? 'checked' : ''}><i></i></span>`;
+    box.appendChild(sw);
+  }
+  box.querySelectorAll('input[data-p]').forEach(el => {
+    el.addEventListener('change', async () => {
+      const key = el.dataset.p;
+      const next = Object.assign({}, state.config.platforms);
+      next[key] = el.checked;
+      try {
+        await api('/config', { method: 'POST', body: JSON.stringify({ platforms: next }) });
+        state.config.platforms = next;
+        toast(`${PLATFORMS.find(x => x[0] === key)[1]} 已${el.checked ? '开启' : '关闭'}（重启 DSH 完全生效）`);
+      } catch (e) { toast('保存失败：' + e.message, true); el.checked = !el.checked; }
+    });
+  });
+}
+
+function fillForm() {
+  const c = state.config;
+  const o = c.owner || {};
+  $('owner_qq').value = o.qq || '';
+  $('owner_mid').value = o.mid || '';
+  $('owner_name').value = o.name || '';
+  $('owner_wechat').value = o.wechat || '';
+
+  const n = c.night || {};
+  const w = (n.windows && n.windows[0]) || { start: '20:00', end: '24:00', wakes: 1 };
+  $('night_start').value = w.start || '20:00';
+  $('night_end').value = w.end || '24:00';
+  $('night_wakes').value = w.wakes || 1;
+  $('share_daily').value = (c.quota && c.quota.shareDaily) || 3;
+  $('douyin_count').value = (c.douyin && c.douyin.maxPerRun) || 2;
+
+  $('voice_chance').value = (c.qq && c.qq.voice_chance) || 0.5;
+  const sel = $('voice_sel');
+  sel.innerHTML = '';
+  if (!state.voices.length) {
+    sel.innerHTML = '<option value="">（没找到音色模型）</option>';
+    $('voice_hint').textContent = '把 GPT-SoVITS 音色放到 D:/GPT-SoVITS/models/<名字>/ 下（含 .wav 参考音频 + .txt 参考文本）';
+  } else {
+    const cur = (c.voice && c.voice.ref_audio_path) || '';
+    for (const v of state.voices) {
+      const opt = document.createElement('option');
+      opt.value = v.ref_audio_path;
+      opt.textContent = v.name + (v.has_prompt ? '' : '（缺参考文本）');
+      if (cur && v.ref_audio_path === cur) opt.selected = true;
+      sel.appendChild(opt);
+    }
+    $('voice_hint').textContent = '选中音色会自动写入参考音频 + 参考文本；换音色后重启 DSH 生效';
+  }
+  $('cfgpath').textContent = state.configPath || 'feiyu.config.json';
+}
+
+async function saveSection(patch, okMsg) {
+  try {
+    await api('/config', { method: 'POST', body: JSON.stringify(patch) });
+    state.config = Object.assign({}, state.config, patch);
+    toast(okMsg || '已保存');
+  } catch (e) { toast('保存失败：' + e.message, true); }
+}
+
+function bind() {
+  $('owner_qq').addEventListener('change', () => saveSection({ owner: Object.assign({}, state.config.owner, { qq: $('owner_qq').value.trim() }) }));
+  $('owner_mid').addEventListener('change', () => saveSection({ owner: Object.assign({}, state.config.owner, { mid: $('owner_mid').value.trim() }) }));
+  $('owner_name').addEventListener('change', () => saveSection({ owner: Object.assign({}, state.config.owner, { name: $('owner_name').value.trim() }) }));
+  $('owner_wechat').addEventListener('change', () => saveSection({ owner: Object.assign({}, state.config.owner, { wechat: $('owner_wechat').value.trim() }) }));
+
+  $('night_start').addEventListener('change', saveNight);
+  $('night_end').addEventListener('change', saveNight);
+  $('night_wakes').addEventListener('change', saveNight);
+  $('share_daily').addEventListener('change', () => saveSection({ quota: Object.assign({}, state.config.quota, { shareDaily: Number($('share_daily').value) || 3 }) }));
+  $('douyin_count').addEventListener('change', () => saveSection({ douyin: Object.assign({}, state.config.douyin, { maxPerRun: Number($('douyin_count').value) || 2 }) }));
+
+  $('voice_chance').addEventListener('change', () => {
+    const qq = Object.assign({}, state.config.qq, { voice_chance: Number($('voice_chance').value) });
+    saveSection({ qq });
+  });
+  $('voice_sel').addEventListener('change', () => {
+    const v = state.voices.find(x => x.ref_audio_path === $('voice_sel').value);
+    if (!v) return;
+    const voice = Object.assign({}, state.config.voice, {
+      ref_audio_path: v.ref_audio_path,
+      prompt_text: v.prompt_text || (state.config.voice && state.config.voice.prompt_text) || '',
+    });
+    saveSection({ voice }, '音色已切换为「' + v.name + '」');
+  });
+  $('voice_test').addEventListener('click', async () => {
+    const v = state.voices.find(x => x.ref_audio_path === $('voice_sel').value);
+    if (!v) return toast('先选一个音色', true);
+    toast('合成中…');
+    try {
+      await api('/voice-test', { method: 'POST', body: JSON.stringify({ name: v.name }) });
+      toast('已合成并发送到 QQ（看手机）');
+    } catch (e) { toast('试听失败：' + e.message, true); }
+  });
+
+  $('save_persona').addEventListener('click', async () => {
+    try {
+      await api('/persona', { method: 'POST', body: JSON.stringify({ text: $('persona').value }) });
+      toast('角色设定已保存');
+    } catch (e) { toast('保存失败：' + e.message, true); }
+  });
+
+  $('refresh_mem').addEventListener('click', loadMemory);
+}
+
+function saveNight() {
+  const w = {
+    start: $('night_start').value.trim() || '20:00',
+    end: $('night_end').value.trim() || '24:00',
+    wakes: Number($('night_wakes').value) || 1,
+  };
+  const night = Object.assign({}, state.config.night, { windows: [w] });
+  saveSection({ night }, '作息已保存（' + w.start + '→' + w.end + '，' + w.wakes + ' 次）');
+}
+
+async function loadMemory() {
+  try {
+    const j = await api('/memory');
+    $('mem_stats').textContent = `对话 ${j.stats.episodes} 条 · 世界设定 ${j.stats.lore} 条 · 主人事实 ${j.stats.facts} 条`;
+    const list = $('mem_list');
+    list.innerHTML = '';
+    for (const e of (j.recent || []).slice().reverse()) {
+      const div = document.createElement('div');
+      div.className = 'mem-item';
+      const who = e.role === 'assistant' ? '她' : '对方';
+      const plat = (e.chatId || '').split(':')[0] || e.platform || '';
+      div.innerHTML = `<b>${who}</b><span class="tag">${plat}</span> ${escapeHtml((e.text || '').slice(0, 90))}`;
+      list.appendChild(div);
+    }
+    if (!list.children.length) list.innerHTML = '<div class="mem-item">还没有记忆 —— 她醒过之后会开始记</div>';
+  } catch (e) { toast('读记忆失败：' + e.message, true); }
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+async function boot() {
+  try {
+    const j = await api('/config');
+    state.config = j.config || {};
+    state.voices = j.voices || [];
+    state.configPath = j.configPath;
+    renderPlatforms();
+    fillForm();
+    bind();
+    const p = await api('/persona').catch(() => ({ text: '' }));
+    $('persona').value = p.text || '';
+    loadMemory();
+  } catch (e) {
+    document.body.insertAdjacentHTML('afterbegin',
+      `<div class="card" style="border-color:#a13b3b">加载失败：${escapeHtml(e.message)}<br>请确认插件已加载、且从本机访问。</div>`);
+  }
+}
+boot();
+</script>
+</body>
+</html>
