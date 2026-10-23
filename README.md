@@ -189,6 +189,19 @@ node tools/feiyu.mjs douyin images --dir out/imgs --desc "…"
 > 想先看外观再重启：`node scripts/build-preview.mjs` → `preview/panel.html`（离线渲染，配色跟随系统）。
 > 改完前端跑 `npm test`（契约 + 假 hooks 真渲染，防白屏）。
 
+## 微信机器人（独立进程，`D:/wechat-bot/wechat_bot.py`）
+
+微信不走协议、走 UI 自动化，所以它是个独立 Python 进程（仓库 `wechat/` 里存了一份副本，**运行的是 `D:/wechat-bot/` 那份**）：
+
+- **单实例**：Windows 命名互斥量。DSH 自动拉起 + 手动双击 bat 同时存在时，第二个会自己退出 —— 这是「同一条消息回两遍」的根因。
+- **合并窗口**：默认等 3s 静默（最长 12s），对方连发几条会被当成一句话，回一次。
+- **上下文**：带最近 `context_n`（默认 12）条对话；没被回复的碎片也会写进记忆。
+- **该不该接**：模型可以输出 `[SKIP]` 保持沉默；出口还有一层「两分钟内不复读」的拦截。
+- **水位**：处理到哪条落盘在 `~/.feiyu-ai/wechat-watermark.json`，进程重启不重放旧消息。
+- **日志**：`~/.feiyu-ai/wechat-bot.log`（收/想好/发出/跳过/失败 全在里面）。
+
+启动：双击 `D:\wechat-bot\start_wechat.bat`（无窗口），或重启 DSH 由插件自动拉起。
+
 ## 排障
 
 | 症状 | 真因 |
