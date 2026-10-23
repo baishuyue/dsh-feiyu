@@ -32,14 +32,20 @@ export async function run(argv = []) {
 
   // ② 字幕（player/v2 → subtitle 列表 → 拉第一条）
   let subtitles = []
+  let subtitleLang = null
   try {
     const purl = new URL('https://api.bilibili.com/x/player/v2')
     purl.searchParams.set('bvid', bvid)
     purl.searchParams.set('cid', String(d.cid))
     const player = await apiGet(purl.href, H)
     const subs = player?.data?.subtitle?.subtitles ?? []
-    if (subs.length) {
-      let su = String(subs[0].subtitle_url ?? '')
+    // 优先 AI 中文轨 → 中文轨 → 第一条。AI 字幕可能串片/错字，只当参考，别全信
+    const pick = subs.find(s => /ai-zh/i.test(String(s.lan ?? '')))
+      || subs.find(s => /zh/i.test(String(s.lan ?? '')))
+      || subs[0]
+    if (pick) {
+      subtitleLang = pick.lan
+      let su = String(pick.subtitle_url ?? '')
       if (su.startsWith('//')) su = 'https:' + su
       const subRes = await fetch(su, { headers: { 'user-agent': H['user-agent'], referer: 'https://www.bilibili.com/' }, signal: AbortSignal.timeout(20000) })
       const subJson = await subRes.json()
@@ -69,6 +75,7 @@ export async function run(argv = []) {
     stat: { view: d.stat?.view, danmaku: d.stat?.danmaku, reply: d.stat?.reply, like: d.stat?.like, coin: d.stat?.coin },
     durationMin: Math.round(d.duration / 60),
     subtitles: subtitles.length ? subtitles.length + ' 段' : null,
+    subtitleLang,
     subtitleLines: subtitles.slice(0, 40),
     topComments,
     seenVia: ['元信息', subtitles.length ? '官方字幕' : null, topComments.length ? '热评' : null, '简介'].filter(Boolean),
@@ -82,7 +89,7 @@ export async function run(argv = []) {
   console.log(`理解路：${pack.seenVia.join(' + ')}\n`)
   if (pack.intro) console.log(`【简介】${pack.intro}\n`)
   if (pack.subtitleLines?.length) {
-    console.log('【字幕节选】')
+    console.log(`【字幕节选 · 轨 ${pack.subtitleLang ?? '?'} · 仅供参考，可能串片/由 AI 生成】`)
     for (const l of pack.subtitleLines) console.log('  ' + l)
     console.log('')
   }

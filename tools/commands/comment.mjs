@@ -55,27 +55,39 @@ export async function run(argv = []) {
     if (ownerName && !message.startsWith('@')) message = `@${ownerName} ${message}`
   }
 
-  // ③ 风控闸门（dafeiyu guard：dryRun / 间隔 / 复读）
-  const chatId = `bilibili:${bvid}`
-  const verdict = guard.allow(chatId, message, cfg)
-  if (!verdict.ok) { console.error(`✗ 被风控闸门拦下：${verdict.why}`); process.exit(1) }
+  // ③ 内容清洗（预览和真发都要）
   message = guard.clean(message, cfg)
   if (!message) { console.error('✗ 清洗后内容为空'); process.exit(1) }
-
-  // ④ 额度闸（分享才占额度）
-  if (isShare) {
-    const quota = await import('./quota.mjs')
-    try { quota.run(['check', '--type', 'share', '--target', bvid]) } catch { process.exit(1) }
-  }
+  const chatId = `bilibili:${bvid}`
 
   const H = makeHeaders(cred)
   const { aid, title } = await bvidToAid(bvid, H)
 
+  // ④ 预览（不带 --go）：只打印，不查风控、不占额度、不真发
   if (!go) {
-    console.log('【干跑 ✓】以下内容未发送（加 --go 真发）：')
+    console.log('【干跑预览 ✓】以下内容未发送（加 --go 真发）：')
     console.log(`  视频：《${title}》(${bvid}, aid=${aid})`)
     console.log(`  ${root ? `回复 rpid=${root} ` : ''}内容：${message}`)
+    if (cfg.guard?.dryRun) console.log('  （提示：guard.dryRun=true，即使 --go 也不会真发）')
     return
+  }
+
+  // ⑤ 真发前闸门 1：DRY_RUN 总开关（只拦 --go 真发，不拦预览）
+  if (cfg.guard?.dryRun) {
+    console.log('【DRY_RUN 拦截】未发送（把 feiyu.config.json 的 guard.dryRun 改 false 才真发）')
+    console.log(`  视频：《${title}》(${bvid})`)
+    console.log(`  本要发送：${message}`)
+    return
+  }
+
+  // ⑥ 真发前闸门 2：间隔 + 复读（跳过 dryRun 检查，上面已单独拦）
+  const verdict = guard.allow(chatId, message, cfg, { checkDryRun: false })
+  if (!verdict.ok) { console.error(`✗ 被风控闸门拦下：${verdict.why}`); process.exit(1) }
+
+  // ⑦ 额度闸（分享才占额度，真发才查）
+  if (isShare) {
+    const quota = await import('./quota.mjs')
+    try { quota.run(['check', '--type', 'share', '--target', bvid]) } catch { process.exit(1) }
   }
 
   // ⑤ 真发（POST /x/v2/reply/add，form 编码，csrf=bili_jct）

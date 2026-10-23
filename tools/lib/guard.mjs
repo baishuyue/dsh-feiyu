@@ -62,8 +62,8 @@ export function dupOk(chatId, text, cfg = config()) {
  * 统一判定入口（发送前）。
  * @returns {{ok: boolean, why: string}} ok=false 时 why 说明原因。
  */
-export function allow(chatId, text, cfg = config()) {
-  if (cfg.guard?.dryRun) return { ok: false, why: `DRY_RUN（干跑：只打印不真发；确认没问题后把 feiyu.config.json 的 guard.dryRun 改 false）` }
+export function allow(chatId, text, cfg = config(), opts = {}) {
+  if (opts.checkDryRun !== false && cfg.guard?.dryRun) return { ok: false, why: `DRY_RUN（干跑：只打印不真发；确认没问题后把 feiyu.config.json 的 guard.dryRun 改 false）` }
   const gap = Math.max(0, Number(cfg.guard?.minGapSec ?? 25))
   const at = readJson(SENT_AT, {})[chatId] ?? 0
   if (Date.now() - at < gap * 1000) return { ok: false, why: `间隔不足 ${gap}s` }
