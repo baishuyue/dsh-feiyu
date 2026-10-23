@@ -34,13 +34,6 @@ function douyinDry(cfg) {
   return cfg.douyin?.dryRun !== false
 }
 
-// @主人 前缀（仿 B站：正文开头 @昵称）
-function withOwner(msg, cfg) {
-  const owner = cfg.douyin?.owner?.name
-  if (owner && !msg.startsWith('@')) return `@${owner} ${msg}`
-  return msg
-}
-
 function runPy(argv, cfg) {
   const cmd = [scriptPath(cfg), ...argv, '--cookie', cookiePath(cfg)]
   try {
@@ -100,16 +93,20 @@ export function run(argv = []) {
   }
   if (cmd === 'comment') {
     const vid = arg(argv, '--vid')
-    const message = withOwner(arg(argv, '--message'), cfg)   // 纯文本 @主人 前缀
+    const message = arg(argv, '--message')
     if (!vid || !message) { console.error('用法：node feiyu.mjs douyin comment --vid <id> --message "…" [--go] [--cdp]'); process.exit(2) }
     const go = argv.includes('--go')
     const cdp = argv.includes('--cdp')
+    const atUser = cfg.douyin?.owner?.name || ''   // 真 @ 目标（弹通知）
     const dry = douyinDry(cfg) || !go   // 抖音独立 DRY，或未显式 --go 都拦
     if (dry) {
-      console.log(`【干跑 ✓】不真发评论 → ${vid}\n  内容：${message}`)
+      console.log(`【干跑 ✓】不真发评论 → ${vid}\n  内容：${atUser ? '@' + atUser + ' ' : ''}${message}`)
       return
     }
-    console.log(runPy(['comment', '--vid', vid, '--message', message, '--go', ...(cdp ? ['--cdp'] : [])], cfg))
+    const args = ['comment', '--vid', vid, '--message', message]
+    if (atUser) args.push('--at', atUser)
+    args.push('--go', ...(cdp ? ['--cdp'] : []))
+    console.log(runPy(args, cfg))
     return
   }
   if (cmd === 'interact') {
@@ -157,13 +154,16 @@ async function runInteract(cfg) {
       continue
     }
     if (!comment) { console.log('  ✗ 评论为空，跳过'); continue }
-    comment = withOwner(comment, cfg)   // 纯文本 @主人 前缀
+    const atUser = cfg.douyin?.owner?.name || ''   // 真 @ 目标
     const dry = douyinDry(cfg)
     if (dry) {
-      console.log(`  【干跑 ✓】${v.vid} → ${comment}`)
+      console.log(`  【干跑 ✓】${v.vid} → ${atUser ? '@' + atUser + ' ' : ''}${comment}`)
     } else {
-      console.log(`  【真发 CDP】${v.vid} → ${comment}`)
-      console.log(runPy(['comment', '--vid', v.vid, '--message', comment, '--go', '--cdp'], cfg))
+      console.log(`  【真发 CDP】${v.vid} → ${atUser ? '@' + atUser + ' ' : ''}${comment}`)
+      const args = ['comment', '--vid', v.vid, '--message', comment]
+      if (atUser) args.push('--at', atUser)
+      args.push('--go', '--cdp')
+      console.log(runPy(args, cfg))
     }
   }
   console.log('\n[interact] 完成。DRY_RUN 开着时只打印不真发；确认选题准了把 guard.dryRun 改 false 再跑 interact。')
