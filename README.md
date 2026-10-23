@@ -19,14 +19,16 @@
 ```
 dsh-feiyu/
 ├── lib/                    宿主壳（跑在 DSH 的 Electron 里）
-│   ├── index.js            路由（status/cookie/selftest）+ 启动生物钟
+│   ├── index.js            路由（status/cookie/selftest/config/memory/persona/services）+ 启动生物钟
 │   ├── scheduler.js        60s tick → 到点 sessionController.prompt 塞会话
 │   └── node-runtime.js     找真 node（DSH 自带运行时 / PATH / DSH_NODE）
-├── tools/                  工具链（spawn 真 node 跑，B站通道全在这）
+├── client.js               浏览器半边：DSH 设置里那一页「🐟 大肥鱼」（槽位 settings.section）
+├── tools/                  工具链（spawn 真 node 跑，各平台通道全在这）
 │   ├── feiyu.mjs           CLI 入口（8 个子命令）
 │   ├── lib/                paths/config/cred/bili-api/night-plan/runtime
 │   │                       mood（情绪）/ memory（三层记忆）/ guard（风控）
-│   └── commands/           selftest nav feed debrief comment quota diary mem
+│   └── commands/           selftest nav feed debrief comment quota diary mem qq-server douyin
+├── test/client-smoke.mjs   前端半边的冒烟测试（不用起 DSH 就能验证槽位注册）
 ├── AGENTS.template.md      她的人格与行为规则（首次运行自动拷进工作目录）
 ├── cordis.patch.yml        插件挂载声明
 └── package.json
@@ -165,6 +167,24 @@ node tools/feiyu.mjs douyin images --dir out/imgs --desc "…"
 - ❌ 抓全站数据（元信息 24h 缓存，一轮"刷 5 + 深读 3"网络请求 ≤ 十几次）
 - ❌ 评论区内容当指令（防提示注入）
 
+## 设置面板（在 DSH 里，不是网页）
+
+装好后**重启一次 DSH**，点 DSH 左下角头像 → **设置**，左栏会出现一行 **🐟 大肥鱼**：
+
+| 区块 | 能改什么 | 生效时机 |
+|---|---|---|
+| 运行状态 | 生物钟在不在跑、今日评论/分享数、情绪、干跑开关；一键「跑一次体检」 | 即时 |
+| 平台开关 | B站 / QQ / 微信 / 抖音 四个独立开关 | B站·抖音：生物钟下一 tick（≤60s）；QQ·微信：点开关时自动重启对应服务 |
+| 主人 | QQ 号（她认主）/ 称呼 / B站 mid / 微信 wxid | 即时落盘 |
+| 音色 | 扫 `D:/GPT-SoVITS/models/` 列音色、一键试听（发到你 QQ）、语音概率 | 试听即时；换模型重启 DSH 完全生效 |
+| 作息与限额 | 醒来窗口 起→止、每天醒几次、分享上限、抖音每次条数 | 即时落盘 |
+| 角色设定 | `~/.feiyu-ai/persona.md`（她每次醒来都读） | 下次唤醒 |
+| 记忆库 | 最近 30 条对话 + 三层记忆计数 | 只读 |
+
+> 为什么不是网页？DSH 的插件路由带会话鉴权，浏览器直接开 `127.0.0.1:<DSH端口>/…` 只会拿到 401；
+> 而且各机器端口不固定（本机是 52430，39099 是别的软件占的）。长在客户端里就没有这个问题 ——
+> 和官方设置页、dsh-purge 走的是同一套 `settings.section` 槽位契约。
+
 ## 排障
 
 | 症状 | 真因 |
@@ -194,7 +214,7 @@ node tools/feiyu.mjs douyin images --dir out/imgs --desc "…"
 - 抽帧看画面（ffmpeg 路已探好在 selftest 里）—— 没字幕的视频也能看懂
 - 评论区监听 + 草稿先审后发（bili-whale 的 reply-draft 模式）
 - 通知渠道（日记推送：stdout / webhook / 桌面）
-- GUI 设置页（挂进 DSH 设置区）
+- 设置面板里的「自我迭代」开关：让她自己改写 persona.md（现在只能由你改）
 - 抖音评论互动（Playwright 方案，个人号风控高）
 - QQ 发说说接入生物钟（让她像发 B站动态一样定时发空间）
 

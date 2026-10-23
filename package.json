@@ -1,12 +1,14 @@
 {
   "name": "dsh-feiyu",
-  "version": "0.2.0",
-  "description": "大肥鱼·私享版：dafeiyu 骨架的 brain（情绪状态机/三层记忆/风控）× dsh-bili-whale 的 B站通道实现方式，做成一只专属于你的 DSH 插件。她按作息自己醒、看懂视频、写两本日记、把值得的 @ 你。",
+  "version": "0.3.0",
+  "description": "大肥鱼·私享版：dafeiyu 骨架的 brain（情绪状态机/三层记忆/风控）× dsh-bili-whale 的通道实现方式，做成一只专属于你的 DSH 插件。四平台（B站/QQ/微信/抖音）各有开关，设置面板直接长在 DSH 里。",
   "keywords": [
     "dsh",
     "dsh-plugin",
     "deepseek-harness",
     "bilibili",
+    "qq",
+    "douyin",
     "dafeiyu",
     "agent",
     "diary"
@@ -15,21 +17,30 @@
   "main": "lib/index.js",
   "exports": {
     ".": "./lib/index.js",
+    "./client": "./client.js",
     "./package.json": "./package.json"
   },
   "files": [
     "lib",
     "tools",
+    "client.js",
     "AGENTS.template.md",
     "cordis.patch.yml",
     "README.md"
   ],
+  "scripts": {
+    "test": "node test/client-smoke.mjs && node test/client-render.mjs"
+  },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
     },
     "client": {
-      "inject": [],
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-slots",
+        "@deepseek-ai/dsh-client-locale"
+      ],
       "platform": "web"
     }
   },
