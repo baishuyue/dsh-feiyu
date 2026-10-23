@@ -206,6 +206,10 @@ textarea.fy-input{width:100%;min-height:136px;resize:vertical;line-height:1.65;f
 					douyinCount: (c.douyin && c.douyin.maxPerRun) || 2,
 					voiceChance: (c.qq && c.qq.voice_chance) || 0,
 					voicePath: (c.voice && c.voice.ref_audio_path) || "",
+					wxRhythm: (c.wechat && c.wechat.rhythm) || "fast",
+					wxMerge: (c.wechat && c.wechat.merge_window_sec) || 3,
+					wxContext: (c.wechat && c.wechat.context_n) || 12,
+					wxSkip: !(c.wechat && c.wechat.smart_skip === false),
 				};
 			};
 
@@ -448,6 +452,51 @@ textarea.fy-input{width:100%;min-height:136px;resize:vertical;line-height:1.65;f
 							onClick: testVoice,
 						}, busy === "voice" ? "合成中…" : "试听（发到 QQ）")),
 					h("div", { className: "fy-hint" }, "0~1，QQ/微信 每条回复走语音的概率（0.5 = 一半）。")),
+
+				// 微信（UI 自动化，节奏与合并窗口直接决定像不像人、回得快不快）
+				h(Card, {
+					title: "微信",
+					hint: "微信是 UI 自动化（不是协议）。节奏档 = 两条消息之间的最小间隔；合并窗口 = 等对方把话说完。改完点运行状态里的「重启 QQ / 微信」生效。",
+				},
+					h(Row, { label: "节奏档位" },
+						h("select", {
+							className: "fy-input",
+							value: draft.wxRhythm,
+							onChange: (e) => {
+								const v = e.target.value;
+								setDraft(Object.assign({}, draft, { wxRhythm: v }));
+								save({ wechat: { rhythm: v } }, "微信节奏已切到 " + v + "（重启微信服务生效）");
+							},
+						},
+							h("option", { value: "fast" }, "fast · 快（1.5 秒/条，推荐）"),
+							h("option", { value: "natural" }, "natural · 稳（4~7 秒/条）"),
+							h("option", { value: "calm" }, "calm · 很慢（长时间挂机）"))),
+					h(Row, { label: "合并窗口" },
+						h("input", {
+							className: "fy-input fy-w-sm", type: "number", min: 1, max: 10, step: 0.5,
+							value: draft.wxMerge,
+							onChange: (e) => setDraft(Object.assign({}, draft, { wxMerge: e.target.value })),
+							onBlur: () => save({ wechat: { merge_window_sec: Number(draft.wxMerge) || 3 } }, "合并窗口已保存"),
+						}),
+						h("span", { className: "fy-hint", style: { marginTop: 0 } }, "对方说完几秒后才回；期间又发就继续等（最长 12 秒）")),
+					h(Row, { label: "上下文条数" },
+						h("input", {
+							className: "fy-input fy-w-sm", type: "number", min: 4, max: 30,
+							value: draft.wxContext,
+							onChange: (e) => setDraft(Object.assign({}, draft, { wxContext: e.target.value })),
+							onBlur: () => save({ wechat: { context_n: Number(draft.wxContext) || 12 } }, "上下文条数已保存（下一条消息生效）"),
+						}),
+						h("span", { className: "fy-hint", style: { marginTop: 0 } }, "往前带多少条对话来理解语境")),
+					h(Row, { label: "自己判断该不该接" },
+						h(Switch, {
+							on: draft.wxSkip,
+							label: "smart_skip",
+							onChange: (v) => {
+								setDraft(Object.assign({}, draft, { wxSkip: v }));
+								save({ wechat: { smart_skip: v } }, v ? "以后她会先判断再决定回不回" : "以后每条都回");
+							},
+						}),
+						h("span", { className: "fy-hint", style: { marginTop: 0 } }, "关掉就退回「每句都回」"))),
 
 				// 作息与限额
 				h(Card, {

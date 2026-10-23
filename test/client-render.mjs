@@ -157,23 +157,28 @@ const allText = (node) => {
 
 assert.ok(!dump.includes('载入失败'), '不该走到错误态：' + allText(tree).slice(0, 200))
 const text = allText(tree)
-for (const must of ['大肥鱼', '运行状态', '平台开关', '主人', '音色', '作息与限额', '角色设定', '记忆库']) {
+for (const must of ['大肥鱼', '运行状态', '平台开关', '主人', '音色', '微信', '作息与限额', '角色设定', '记忆库']) {
   assert.ok(text.includes(must), '缺少区块：' + must)
 }
 for (const must of ['3082864371', 'sunshine_girl', '20:00', '在的，主人。', '运行中']) {
   assert.ok(text.includes(must), '缺少数据：' + must)
 }
-// 四个平台开关各一个（bilibili/qq 开，wechat 关，douyin 开）
-const switches = (function walk(node, acc = []) {
+// 四个平台开关（在 .fy-grid 里），另外微信卡片还有一个「自己判断该不该接」的开关
+const collect = (node, predicate, acc = []) => {
   if (!node || typeof node !== 'object') return acc
-  if (node.props && typeof node.props.className === 'string' && node.props.className.includes('fy-switch')) acc.push(node)
-  for (const k of node.children || []) walk(k, acc)
+  if (node.props && predicate(node)) acc.push(node)
+  for (const k of node.children || []) collect(k, predicate, acc)
   return acc
-})(tree)
+}
+const platforms = collect(tree, (n) => n.props.className === 'fy-grid')
+assert.equal(platforms.length, 1, '平台开关网格应该只有一个')
+const switches = collect(platforms[0], (n) => String(n.props.className || '').includes('fy-switch'))
 assert.equal(switches.length, 4, '平台开关数量应为 4，实际 ' + switches.length)
-assert.equal(switches.filter((n) => n.props.className.includes('on')).length, 3, '默认应有 3 个开启')
+assert.equal(switches.filter((n) => n.props.className.includes('on')).length, 3, '默认应有 3 个平台开启')
+const allSwitches = collect(tree, (n) => String(n.props.className || '').includes('fy-switch'))
+assert.equal(allSwitches.length, 5, '全页开关应为 5 个（4 平台 + 微信 smart_skip）')
 
 assert.ok(fetchCalls.includes('/dsh-feiyu/api/config'), '没有请求 /config')
 assert.ok(styleTags.length >= 1, '样式没注入')
 
-console.log('client-render ✓  渲染通过：8 个区块 · 4 个平台开关 · 请求', fetchCalls.length, '次')
+console.log('client-render ✓  渲染通过：9 个区块 · 4 个平台开关 · 请求', fetchCalls.length, '次')
