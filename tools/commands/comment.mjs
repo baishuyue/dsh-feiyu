@@ -50,10 +50,13 @@ export async function run(argv = []) {
     try {
       validateShare(cfg, { reason: arg(argv, '--reason'), score: arg(argv, '--score'), rank: arg(argv, '--rank') || 1 })
     } catch (e) { console.error('✗ ' + e.message); process.exit(1) }
-    // @ 主人前缀（评论区 @ 的正路：正文开头写 @昵称）
-    const ownerName = cfg.owner?.name
-    if (ownerName && !message.startsWith('@')) message = `@${ownerName} ${message}`
   }
+
+  // 真 @ 主人（发评论/回复评论都要）：正文开头写 @昵称，POST 时携带 at_name_to_mid
+  // （B站只有带 at_name_to_mid 才会真正通知被 @ 用户，纯文本 @昵称 不通知任何人）
+  const ownerName = cfg.owner?.name
+  const ownerMid = cfg.owner?.mid
+  if (ownerName && ownerMid && !message.startsWith('@')) message = `@${ownerName} ${message}`
 
   // ③ 内容清洗（预览和真发都要）
   message = guard.clean(message, cfg)
@@ -94,6 +97,8 @@ export async function run(argv = []) {
   const body = new URLSearchParams({ type: '1', oid: String(aid), message, plat: '1', csrf: cred.bili_jct })
   if (root) body.set('root', root)
   if (parent) body.set('parent', parent)
+  // 真 @：at_name_to_mid 携带 昵称→mid 映射（不带 @ 的昵称作为 key）
+  if (ownerName && ownerMid) body.set('at_name_to_mid', JSON.stringify({ [ownerName]: ownerMid }))
   const res = await fetch('https://api.bilibili.com/x/v2/reply/add', {
     method: 'POST',
     headers: { ...H, 'content-type': 'application/x-www-form-urlencoded' },

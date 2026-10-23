@@ -109,10 +109,29 @@ export function run(argv = []) {
     console.log(runPy(args, cfg))
     return
   }
+  if (cmd === 'reply') {
+    const vid = arg(argv, '--vid')
+    const cid = arg(argv, '--cid')
+    const message = arg(argv, '--message')
+    if (!vid || !cid || !message) { console.error('用法：node feiyu.mjs douyin reply --vid <id> --cid <评论cid> --message "…" [--go] [--cdp]'); process.exit(2) }
+    const go = argv.includes('--go')
+    const cdp = argv.includes('--cdp')
+    const atUser = cfg.douyin?.owner?.name || ''
+    const dry = douyinDry(cfg) || !go
+    if (dry) {
+      console.log(`【干跑 ✓】不真回复 cid=${cid} → ${atUser ? '@' + atUser + ' ' : ''}${message}`)
+      return
+    }
+    const args = ['reply', '--vid', vid, '--cid', cid, '--message', message]
+    if (atUser) args.push('--at', atUser)
+    args.push('--go', ...(cdp ? ['--cdp'] : []))
+    console.log(runPy(args, cfg))
+    return
+  }
   if (cmd === 'interact') {
     return runInteract(cfg)
   }
-  console.log('用法：login | cdp-start | feed [--headed] | comments --vid | comment --vid --message [--go --cdp] | interact')
+  console.log('用法：login | cdp-start | feed [--headed] | comments --vid | comment --vid --message [--go --cdp] | reply --vid --cid --message [--go --cdp] | interact')
 }
 
 // 全流程：feed → 口味过滤 → 读热评 → LLM 生成评论 → 干跑发评论

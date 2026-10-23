@@ -63,7 +63,7 @@ export async function run(argv = []) {
     rurl.searchParams.set('ps', '5')
     const replies = await apiGet(rurl.href, H)
     topComments = (replies?.data?.replies ?? []).slice(0, 5).map(r => ({
-      name: r.member?.uname ?? '', text: String(r.content?.message ?? '').slice(0, 120), like: r.like ?? 0,
+      name: r.member?.uname ?? '', text: String(r.content?.message ?? '').slice(0, 120), like: r.like ?? 0, rpid: r.rpid ?? 0,
     }))
   } catch { /* 热评也是可选路 */ }
 
@@ -95,8 +95,9 @@ export async function run(argv = []) {
   }
   if (pack.topComments?.length) {
     console.log('【热评】')
-    for (const c of pack.topComments) console.log(`  ${c.name}（${c.like} 赞）：${c.text}`)
+    for (const c of pack.topComments) console.log(`  ${c.name}（${c.like} 赞，rpid=${c.rpid}）：${c.text}`)
     console.log('')
   }
   console.log('—— 基于以上材料打分（0–20），不足 share.minScore 就是「这条不值得占主人一次注意力」，合法结果 ✓')
+  console.log('—— 可回复热评：node feiyu.mjs comment --bvid <bvid> --root <rpid> --parent <rpid> --message "回复内容" --go（会自动 @主人）')
 }
