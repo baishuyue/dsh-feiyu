@@ -50,6 +50,9 @@ export async function run(argv = []) {
 
   const handle = async (evt) => {
     try {
+      // 每次处理消息都重读最新配置：热改 voice_enabled / voice_chance / minGapSec 立即生效，
+      // 不用重启 qq-server（原版只在进程启动时读一次，改了配置也不生效 —— 语音一直不发的根因）。
+      const QQ = config().qq ?? {}
       const selfId = String(evt.self_id ?? '')
       const isGroup = evt.message_type === 'group'
       const groupId = isGroup ? String(evt.group_id ?? '') : ''
@@ -83,7 +86,9 @@ export async function run(argv = []) {
       }
 
       // 真发前：间隔 + 去重（跳过 dryRun，上面已单独处理）
-      const verdict = guard.allow(chatId, out, config(), { checkDryRun: false })
+      // QQ 是即时聊天：间隔用 qq.minGapSec（默认 2 秒），不能用全局 guard.minGapSec（25 秒，那是 B 站防刷评论的）
+      const qqGuardCfg = { ...config(), guard: { ...config().guard, minGapSec: Number(QQ.minGapSec ?? 2) } }
+      const verdict = guard.allow(chatId, out, qqGuardCfg, { checkDryRun: false })
       if (!verdict.ok) { console.error(`[qq] 拦下：${verdict.why}`); return }
       guard.commit(chatId, out)
 
