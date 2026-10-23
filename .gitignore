@@ -1,0 +1,6 @@
+# 依赖与运行产物
+node_modules/
+*.log
+
+# 临时文件（建仓脚本等）
+.github-create-body.json

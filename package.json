@@ -1,0 +1,37 @@
+{
+  "name": "dsh-feiyu",
+  "version": "0.1.0",
+  "description": "大肥鱼·私享版：dafeiyu 骨架的 brain（情绪状态机/三层记忆/风控）× dsh-bili-whale 的 B站通道实现方式，做成一只专属于你的 DSH 插件。她按作息自己醒、看懂视频、写两本日记、把值得的 @ 你。",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "bilibili",
+    "dafeiyu",
+    "agent",
+    "diary"
+  ],
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "tools",
+    "AGENTS.template.md",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [],
+      "platform": "web"
+    }
+  },
+  "license": "MIT"
+}
