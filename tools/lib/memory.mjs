@@ -51,7 +51,7 @@ export function remember(platform, chatId, userId, role, text) {
   fs.appendFileSync(EP_FILE, JSON.stringify(rec) + '\n')
 }
 
-/** 最近 n 条对话（按 chatId 过滤，时间正序返回）。 */
+/** 最近 n 条对话（按 chatId 过滤，时间正序返回）。返回 {role, content} 格式，供 LLM 直接使用。 */
 export function recent(chatId, n = 8) {
   const rows = []
   try {
@@ -59,7 +59,7 @@ export function recent(chatId, n = 8) {
     for (let i = lines.length - 1; i >= 0 && rows.length < n; i--) {
       try {
         const r = JSON.parse(lines[i])
-        if (r.chatId === chatId) rows.push(r)
+        if (r.chatId === chatId) rows.push({ role: r.role, content: r.text })
       } catch {}
     }
   } catch {}
