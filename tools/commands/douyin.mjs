@@ -57,12 +57,17 @@ export function run(argv = []) {
     console.log('✓ 已提交发布（频繁发布 >3 条/天易限流，建议 1~2 条/天 + 固定时段）')
     return
   }
-  if (cmd === 'images') {
-    const dir = arg(argv, '--dir')
-    const desc = arg(argv, '--desc') || ''
-    if (!dir) { console.error('用法：node feiyu.mjs douyin images --dir <图片目录> --desc "…"'); process.exit(2) }
-    if (cfg.guard?.dryRun) { console.log(`【干跑 ✓】不发布图文：${dir}\n  描述：${desc}`); return }
-    console.log(sau(['douyin', 'upload-images', '--account', account, '--dir', dir, ...(desc ? ['--desc', desc] : [])], cfg))
+  if (cmd === 'note' || cmd === 'images') {
+    // sau 图文：upload-note --images 图1 图2 --title --note
+    const images = []
+    for (let i = 0; i < argv.length; i++) {
+      if (argv[i] === '--image') images.push(argv[i + 1])
+    }
+    const title = arg(argv, '--title') || ''
+    const note = arg(argv, '--note') || arg(argv, '--desc') || ''
+    if (!images.length) { console.error('用法：node feiyu.mjs douyin note --image 图1.png --image 图2.png --title "…" --note "…"'); process.exit(2) }
+    if (cfg.guard?.dryRun) { console.log(`【干跑 ✓】不发布图文：${images.length} 张\n  标题：${title}\n  正文：${note}`); return }
+    console.log(sau(['douyin', 'upload-note', '--account', account, '--images', ...images, '--title', title, '--note', note], cfg))
     return
   }
   if (cmd === 'comments') {
