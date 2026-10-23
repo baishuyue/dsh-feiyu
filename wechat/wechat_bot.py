@@ -24,6 +24,7 @@ v2 相对 v1 修的四个真问题
 启动：.venv/Scripts/python.exe wechat_bot.py
 """
 import difflib
+import hashlib
 import io
 import json
 import os
@@ -240,6 +241,7 @@ FACE_FALLBACK = {
 }
 DEFAULT_TAGS = list(FACE_FALLBACK)
 _MARK = re.compile(r"[\[【]\s*表情\s*[:：]\s*([^\]】\s]{1,10})\s*[\]】]")
+_MAKE = re.compile(r"[\[【]\s*自制表情\s*[:：]\s*([^\]】]{1,20})\s*[\]】]")
 _IMG = re.compile(r"\.(png|jpe?g|gif|webp)$", re.I)
 
 
@@ -269,24 +271,110 @@ def pick_sticker(tag: str):
 
 
 def split_sticker(text: str):
-    """(文字, 标签)。标签为 None 表示没写 [表情:x]。"""
+    """(文字, 标签, 自制文案)。标签为 None 表示没写 [表情:x]。"""
     tag = None
+    caption = None
+
+    def _take_make(m):
+        nonlocal caption
+        if caption is None:
+            caption = m.group(1).strip()
+        return ""
 
     def _take(m):
         nonlocal tag
-        if tag is None:
+        if tag is None and caption is None:
             tag = m.group(1).strip()
         return ""
 
-    body = _MARK.sub(_take, str(text or "")).strip()
-    return body, tag
+    body = _MAKE.sub(_take_make, str(text or ""))
+    body = _MARK.sub(_take, body).strip()
+    return body, tag, caption
+
+
+def make_self_sticker(caption: str):
+    """当场画一张文字贴纸（PIL，本地、免费、无网络）。失败返回 None。"""
+    cap = str(caption or "").strip()[:16]
+    if not cap:
+        return None
+    out_dir = os.path.join(STICKER_DIR, "自制")
+    out = os.path.join(out_dir, hashlib.md5(cap.encode("utf-8")).hexdigest()[:12] + ".png")
+    if os.path.exists(out):
+        return out
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+        fonts = [r"C:\Windows\Fonts\msyhbd.ttc", r"C:\Windows\Fonts\msyh.ttc",
+                 r"C:\Windows\Fonts\simhei.ttf", r"C:\Windows\Fonts\simsun.ttc"]
+        palette = [(255, 244, 214), (255, 231, 233), (226, 243, 255), (232, 240, 255),
+                   (235, 247, 233), (246, 236, 255), (255, 240, 226), (226, 246, 244)]
+        bg = palette[int(hashlib.md5(cap.encode("utf-8")).hexdigest(), 16) % len(palette)]
+        size = 640
+        img = Image.new("RGB", (size, size), (250, 250, 248))
+        d = ImageDraw.Draw(img)
+        pad = int(size * 0.055)
+        d.rounded_rectangle([pad, pad, size - pad, size - pad], radius=int(size * 0.12), fill=bg)
+
+        def font_of(px):
+            for p in fonts:
+                if os.path.exists(p):
+                    try:
+                        return ImageFont.truetype(p, px)
+                    except Exception:
+                        continue
+            return ImageFont.load_default()
+
+        max_w = size - pad * 2 - int(size * 0.10)
+        fs = int(size * 0.20)
+        lines, font, line_h = [cap], font_of(fs), fs * 1.28
+        while fs > 28:
+            font = font_of(fs)
+            line_h = fs * 1.28
+            lines, cur = [], ""
+            for ch in cap:
+                if d.textlength(cur + ch, font=font) <= max_w:
+                    cur += ch
+                else:
+                    lines.append(cur)
+                    cur = ch
+                    if len(lines) >= 2:
+                        break
+            if cur and len(lines) < 3:
+                lines.append(cur)
+            if len(lines) * line_h <= size * 0.52:
+                break
+            fs -= 6
+
+        y = (size - len(lines) * line_h) / 2 - size * (0.03 if len(lines) == 1 else 0.075)
+        for line in lines:
+            w = d.textlength(line, font=font)
+            d.text(((size - w) / 2, y), line, font=font, fill=(38, 42, 52))
+            y += line_h
+
+        # 右下角小鲸鱼
+        ws = int(size * 0.155)
+        wx_, wy_ = size - pad - int(size * 0.215), size - pad - int(size * 0.205)
+        d.ellipse([wx_, wy_, wx_ + ws, wy_ + ws * 0.78], fill=(150, 200, 240),
+                  outline=(38, 42, 52), width=max(2, ws // 22))
+        d.polygon([(wx_ + ws * 0.02, wy_ + ws * 0.30), (wx_ - ws * 0.26, wy_ + ws * 0.16),
+                   (wx_ - ws * 0.20, wy_ + ws * 0.52)], fill=(150, 200, 240), outline=(38, 42, 52))
+        r = max(2, ws // 20)
+        d.ellipse([wx_ + ws * 0.30 - r, wy_ + ws * 0.30 - r,
+                   wx_ + ws * 0.30 + r, wy_ + ws * 0.30 + r], fill=(38, 42, 52))
+
+        os.makedirs(out_dir, exist_ok=True)
+        img.save(out, "PNG")
+        return out
+    except Exception as e:
+        log(f"[表情] 自制失败：{str(e)[:80]}")
+        return None
 
 
 def sticker_rule():
     tags = available_tags()
     if list_stickers():
-        return ("8. 表情：偶尔带一个颜文字或 emoji（一句最多一个）。想发图就在回复最后单独写 "
-                f"[表情:标签]，标签只能用：{'/'.join(tags)}，一次最多一个，没有贴切的就别写。")
+        return ("8. 表情：偶尔带一个颜文字或 emoji（一句最多一个），别每句都带。想发图就在回复最后单独写 "
+                f"[表情:标签]，标签只能用：{'/'.join(tags)}，一次最多一个。"
+                "这几个都不贴切时可以写 [自制表情:不超过八个字的短句]，会当场画一张文字贴纸。宁缺毋滥。")
     return "8. 表情：偶尔带一个颜文字或 emoji（一句最多一个），别每句都带。"
 
 
@@ -560,8 +648,10 @@ class Bot:
 
     def deliver(self, title, text):
         """真正的一次发送（含每分钟限速）。拆出来是为了单测能直接调。"""
-        body, tag = split_sticker(text)
+        body, tag, caption = split_sticker(text)
         img = pick_sticker(tag) if tag else None
+        if not img and caption:
+            img = make_self_sticker(caption)      # 没有贴切的标签 → 当场画一张
         if not body and not img and tag in FACE_FALLBACK:
             body = FACE_FALLBACK[tag]      # 图库空着也不能哑巴
         if not body and not img:

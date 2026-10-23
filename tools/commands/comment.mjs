@@ -11,7 +11,7 @@ import { config } from '../lib/config.mjs'
 import { validateShare } from '../lib/share-policy.mjs'
 import * as guard from '../lib/guard.mjs'
 import * as memory from '../lib/memory.mjs'
-import { toPlain } from '../lib/stickers.mjs'
+import { sanitizeFor, loadBiliFaces } from '../lib/stickers.mjs'
 
 function arg(argv, name) {
   const i = argv.indexOf(name)
@@ -61,8 +61,9 @@ export async function run(argv = []) {
 
   // ③ 内容清洗（预览和真发都要）
   message = guard.clean(message, cfg)
-  // 评论区发不了图片表情：剥掉 [表情:x]，只留文字 + 颜文字
-  message = toPlain(message)
+  // 评论区发不了图片：剥掉 [表情:x]，只留文字 + 颜文字 + B站自带表情码（[大笑]/[doge]）
+  const faces = await loadBiliFaces()   // 447 个官方表情码，缓存 24h
+  message = sanitizeFor('bilibili', message, faces)
   if (!message) { console.error('✗ 清洗后内容为空'); process.exit(1) }
   const chatId = `bilibili:${bvid}`
 

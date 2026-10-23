@@ -13,7 +13,7 @@ import { execFileSync } from 'node:child_process'
 import os from 'node:os'
 import path from 'node:path'
 import { config } from '../lib/config.mjs'
-import { toPlain } from '../lib/stickers.mjs'
+import { sanitizeFor } from '../lib/stickers.mjs'
 
 function arg(argv, name) {
   const i = argv.indexOf(name)
@@ -175,7 +175,7 @@ async function runInteract(cfg) {
       continue
     }
     if (!comment) { console.log('  ✗ 评论为空，跳过'); continue }
-    comment = toPlain(comment)   // 评论区发不了图片表情，剥掉 [表情:x]
+    comment = sanitizeFor('douyin', comment)   // 抖音只认 emoji，剥掉 [xx] 与 [表情:x]
     if (!comment) { console.log('  ✗ 评论只剩表情标记，跳过'); continue }
     const atUser = cfg.douyin?.owner?.name || ''   // 真 @ 目标
     const dry = douyinDry(cfg)

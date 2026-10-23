@@ -11,7 +11,7 @@ import * as guard from '../lib/guard.mjs'
 import * as memory from '../lib/memory.mjs'
 import * as llm from '../lib/llm.mjs'
 import { buildMessages, thinkingInstruction } from '../lib/persona.mjs'
-import { splitSticker, pickSticker, FACE_FALLBACK } from '../lib/stickers.mjs'
+import { splitSticker, pickSticker, FACE_FALLBACK, ensureSelfSticker } from '../lib/stickers.mjs'
 import { synth } from '../lib/tts.mjs'
 
 /** 解析 OneBot v11 消息（array 或 CQ 码字符串）→ 纯文本 + 是否 @ 了机器人。 */
@@ -80,8 +80,9 @@ export async function run(argv = []) {
       if (!out) return
 
       // 表情：文字和 [表情:标签] 拆开发（NapCat 图片段）
-      const { text: body, tag } = splitSticker(out)
-      const stickerFile = tag ? pickSticker(tag) : null
+      const { text: body, tag, caption } = splitSticker(out)
+      let stickerFile = tag ? pickSticker(tag) : null
+      if (!stickerFile && caption) stickerFile = ensureSelfSticker(caption, config())  // 没有贴切的标签 → 当场画一张
       const plain = body || (stickerFile ? '' : (FACE_FALLBACK[tag] || ''))
       if (!plain && !stickerFile) return
 
