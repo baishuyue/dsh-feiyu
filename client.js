@@ -260,8 +260,9 @@ textarea.fy-input{width:100%;min-height:136px;resize:vertical;line-height:1.65;f
 			}, [flash]);
 
 			const togglePlatform = useCallback(async (key, on, needsRestart) => {
+				const label = (PLATFORMS.find((p) => p[0] === key) || [key, key])[1];
 				const next = Object.assign({}, (cfg && cfg.platforms) || {}, { [key]: on });
-				const ok = await save({ platforms: next }, (on ? "已开启：" : "已关闭：") + key);
+				const ok = await save({ platforms: next }, (on ? "已开启：" : "已关闭：") + label);
 				if (!ok) return;
 				setCfg((prev) => Object.assign({}, prev, { platforms: next }));
 				if (needsRestart) await restartService(key, on ? "start" : "stop");
