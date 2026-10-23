@@ -44,6 +44,46 @@ export const DEFAULTS = {
   },
   // 日记（写日记不可关；push 留给将来的通知渠道）
   diary: { push: false },
+
+  // LLM 直连（QQ/抖音的实时响应用；B站那套塞 DSH 会话零费，这里直连按 token 计费）
+  llm: {
+    base_url: 'https://api.deepseek.com/v1',   // 也可换硅基流动 / Ollama / OneAPI
+    api_key: '',                                // 优先读环境变量 DEEPSEEK_API_KEY；也可直接写这里
+    model: 'deepseek-chat',
+    temperature: 0.92,
+    max_tokens: 600,
+    // 写脚本/文案用另一套参数（dafeiyu 的设计：聊天口癖别污染内容）
+    content_model: 'deepseek-chat',
+    content_temperature: 0.7,
+  },
+
+  // QQ（NapCat / OneBot v11）
+  qq: {
+    enabled: false,
+    napcat_http: 'http://127.0.0.1:3000',   // NapCat HTTP 服务器地址（在 NapCat WebUI 配置）
+    allow_groups: [],                        // 空 = 全部群
+    at_only: true,                           // 群里只被 @ 才回（铁律）
+    voice_enabled: false,                    // 语音条开关
+    voice_chance: 0.15,                      // 回复用语音的概率
+    qzone_enabled: false,                    // 发空间说说开关
+  },
+
+  // 语音（GPT-SoVITS 本地音色克隆；xiaoxiao 音色）
+  voice: {
+    sovits_url: 'http://127.0.0.1:9880/tts',  // GPT-SoVITS api_v2.py 的 tts 端点
+    ref_audio_path: '',                       // 参考音频绝对路径（可选）
+    prompt_text: '今天也要好好吃饭',           // 参考文本
+    prompt_lang: 'zh',
+    text_lang: 'zh',
+    media_type: 'wav',
+    streaming_mode: false,
+  },
+
+  // 抖音（social-auto-upload 发布）
+  douyin: {
+    enabled: false,
+    account: 'creator',                        // sau 账号别名
+  },
 }
 
 const merge = (base, over) => {

@@ -81,6 +81,28 @@ export async function run(argv = []) {
   // ⑩ 干跑状态（dafeiyu 铁律：第一周 DRY_RUN）
   add('风控模式', true, cfg.guard?.dryRun ? 'DRY_RUN 开着 ✓ —— 所有发送只打印不真发，观察满意后改 false' : '⚠️ DRY_RUN 已关 —— 真发了，注意额度与风控')
 
+  // ── 可选平台依赖（不影响 B站核心体检；缺了 B站那条线照常用）─────────────
+  // ⑪ LLM 直连（QQ/抖音实时响应用）
+  const hasLLMKey = !!(process.env.DEEPSEEK_API_KEY || cfg.llm?.api_key)
+  add('LLM 直连（可选）', true, hasLLMKey ? '有 API key（QQ/抖音可实时响应）' : '未设 DEEPSEEK_API_KEY / llm.api_key —— 接 QQ/抖音前补上（B站不受影响）')
+
+  // ⑫ QQ（NapCat）
+  const napcatUrl = (cfg.qq?.napcat_http || 'http://127.0.0.1:3000').replace(/\/+$/, '')
+  let napcatOk = false
+  try { const c = new AbortController(); setTimeout(() => c.abort(), 1500); await fetch(napcatUrl, { signal: c.signal }); napcatOk = true } catch {}
+  add('QQ·NapCat（可选）', true, napcatOk ? `NapCat 已连（${napcatUrl}）` : 'NapCat 未启动 —— 接 QQ 前先装 NapCat 并扫码登录')
+
+  // ⑬ TTS（GPT-SoVITS）
+  const sovitsUrl = cfg.voice?.sovits_url || 'http://127.0.0.1:9880/tts'
+  let ttsOk = false
+  try { const c = new AbortController(); setTimeout(() => c.abort(), 1500); await fetch(sovitsUrl, { method: 'POST', signal: c.signal, body: '{}' }); ttsOk = true } catch {}
+  add('语音 TTS（可选）', true, ttsOk ? `GPT-SoVITS 已连（${sovitsUrl}）` : 'GPT-SoVITS 未启动 —— 发 QQ 语音前先装（xiaoxiao 音色）')
+
+  // ⑭ 抖音（sau）
+  let sauOk = false
+  try { execFileSync('sau', ['--version'], { timeout: 5000, windowsHide: true, stdio: 'ignore' }); sauOk = true } catch {}
+  add('抖音·sau（可选）', true, sauOk ? 'social-auto-upload 已装' : 'sau 未装 —— 发抖音前 pip install social-auto-upload')
+
   const allOk = items.every(i => i.ok)
   if (allOk) {
     try { fs.mkdirSync(dataPath(), { recursive: true }); fs.writeFileSync(dataPath('selftest-passed.json'), JSON.stringify({ at: new Date().toISOString(), node: process.versions.node })) } catch {}

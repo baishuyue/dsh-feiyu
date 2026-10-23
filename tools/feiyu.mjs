@@ -26,6 +26,9 @@ const COMMANDS = {
   quota: '额度账本（check/record/show）',
   diary: '两本日记（--book owner|private）',
   mem: '三层记忆（remember/fact/lore/recall/old/stats）',
+  'qq-server': 'QQ 常驻聊天服务（NapCat OneBot v11，实时秒回）',
+  qzone: '发 QQ 空间说说（NapCat send_qzone_msg）',
+  douyin: '抖音发布（login/publish/images/check）',
 }
 
 const cmd = process.argv[2]

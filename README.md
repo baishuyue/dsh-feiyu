@@ -100,7 +100,63 @@ node tools/feiyu.mjs quota show                 # 今天额度
 node tools/feiyu.mjs diary --book owner --append "…"    # 给主人的信
 node tools/feiyu.mjs diary --book private --append "…"  # 她自己的
 node tools/feiyu.mjs mem stats | old | recall --query "…"  # 记忆
+node tools/feiyu.mjs qq-server [8080]           # QQ 常驻聊天（NapCat OneBot 上报到 /onebot）
+node tools/feiyu.mjs qzone --content "…"        # 发 QQ 空间说说
+node tools/feiyu.mjs douyin publish --file …    # 抖音发布（sau）
 ```
+
+## QQ 与抖音扩展（v0.2）
+
+### QQ：像真人聊天
+
+链路：NapCat（QQ 逆向协议端，输出 OneBot v11）→ `qq-server`（常驻服务）→ **直连 DeepSeek API 秒回**。
+
+**依赖（装一次）**：
+1. NapCat：<https://github.com/NapNeko/NapCatQQ> 下载 Windows 版，扫码登录你的 QQ
+2. NapCat WebUI → 网络配置 → 新建 HTTP 服务器（端口 3000）+ HTTP 上报 → `http://127.0.0.1:8080/onebot`，上报格式选 `messagePostFormat=array`
+
+**配置**（`feiyu.config.json`）：
+```json
+{
+  "llm": { "api_key": "你的DeepSeek key（或设环境变量 DEEPSEEK_API_KEY）" },
+  "qq": { "enabled": true, "napcat_http": "http://127.0.0.1:3000", "allow_groups": [], "at_only": true }
+}
+```
+
+**启动**：`node tools/feiyu.mjs qq-server`（常驻）。群聊**被 @ 才回**，私聊都回。
+
+### QQ 语音条（GPT-SoVITS 音色克隆）
+
+**依赖**：GPT-SoVITS + 你的 `xiaoxiao.safetensors` 音色，起 `api_v2.py` 的 `/tts` 端点（默认 9880）。
+
+**配置**：
+```json
+{
+  "qq": { "voice_enabled": true, "voice_chance": 0.15 },
+  "voice": { "sovits_url": "http://127.0.0.1:9880/tts", "ref_audio_path": "参考音频路径", "prompt_text": "今天也要好好吃饭", "sovits_path": "xiaoxiao.safetensors 的路径" }
+}
+```
+发语音走 OneBot `record` 段，NapCat 自动转 silk。语音失败自动降级文字（内容不丢）。
+
+### QQ 空间说说
+
+`node tools/feiyu.mjs qzone --content "…" [--image URL] [--permission 1|4|64]`
+依赖 NapCat 扩展 `send_qzone_msg`（部分 NapCat 版本未暴露，失败看错误提示）。
+
+### 抖音：发图文/短视频
+
+**依赖**：`pip install social-auto-upload`，然后 `sau douyin login --account creator` 扫码登录一次。
+
+```
+node tools/feiyu.mjs douyin publish --file out/final.mp4 --title "…" --desc "…#大肥鱼"
+node tools/feiyu.mjs douyin images --dir out/imgs --desc "…"
+```
+评论互动（个人号）暂未实现——要 Playwright 自动化（风控高），见 v0.3。
+
+### 两条 LLM 路线的区别
+
+- **B站**：塞 DSH 会话，宿主推理，**零 API 费**，适合"自主行为"（她醒了刷视频写日记）
+- **QQ/抖音**：直连 DeepSeek API，**实时秒回**（QQ 聊天不能等 10 秒），按 token 计费（约 ¥30-120/月）
 
 ## 它不会做什么（红线写死在 AGENTS.md）
 
@@ -133,12 +189,14 @@ node tools/feiyu.mjs mem stats | old | recall --query "…"  # 记忆
 | `~/.dsh/feiyu-work/AGENTS.md` | 她的人格与流程（改这里=改她） |
 | `~/.dsh/feiyu-work/feiyu-diary.md` · `feiyu-diary-private.md` | 两本日记 |
 
-## v0.2 备忘
+## v0.3 备忘
 
 - 抽帧看画面（ffmpeg 路已探好在 selftest 里）—— 没字幕的视频也能看懂
 - 评论区监听 + 草稿先审后发（bili-whale 的 reply-draft 模式）
 - 通知渠道（日记推送：stdout / webhook / 桌面）
 - GUI 设置页（挂进 DSH 设置区）
+- 抖音评论互动（Playwright 方案，个人号风控高）
+- QQ 发说说接入生物钟（让她像发 B站动态一样定时发空间）
 
 ## 致谢与许可
 
