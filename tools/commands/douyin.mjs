@@ -100,7 +100,7 @@ export function run(argv = []) {
   }
   if (cmd === 'comment') {
     const vid = arg(argv, '--vid')
-    const message = withOwner(arg(argv, '--message'), cfg)
+    const message = withOwner(arg(argv, '--message'), cfg)   // 纯文本 @主人 前缀
     if (!vid || !message) { console.error('用法：node feiyu.mjs douyin comment --vid <id> --message "…" [--go] [--cdp]'); process.exit(2) }
     const go = argv.includes('--go')
     const cdp = argv.includes('--cdp')
@@ -157,7 +157,7 @@ async function runInteract(cfg) {
       continue
     }
     if (!comment) { console.log('  ✗ 评论为空，跳过'); continue }
-    comment = withOwner(comment, cfg)   // @主人 前缀
+    comment = withOwner(comment, cfg)   // 纯文本 @主人 前缀
     const dry = douyinDry(cfg)
     if (dry) {
       console.log(`  【干跑 ✓】${v.vid} → ${comment}`)
