@@ -4,6 +4,7 @@
 //
 //   node feiyu.mjs selftest [--json]
 import fs from 'node:fs'
+import os from 'node:os'
 import { execFileSync } from 'node:child_process'
 import { configPath, dataPath, credentialsPath, WORK_DIR, diaryPath } from '../lib/paths.mjs'
 import { config } from '../lib/config.mjs'
@@ -98,10 +99,13 @@ export async function run(argv = []) {
   try { const c = new AbortController(); setTimeout(() => c.abort(), 1500); await fetch(sovitsUrl, { method: 'POST', signal: c.signal, body: '{}' }); ttsOk = true } catch {}
   add('语音 TTS（可选）', true, ttsOk ? `GPT-SoVITS 已连（${sovitsUrl}）` : 'GPT-SoVITS 未启动 —— 发 QQ 语音前先装（xiaoxiao 音色）')
 
-  // ⑭ 抖音（sau）
-  let sauOk = false
-  try { execFileSync('sau', ['--version'], { timeout: 5000, windowsHide: true, stdio: 'ignore' }); sauOk = true } catch {}
-  add('抖音·sau（可选）', true, sauOk ? 'social-auto-upload 已装' : 'sau 未装 —— 发抖音前 pip install social-auto-upload')
+  // ⑭ 抖音互动（douyin_interact.py + patchright 环境）
+  let dyOk = false
+  try { fs.accessSync('D:/social-auto-upload/douyin_interact.py'); fs.accessSync('D:/social-auto-upload/.venv/Scripts/python.exe'); dyOk = true } catch {}
+  let dyCookie = fs.existsSync(os.homedir() + '/.feiyu-ai/douyin-cookies.json')
+  add('抖音互动（可选）', true, dyOk
+    ? (dyCookie ? '脚本+环境+登录态就绪（刷视频/读评论/发评论可用，默认干跑）' : '脚本+环境就绪，但还没扫码登录 —— node feiyu.mjs douyin login')
+    : '抖音互动脚本未装 —— 需要 D:/social-auto-upload 下的 patchright 环境')
 
   const allOk = items.every(i => i.ok)
   if (allOk) {

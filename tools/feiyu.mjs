@@ -28,7 +28,7 @@ const COMMANDS = {
   mem: '三层记忆（remember/fact/lore/recall/old/stats）',
   'qq-server': 'QQ 常驻聊天服务（NapCat OneBot v11，实时秒回）',
   qzone: '发 QQ 空间说说（NapCat send_qzone_msg）',
-  douyin: '抖音发布（login/publish/images/check）',
+  douyin: '抖音互动（login/feed/comments/comment/interact）',
 }
 
 const cmd = process.argv[2]
