@@ -166,7 +166,8 @@ export function stickerPrompt(platform = 'qq') {
     lines.push(`想发图时，在回复最后单独写 [表情:标签]（标签：${tags.join('/')}，一次最多一个）。`)
     lines.push('如果这六个都不贴切，可以写 [自制表情:不超过八个字的短句] —— 会当场画一张文字贴纸。表情宁缺毋滥，没有就不写。')
   } else if (platform === 'bilibili') {
-    const faces = (readFaceCache() || BILI_FACES).filter(f => BILI_FACES.includes(f)).slice(0, 10)
+    const live = readFaceCache() || BILI_FACES
+    const faces = BILI_FACES.filter(f => live.includes(f)).slice(0, 10)   // 按精选顺序，别按面板顺序
     lines.push('这里是B站评论区，发不了图片，但可以用B站自带表情码，只能用这些：' +
       faces.map(f => `[${f}]`).join(' ') + '（一条最多一个，写在句尾自然的位置）。')
   } else {

@@ -26,9 +26,11 @@ assert.deepEqual(splitSticker('我先睡了 [自制表情:困死了 网络还没
 assert.equal(toPlain('真的笑死 [表情:开心]'), '真的笑死')
 
 // 3) 分平台清洗
-const bili = sanitizeFor('bilibili', '笑不活了 [大笑] [歪嘴] 真的')
+// 注意：真机上 readFaceCache() 会返回 447 个官方码（[歪嘴] 也是真的），
+// 所以这里用一个肯定不存在的码来验证「未知的要剥掉」。
+const bili = sanitizeFor('bilibili', '笑不活了 [大笑] [瞎编的码] 真的')
 assert.ok(bili.includes('[大笑]'), 'B站白名单表情码应该保留：' + bili)
-assert.ok(!bili.includes('[歪嘴]'), '白名单外的表情码应该剥掉：' + bili)
+assert.ok(!bili.includes('[瞎编的码]'), '不存在的表情码应该剥掉：' + bili)
 assert.ok(!bili.includes('[表情:'), '图片表情标记必须剥掉')
 const dy = sanitizeFor('douyin', '笑死 [大笑] [doge] 😂')
 assert.ok(!dy.includes('['), '抖音不认方括号表情码：' + dy)
