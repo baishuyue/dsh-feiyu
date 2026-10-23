@@ -79,6 +79,7 @@ window.__ModuleLoader__.load({
   padding:6px 9px;font:inherit;font-size:13px;min-width:0;outline:none}
 input.fy-input:focus,select.fy-input:focus,textarea.fy-input:focus{border-color:var(--dsw-alias-brand-primary,#3b6cf6)}
 input.fy-input{width:190px}
+input.fy-w-md{width:248px}
 input.fy-w-sm{width:84px}
 select.fy-input{min-width:250px}
 textarea.fy-input{width:100%;min-height:136px;resize:vertical;line-height:1.65;font-family:inherit}
@@ -89,7 +90,8 @@ textarea.fy-input{width:100%;min-height:136px;resize:vertical;line-height:1.65;f
 .fy-btn:disabled{opacity:.55;cursor:default}
 .fy-btn.primary{background:var(--dsw-alias-brand-primary,#3b6cf6);border-color:var(--dsw-alias-brand-primary,#3b6cf6);color:#fff}
 .fy-btn.primary:hover{filter:brightness(1.07)}
-.fy-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(196px,1fr));gap:10px}
+.fy-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+@media (max-width:460px){.fy-grid{grid-template-columns:1fr}}
 .fy-sw{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 12px;border-radius:10px;
   border:1px solid var(--dsw-alias-border-l2,color-mix(in srgb,currentColor 12%,transparent));
   background:var(--dsw-alias-bg-l2,color-mix(in srgb,currentColor 4%,transparent))}
@@ -388,25 +390,25 @@ textarea.fy-input{width:100%;min-height:136px;resize:vertical;line-height:1.65;f
 				},
 					h(Row, { label: "QQ 号" },
 						h("input", {
-							className: "fy-input", value: draft.ownerQQ, placeholder: "3082864371",
+							className: "fy-input fy-w-md", value: draft.ownerQQ, placeholder: "3082864371",
 							onChange: (e) => setDraft(Object.assign({}, draft, { ownerQQ: e.target.value })),
 							onBlur: () => save({ owner: { qq: draft.ownerQQ.trim() } }, "主人 QQ 已保存"),
 						})),
 					h(Row, { label: "称呼" },
 						h("input", {
-							className: "fy-input", value: draft.ownerName, placeholder: "她怎么叫你",
+							className: "fy-input fy-w-md", value: draft.ownerName, placeholder: "她怎么叫你",
 							onChange: (e) => setDraft(Object.assign({}, draft, { ownerName: e.target.value })),
 							onBlur: () => save({ owner: { name: draft.ownerName.trim() } }, "称呼已保存"),
 						})),
 					h(Row, { label: "B站 mid" },
 						h("input", {
-							className: "fy-input", value: draft.ownerMid, placeholder: "B站数字 UID",
+							className: "fy-input fy-w-md", value: draft.ownerMid, placeholder: "B站数字 UID",
 							onChange: (e) => setDraft(Object.assign({}, draft, { ownerMid: e.target.value })),
 							onBlur: () => save({ owner: { mid: draft.ownerMid.trim() } }, "B站 mid 已保存"),
 						})),
 					h(Row, { label: "微信 wxid" },
 						h("input", {
-							className: "fy-input", value: draft.ownerWechat, placeholder: "（可选）",
+							className: "fy-input fy-w-md", value: draft.ownerWechat, placeholder: "（可选）",
 							onChange: (e) => setDraft(Object.assign({}, draft, { ownerWechat: e.target.value })),
 							onBlur: () => save({ owner: { wechat: draft.ownerWechat.trim() } }, "已保存"),
 						}))),
@@ -476,12 +478,14 @@ textarea.fy-input{width:100%;min-height:136px;resize:vertical;line-height:1.65;f
 							onChange: (e) => setDraft(Object.assign({}, draft, { shareDaily: e.target.value })),
 							onBlur: () => save({ quota: { shareDaily: Number(draft.shareDaily) || 0 } }, "分享上限已保存"),
 						}),
-						h("span", { className: "fy-label", style: { minWidth: "auto", marginLeft: 12 } }, "抖音每次条数"),
+						h("span", { className: "fy-hint", style: { marginTop: 0 } }, "一天最多 @ 你几次")),
+					h(Row, { label: "抖音每次条数" },
 						h("input", {
 							className: "fy-input fy-w-sm", type: "number", min: 1, max: 5, value: draft.douyinCount,
 							onChange: (e) => setDraft(Object.assign({}, draft, { douyinCount: e.target.value })),
 							onBlur: () => save({ douyin: { maxPerRun: Number(draft.douyinCount) || 2 } }, "抖音条数已保存"),
-						}))),
+						}),
+						h("span", { className: "fy-hint", style: { marginTop: 0 } }, "一轮刷几条就收手（防 shadowban）"))),
 
 				// 角色设定
 				h(Card, {

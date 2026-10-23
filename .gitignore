@@ -4,3 +4,6 @@ node_modules/
 
 # 临时文件（建仓脚本等）
 .github-create-body.json
+
+# 预览产物（node scripts/build-preview.mjs 生成）
+preview/

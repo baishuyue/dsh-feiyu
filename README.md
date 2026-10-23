@@ -184,6 +184,9 @@ node tools/feiyu.mjs douyin images --dir out/imgs --desc "…"
 > 为什么不是网页？DSH 的插件路由带会话鉴权，浏览器直接开 `127.0.0.1:<DSH端口>/…` 只会拿到 401；
 > 而且各机器端口不固定（本机是 52430，39099 是别的软件占的）。长在客户端里就没有这个问题 ——
 > 和官方设置页、dsh-purge 走的是同一套 `settings.section` 槽位契约。
+>
+> 想先看外观再重启：`node scripts/build-preview.mjs` → `preview/panel.html`（离线渲染，配色跟随系统）。
+> 改完前端跑 `npm test`（契约 + 假 hooks 真渲染，防白屏）。
 
 ## 排障
 
