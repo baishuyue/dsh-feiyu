@@ -144,9 +144,9 @@ async function runInteract(cfg) {
   const feed = parseFeedJson(feedOut)
   let videos = (feed.videos || []).filter(v => v.desc && v.author).filter(v => matchPrefs(v, cfg))
   if (!videos.length) videos = (feed.videos || []).filter(v => v.desc && v.author)
-  console.log(`[interact] 口味过滤后剩 ${videos.length} 个候选，取前 3 个`)
+  console.log(`[interact] 口味过滤后剩 ${videos.length} 个候选，取前 2 个（抖音风控严，控量）`)
 
-  const top = videos.slice(0, 3)
+  const top = videos.slice(0, 2)
   for (const v of top) {
     console.log(`\n[interact] ② 看视频《${v.desc.slice(0, 40)}》（${v.author}）`)
     const commentsOut = runPy(['comments', '--vid', v.vid, '--headed'], cfg)
@@ -183,7 +183,11 @@ async function runInteract(cfg) {
       if (atUser) args.push('--at', atUser)
       args.push('--go', '--cdp')
       console.log(runPy(args, cfg))
+      // 风控：每条真发之间随机间隔 60~150 秒，避免连发被 shadowban
+      const wait = 60 + Math.floor(Math.random() * 90)
+      console.log(`  ⏳ 停 ${wait} 秒再发下一条（拟人节奏，躲风控）...`)
+      await new Promise(r => setTimeout(r, wait * 1000))
     }
   }
-  console.log('\n[interact] 完成。DRY_RUN 开着时只打印不真发；确认选题准了把 guard.dryRun 改 false 再跑 interact。')
+  console.log('\n[interact] 完成。抖音独立 dryRun（douyin.dryRun）控制是否真发；真发前请确认 CDP Chrome(9222) 已开。')
 }
