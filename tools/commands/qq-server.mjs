@@ -9,10 +9,42 @@ import http from 'node:http'
 import { config } from '../lib/config.mjs'
 import * as guard from '../lib/guard.mjs'
 import * as memory from '../lib/memory.mjs'
+import * as qqMemory from '../lib/qq-memory.mjs'
 import * as llm from '../lib/llm.mjs'
 import { buildMessages, thinkingInstruction } from '../lib/persona.mjs'
 import { splitSticker, pickSticker, FACE_FALLBACK, ensureSelfSticker } from '../lib/stickers.mjs'
 import { synth } from '../lib/tts.mjs'
+
+/** 把一段话拆成 1~3 条短消息 —— 真人不会一次甩一大段。 */
+export function splitBubbles(text, max = 3, perMax = 42) {
+  const src = String(text || '').trim()
+  if (!src) return []
+  if (src.length <= 20) return [src]
+  const parts = src.split(/(?<=[。！？!?…~～])/).map(s => s.trim()).filter(Boolean)
+  const out = []
+  for (const p of parts) {
+    const last = out[out.length - 1]
+    // 太碎的片段并到上一条；没有上一条就自己开一条
+    if (last !== undefined && (p.length <= 6 || last.length < 8)) out[out.length - 1] = last + p
+    else out.push(p)
+  }
+  // 超长的再按逗号补切一刀
+  const fit = []
+  for (const p of out) {
+    if (p.length <= perMax) { fit.push(p); continue }
+    const chunks = p.split(/(?<=[，,；;])/).map(x => x.trim()).filter(Boolean)
+    let buf = ''
+    for (const c of chunks) {
+      if (buf && buf.length + c.length > perMax) { fit.push(buf); buf = c }
+      else buf += c
+    }
+    if (buf) fit.push(buf)
+  }
+  if (fit.length <= max) return fit
+  // 超过上限：尾部全并进最后一条（宁可长一点，也别刷屏）
+  const head = fit.slice(0, max - 1)
+  return [...head, fit.slice(max - 1).join('')]
+}
 
 /** 解析 OneBot v11 消息（array 或 CQ 码字符串）→ 纯文本 + 是否 @ 了机器人。 */
 export function parseMessage(message, selfId) {
@@ -90,6 +122,19 @@ export async function run(argv = []) {
       if (config().guard?.dryRun) {
         console.log(`[qq][干跑] ${isGroup ? '群' + groupId : '私聊' + userId} → ${plain}${stickerFile ? ' [表情图]' : ''}`)
         memory.remember('qq', chatId, userId, 'assistant', plain || out)
+
+      // 长期记忆：跟主人私聊时，每 6 条回复把这段对话压成摘要 + 更新主人画像（不阻塞回复）
+      try {
+        const ownerQQ = String(config().owner?.qq || '')
+        if (!isGroup && ownerQQ && String(userId) === ownerQQ) {
+          qqMemory.bump(chatId)
+          if (qqMemory.due(chatId)) {
+            qqMemory.refresh({ chatId, owner: config().owner, chat: (m) => llm.chat(m) })
+              .then((ok) => { if (ok) console.log('[qq] 记忆已压缩（摘要 + 主人画像）') })
+              .catch((e) => console.error('[qq] 记忆压缩失败：', e.message))
+          }
+        }
+      } catch (e) { console.error('[qq] 记忆维护异常：', e.message) }
         return
       }
 
@@ -116,16 +161,38 @@ export async function run(argv = []) {
         }
       }
       if (!sent) {
-        const segs = []
-        if (plain) segs.push({ type: 'text', data: { text: plain } })
-        if (stickerFile) segs.push({ type: 'image', data: { file: 'file:///' + stickerFile.replace(/\\/g, '/') } })
-        if (!segs.length) segs.push({ type: 'text', data: { text: plain || out } })
-        sent = isGroup
-          ? await send('send_group_msg', { group_id: Number(groupId), message: segs })
-          : await send('send_private_msg', { user_id: Number(userId), message: segs })
-        if (stickerFile && sent) console.log(`[qq] 已发表情：${tag}`)
+        // 像人一样分条发：一句一条，间隔几百毫秒到一秒多（不是机械固定）
+        const bubbles = splitBubbles(plain)
+        const target = isGroup
+          ? { api: 'send_group_msg', key: 'group_id', id: Number(groupId) }
+          : { api: 'send_private_msg', key: 'user_id', id: Number(userId) }
+        for (let i = 0; i < bubbles.length; i++) {
+          if (i) await new Promise(r => setTimeout(r, 420 + Math.random() * 900))
+          const okOne = await send(target.api, { [target.key]: target.id, message: [{ type: 'text', data: { text: bubbles[i] } }] })
+          sent = sent || okOne
+        }
+        if (stickerFile) {
+          await new Promise(r => setTimeout(r, 300 + Math.random() * 500))
+          const okImg = await send(target.api, { [target.key]: target.id, message: [{ type: 'image', data: { file: 'file:///' + stickerFile.replace(/\\/g, '/') } }] })
+          sent = sent || okImg
+          if (okImg) console.log(`[qq] 已发表情：${tag || caption || '?'}`)
+        }
+        if (bubbles.length > 1) console.log(`[qq] 分 ${bubbles.length} 条发`)
       }
       memory.remember('qq', chatId, userId, 'assistant', plain || out)
+
+      // 长期记忆：跟主人私聊时，每 6 条回复把这段对话压成摘要 + 更新主人画像（不阻塞回复）
+      try {
+        const ownerQQ = String(config().owner?.qq || '')
+        if (!isGroup && ownerQQ && String(userId) === ownerQQ) {
+          qqMemory.bump(chatId)
+          if (qqMemory.due(chatId)) {
+            qqMemory.refresh({ chatId, owner: config().owner, chat: (m) => llm.chat(m) })
+              .then((ok) => { if (ok) console.log('[qq] 记忆已压缩（摘要 + 主人画像）') })
+              .catch((e) => console.error('[qq] 记忆压缩失败：', e.message))
+          }
+        }
+      } catch (e) { console.error('[qq] 记忆维护异常：', e.message) }
     } catch (e) {
       console.error('[qq] 处理失败：', e.message)
     }

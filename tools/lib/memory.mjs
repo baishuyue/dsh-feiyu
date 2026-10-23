@@ -6,10 +6,14 @@
 // 检索：2-gram 分词 + 关键词命中（十万条以内够用 —— dafeiyu 的原则：
 // 「别一开始就上向量库，人格才是瓶颈」）。
 import fs from 'node:fs'
+import path from 'node:path'
 import { dataPath } from './paths.mjs'
 
 const EP_FILE = dataPath('episodes.jsonl')
 const FACT_FILE = dataPath('facts.json')
+// QQ 有自己的记忆空间：单独一个 episodes 文件（跟微信/B站分开，也方便以后单独做"自我迭代"）。
+// 老数据还在主文件里，读取时两个文件一起读，所以换了位置也接得上。
+const QQ_EP_FILE = dataPath('qq', 'episodes.jsonl')
 const LORE_FILE = dataPath('lore.json')
 
 function readJson(file, fallback) {
@@ -40,6 +44,16 @@ export function tokens(text) {
 
 // ---------- 情节（episodes） ----------
 
+/** chatId 形如 qq:123456 → 'qq'。 */
+export function platformOf(chatId) {
+  return String(chatId || '').split(':')[0] || 'misc'
+}
+
+/** 平台对应的记忆文件：QQ 独立，其它（微信/B站/抖音）共用主文件。 */
+export function episodeFile(platform) {
+  return platform === 'qq' ? QQ_EP_FILE : EP_FILE
+}
+
 /** 记一条事件。role: user|assistant|event。summary 取前 120 字。 */
 export function remember(platform, chatId, userId, role, text) {
   const t = String(text ?? '')
@@ -47,23 +61,32 @@ export function remember(platform, chatId, userId, role, text) {
     ts: Date.now(), platform, chatId, userId, role,
     text: t, summary: t.slice(0, 120),
   }
-  fs.mkdirSync(dataPath(), { recursive: true })
-  fs.appendFileSync(EP_FILE, JSON.stringify(rec) + '\n')
+  const file = episodeFile(platform)
+  fs.mkdirSync(path.dirname(file), { recursive: true })
+  fs.appendFileSync(file, JSON.stringify(rec) + '\n')
+}
+
+/** 读某个会话的全部记忆行（主文件 + 平台专属文件，兼容老数据）。 */
+function readRows(chatId) {
+  const files = [...new Set([EP_FILE, episodeFile(platformOf(chatId))])]
+  const rows = []
+  for (const file of files) {
+    let lines = []
+    try { lines = fs.readFileSync(file, 'utf8').trim().split('\n').filter(Boolean) } catch { continue }
+    for (const line of lines) {
+      try {
+        const r = JSON.parse(line)
+        if (!chatId || r.chatId === chatId) rows.push(r)
+      } catch {}
+    }
+  }
+  rows.sort((a, b) => Number(a.ts) - Number(b.ts))
+  return rows
 }
 
 /** 最近 n 条对话（按 chatId 过滤，时间正序返回）。返回 {role, content} 格式，供 LLM 直接使用。 */
 export function recent(chatId, n = 8) {
-  const rows = []
-  try {
-    const lines = fs.readFileSync(EP_FILE, 'utf8').trim().split('\n').filter(Boolean)
-    for (let i = lines.length - 1; i >= 0 && rows.length < n; i--) {
-      try {
-        const r = JSON.parse(lines[i])
-        if (r.chatId === chatId) rows.push({ role: r.role, content: r.text })
-      } catch {}
-    }
-  } catch {}
-  return rows.reverse()
+  return readRows(chatId).slice(-n).map(r => ({ role: r.role, content: r.text }))
 }
 
 /** 关键词回忆：命中 >7 天前的旧事（用来「主动想起」）。 */
@@ -72,19 +95,13 @@ export function recall(query, n = 2, minDays = 7) {
   if (!qs.length) return []
   const cutoff = Date.now() - minDays * 86400_000
   const hits = []
-  try {
-    const lines = fs.readFileSync(EP_FILE, 'utf8').trim().split('\n').filter(Boolean)
-    for (const line of lines) {
-      try {
-        const r = JSON.parse(line)
-        if (r.role !== 'user' || Number(r.ts ?? 0) >= cutoff) continue
-        const grams = new Set(tokens(r.summary + r.text))
-        let hitCount = 0
-        for (const q of qs) if (grams.has(q)) hitCount++
-        if (hitCount > 0) hits.push({ hitCount, summary: r.summary, ts: r.ts })
-      } catch {}
-    }
-  } catch {}
+  for (const r of readRows('')) {
+    if (r.role !== 'user' || Number(r.ts ?? 0) >= cutoff) continue
+    const grams = new Set(tokens(r.summary + r.text))
+    let hitCount = 0
+    for (const q of qs) if (grams.has(q)) hitCount++
+    if (hitCount > 0) hits.push({ hitCount, summary: r.summary, ts: r.ts })
+  }
   hits.sort((a, b) => b.hitCount - a.hitCount || a.ts - b.ts)
   return hits.slice(0, n).map(h => h.summary)
 }
@@ -93,15 +110,9 @@ export function recall(query, n = 2, minDays = 7) {
 export function randomOld(days = 7, random = Math.random) {
   const cutoff = Date.now() - days * 86400_000
   const pool = []
-  try {
-    const lines = fs.readFileSync(EP_FILE, 'utf8').trim().split('\n').filter(Boolean)
-    for (const line of lines) {
-      try {
-        const r = JSON.parse(line)
-        if (r.role === 'user' && Number(r.ts ?? 0) < cutoff) pool.push(r.summary)
-      } catch {}
-    }
-  } catch {}
+  for (const r of readRows('')) {
+    if (r.role === 'user' && Number(r.ts ?? 0) < cutoff) pool.push(r.summary)
+  }
   if (!pool.length) return []
   return [pool[Math.floor(random() * pool.length)]]
 }
@@ -138,7 +149,9 @@ export function lore(tag) {
 
 export function stats() {
   let episodes = 0
-  try { episodes = fs.readFileSync(EP_FILE, 'utf8').trim().split('\n').filter(Boolean).length } catch {}
+  for (const file of [EP_FILE, QQ_EP_FILE]) {
+    try { episodes += fs.readFileSync(file, 'utf8').trim().split('\n').filter(Boolean).length } catch {}
+  }
   const f = readJson(FACT_FILE, {})
   return {
     episodes,

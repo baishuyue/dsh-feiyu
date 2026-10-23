@@ -64,6 +64,13 @@ function phaseText(now = new Date()) {
  * 注入提示的【当下状态】块 —— dafeiyu persona.py state_block 的移植。
  * @returns {string}
  */
+const PLATFORM_STATE = {
+  qq: 'QQ（私聊或群聊，按上下文判断；私聊像真人聊天，群聊话短一点）',
+  wechat: '微信私聊（一句一句聊，别写成一大段）',
+  bilibili: 'B站评论区/动态（允许碎碎念，但别刷屏）',
+  douyin: '抖音评论区（一句话接住梗就够）',
+}
+
 export function stateBlock(turnsToday = 0, platform = 'bilibili') {
   const now = new Date()
   const m = readState()
@@ -76,7 +83,7 @@ export function stateBlock(turnsToday = 0, platform = 'bilibili') {
     `情绪 ${Math.round(m.value)}/100：${style}`,
     hunger,
     `今天已经聊了 ${turnsToday} 轮。${turnsToday > 40 ? '有点累了，敷衍一点。' : ''}`,
-    `当前平台：${platform}（评论区/动态，允许碎碎念，但别刷屏）。`,
+    `当前平台：${PLATFORM_STATE[platform] || platform}。`,
   ].filter(Boolean)
   return '【当下状态】\n' + lines.join('\n')
 }

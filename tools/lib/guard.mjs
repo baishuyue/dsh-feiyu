@@ -32,12 +32,25 @@ function grams(s, n = 3) {
 }
 
 /** 清洗：去黑名单词、剥 markdown、压空白。 */
+// 客服/AI 腔，真人不会这么说。宁可删掉，也别让她像个助手。
+const AI_TONE = [
+  /希望(这|以上|我的回答)?(能|可以)?(对你)?(有|有所)?(帮助|帮到你|帮上忙)[。！!~～]?/g,
+  /(总的来说|综上所述|总而言之)[，,：:]?/g,
+  /作为一个?(AI|人工智能|语言模型)[，,]?/gi,
+  /(首先|其次|另外|最后)[，,]/g,
+  /如果你(还)?(有|需要)(其他|别的)?(问题|需要)[，,]?[^。！？\n]*[。！？]?/g,
+  /(以上|就这些)[。，,]?(希望|祝)[^。\n]*[。！]?/g,
+  /^(AI|人工智能)[，,]\s*/,
+]
+
 export function clean(text, cfg = config()) {
   let t = String(text ?? '')
   for (const bad of cfg.guard?.banned ?? []) t = t.split(bad).join('')
   t = t.replace(/\*\*(.+?)\*\*/g, '$1')
   t = t.replace(/`{1,3}/g, '')
   t = t.replace(/\n{3,}/g, '\n\n')
+  for (const re of AI_TONE) t = t.replace(re, '')
+  t = t.replace(/[ \t]{2,}/g, ' ')
   return t.trim()
 }
 

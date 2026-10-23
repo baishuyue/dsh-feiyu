@@ -8,6 +8,7 @@ import { homePath } from './paths.mjs'
 import { stateBlock } from './mood.mjs'
 import * as memory from './memory.mjs'
 import { stickerPrompt } from './stickers.mjs'
+import * as qqMemory from './qq-memory.mjs'
 
 /** 人设文件（与 B站会话共用同一份，换机器连 ~/.feiyu-ai 一起拷）。 */
 export function personaText() {
@@ -29,10 +30,16 @@ function identityLine(cfg) {
 }
 
 const PLATFORM_HINTS = {
-  qq: '群里人多，话要短，别刷屏；私聊可以松一点，像聊天。',
+  qq: `群里人多，话要短，别刷屏；私聊可以松一点，像聊天。
+【说话的样子】像真人发消息：一条就一两句、最多三句；内容多了分几条说，别写成一大段；不用敬语、不总结、不列点。
+【读人】别只当答题机器。留意他的节奏和情绪：连着发好几条多半是急了或烦了；只回一个字多半是累了；
+半夜找你通常是想有人陪。先接住情绪，再给建议；他说的"没事"常常是有事，可以轻轻再问一句。`,
   douyin: '评论区，一句话接住梗就够。',
   bilibili: '动态/评论区，允许一点点碎碎念。',
 }
+
+/** 每个平台愿意塞多少条原文对话（QQ 有滚动摘要兜底，所以敢多带）。 */
+const RECENT_N = { qq: 24, wechat: 12, bilibili: 8, douyin: 8 }
 
 /** 对方是不是主人 —— 决定她用"黏主人"还是"对网友"的语气，也是隐私红线。 */
 function ownerLine(cfg, platform, userId) {
@@ -41,7 +48,12 @@ function ownerLine(cfg, platform, userId) {
     (platform === 'qq' && owner.qq && String(userId) === String(owner.qq)) ||
     (platform === 'wechat' && owner.wechat && String(userId) === String(owner.wechat))
   if (isOwner) {
-    return `【对方是你的主人】账号 ${userId} 就是你主人本人。认出他、亲近他：可以主动撒娇、汇报今天做了什么、惦记他吃饭没；不用客套，但别黏到烦人。`
+    // ⚠️ 这里以前写的是"账号 xxx 就是你主人"，模型于是拿这串数字当称呼，张口就是"3082864371"。
+    // 号码只是识别用的编号，称呼必须用人名。
+    const call = owner.name ? `「${owner.name}」` : '「主人」'
+    return `【对方是你的主人】他就是你主人本人。`
+      + `（${platform === 'qq' ? 'QQ' : '微信'}号 ${userId} 只是系统用来认人的编号，**绝对不要用这串数字称呼他**，也别在聊天里提这串数字——除非他直接问「我QQ多少」，那种情况照实回答。）`
+      + `叫他${call}。亲近他：可以主动撒娇、汇报今天做了什么、惦记他吃饭没；不用客套，但别黏到烦人。`
   }
   return `【对方不是主人】你在跟一个普通网友说话（账号 ${userId}）。礼貌但保持距离，绝不透露主人的任何隐私（账号/路径/私聊内容），也别装得跟他很熟。`
 }
@@ -66,6 +78,16 @@ export function buildMessages({ platform = 'qq', userText, chatId, userId, turns
   // 记忆层
   const facts = memory.facts(userId)
   if (facts.length) parts.push('你记得关于对方的事：\n- ' + facts.slice(-8).join('\n- '))
+  // QQ 的长期记忆：主人画像 + 这个会话的滚动摘要（微信/B站不带，各自独立）
+  if (platform === 'qq') {
+    const profile = qqMemory.loadProfile()
+    if (profile) parts.push('【关于主人你知道的】（长期观察，别一次全倒出来）\n' + profile)
+    const sum = qqMemory.loadSummary(chatId)
+    if (sum) parts.push('【你们最近】\n' + sum)
+    const world = qqMemory.worldBlock()   // 她刷 B站/抖音 带回来的见闻 —— 人格是"我设定的 + 她自己经历的"
+    if (world) parts.push(world)
+  }
+
   const recalled = memory.recall(userText)
   const old = recalled.length ? recalled : memory.randomOld()
   if (old.length) parts.push('你隐约记得这些（可以自然提起，别逐字复述）：\n- ' + old.join('\n- '))
@@ -77,7 +99,7 @@ export function buildMessages({ platform = 'qq', userText, chatId, userId, turns
   parts.push(stickerPrompt(platform))
 
   const sys = { role: 'system', content: parts.join('\n\n') }
-  const recent = memory.recent(chatId)
+  const recent = memory.recent(chatId, RECENT_N[platform] ?? 10)
   return [sys, ...recent, { role: 'user', content: userText }]
 }
 
