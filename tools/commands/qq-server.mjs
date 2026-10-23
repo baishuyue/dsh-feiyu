@@ -11,6 +11,7 @@ import * as guard from '../lib/guard.mjs'
 import * as memory from '../lib/memory.mjs'
 import * as llm from '../lib/llm.mjs'
 import { buildMessages, thinkingInstruction } from '../lib/persona.mjs'
+import { splitSticker, pickSticker, FACE_FALLBACK } from '../lib/stickers.mjs'
 import { synth } from '../lib/tts.mjs'
 
 /** 解析 OneBot v11 消息（array 或 CQ 码字符串）→ 纯文本 + 是否 @ 了机器人。 */
@@ -78,10 +79,16 @@ export async function run(argv = []) {
       const out = guard.clean(answer, config())
       if (!out) return
 
+      // 表情：文字和 [表情:标签] 拆开发（NapCat 图片段）
+      const { text: body, tag } = splitSticker(out)
+      const stickerFile = tag ? pickSticker(tag) : null
+      const plain = body || (stickerFile ? '' : (FACE_FALLBACK[tag] || ''))
+      if (!plain && !stickerFile) return
+
       // 干跑：只打印不真发（dafeiyu 铁律：第一周先观察）
       if (config().guard?.dryRun) {
-        console.log(`[qq][干跑] ${isGroup ? '群' + groupId : '私聊' + userId} → ${out}`)
-        memory.remember('qq', chatId, userId, 'assistant', out)
+        console.log(`[qq][干跑] ${isGroup ? '群' + groupId : '私聊' + userId} → ${plain}${stickerFile ? ' [表情图]' : ''}`)
+        memory.remember('qq', chatId, userId, 'assistant', plain || out)
         return
       }
 
@@ -94,9 +101,9 @@ export async function run(argv = []) {
 
       // 语音 or 文字（语音失败一律降级文字，内容不丢）
       let sent = false
-      if (QQ.voice_enabled && Math.random() < (Number(QQ.voice_chance) || 0.15)) {
+      if (QQ.voice_enabled && plain && Math.random() < (Number(QQ.voice_chance) || 0.15)) {
         try {
-          const audio = await synth(out)
+          const audio = await synth(plain)
           const seg = { type: 'record', data: { file: audio } }   // NapCat 自动转 silk
           sent = isGroup
             ? await send('send_group_msg', { group_id: Number(groupId), message: [seg] })
@@ -108,11 +115,16 @@ export async function run(argv = []) {
         }
       }
       if (!sent) {
+        const segs = []
+        if (plain) segs.push({ type: 'text', data: { text: plain } })
+        if (stickerFile) segs.push({ type: 'image', data: { file: 'file:///' + stickerFile.replace(/\\/g, '/') } })
+        if (!segs.length) segs.push({ type: 'text', data: { text: plain || out } })
         sent = isGroup
-          ? await send('send_group_msg', { group_id: Number(groupId), message: [{ type: 'text', data: { text: out } }] })
-          : await send('send_private_msg', { user_id: Number(userId), message: [{ type: 'text', data: { text: out } }] })
+          ? await send('send_group_msg', { group_id: Number(groupId), message: segs })
+          : await send('send_private_msg', { user_id: Number(userId), message: segs })
+        if (stickerFile && sent) console.log(`[qq] 已发表情：${tag}`)
       }
-      memory.remember('qq', chatId, userId, 'assistant', out)
+      memory.remember('qq', chatId, userId, 'assistant', plain || out)
     } catch (e) {
       console.error('[qq] 处理失败：', e.message)
     }

@@ -7,6 +7,7 @@ import { config } from './config.mjs'
 import { homePath } from './paths.mjs'
 import { stateBlock } from './mood.mjs'
 import * as memory from './memory.mjs'
+import { stickerPrompt } from './stickers.mjs'
 
 /** 人设文件（与 B站会话共用同一份，换机器连 ~/.feiyu-ai 一起拷）。 */
 export function personaText() {
@@ -71,6 +72,9 @@ export function buildMessages({ platform = 'qq', userText, chatId, userId, turns
 
   // 状态层（平台提示 + 情绪 + 时段）
   parts.push(stateBlock(turnsToday, platform) + (PLATFORM_HINTS[platform] ? '\n' + PLATFORM_HINTS[platform] : ''))
+
+  // 表情层：颜文字随处可用；[表情:标签] 只有 QQ/微信 会真的发图
+  parts.push(stickerPrompt(platform))
 
   const sys = { role: 'system', content: parts.join('\n\n') }
   const recent = memory.recent(chatId)

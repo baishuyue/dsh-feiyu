@@ -11,6 +11,7 @@ import { config } from '../lib/config.mjs'
 import { validateShare } from '../lib/share-policy.mjs'
 import * as guard from '../lib/guard.mjs'
 import * as memory from '../lib/memory.mjs'
+import { toPlain } from '../lib/stickers.mjs'
 
 function arg(argv, name) {
   const i = argv.indexOf(name)
@@ -60,6 +61,8 @@ export async function run(argv = []) {
 
   // ③ 内容清洗（预览和真发都要）
   message = guard.clean(message, cfg)
+  // 评论区发不了图片表情：剥掉 [表情:x]，只留文字 + 颜文字
+  message = toPlain(message)
   if (!message) { console.error('✗ 清洗后内容为空'); process.exit(1) }
   const chatId = `bilibili:${bvid}`
 

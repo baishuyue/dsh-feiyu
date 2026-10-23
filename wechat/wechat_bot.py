@@ -27,6 +27,7 @@ import difflib
 import io
 import json
 import os
+import re
 import sys
 import threading
 import time
@@ -50,6 +51,7 @@ LOG_PATH = os.path.join(MEMORY_DIR, "wechat-bot.log")
 LOCK_PATH = os.path.join(MEMORY_DIR, "wechat-bot.lock")
 WATERMARK_PATH = os.path.join(MEMORY_DIR, "wechat-watermark.json")
 PERSONA_PATH = os.path.join(MEMORY_DIR, "persona.md")
+STICKER_DIR = os.path.join(MEMORY_DIR, "stickers")
 
 
 # ── 单实例锁：第二个实例直接退出（重复发送的根因）──────────────────────────────
@@ -211,6 +213,83 @@ def _resp_of(resp):
     return "?", str(resp)
 
 
+def _norm(text: str) -> str:
+    """比对用：去空白、统一标点，避免「同一句但多了个句号」骗过去。"""
+    t = "".join(str(text or "").split())
+    for ch in "，。！？、…~～“”\"'（）()：:；;":
+        t = t.replace(ch, "")
+    return t
+
+
+def _similar(a: str, b: str) -> float:
+    if not a or not b:
+        return 0.0
+    if a == b:
+        return 1.0
+    return difflib.SequenceMatcher(None, a, b).ratio()
+
+
+# ── 表情包 / 颜文字（和 QQ / B站 / 抖音共用 ~/.feiyu-ai/stickers）────────────
+FACE_FALLBACK = {
+    "开心": "(๑˃̵ᴗ˂̵)و",
+    "无语": "(・_・;)",
+    "委屈": "(｡•́︿•̀｡)",
+    "生气": "(╯°□°）╯",
+    "困": "(－_－) zzZ",
+    "比心": "(♡˙︶˙♡)",
+}
+DEFAULT_TAGS = list(FACE_FALLBACK)
+_MARK = re.compile(r"[\[【]\s*表情\s*[:：]\s*([^\]】\s]{1,10})\s*[\]】]")
+_IMG = re.compile(r"\.(png|jpe?g|gif|webp)$", re.I)
+
+
+def list_stickers():
+    out = {}
+    try:
+        for tag in os.listdir(STICKER_DIR):
+            d = os.path.join(STICKER_DIR, tag)
+            if not os.path.isdir(d):
+                continue
+            files = [os.path.join(d, f) for f in os.listdir(d) if _IMG.search(f)]
+            if files:
+                out[tag] = sorted(files)
+    except Exception:
+        pass
+    return out
+
+
+def available_tags():
+    have = list_stickers()
+    return list(have) if have else DEFAULT_TAGS
+
+
+def pick_sticker(tag: str):
+    files = list_stickers().get(tag)
+    return files[0] if files else None
+
+
+def split_sticker(text: str):
+    """(文字, 标签)。标签为 None 表示没写 [表情:x]。"""
+    tag = None
+
+    def _take(m):
+        nonlocal tag
+        if tag is None:
+            tag = m.group(1).strip()
+        return ""
+
+    body = _MARK.sub(_take, str(text or "")).strip()
+    return body, tag
+
+
+def sticker_rule():
+    tags = available_tags()
+    if list_stickers():
+        return ("8. 表情：偶尔带一个颜文字或 emoji（一句最多一个）。想发图就在回复最后单独写 "
+                f"[表情:标签]，标签只能用：{'/'.join(tags)}，一次最多一个，没有贴切的就别写。")
+    return "8. 表情：偶尔带一个颜文字或 emoji（一句最多一个），别每句都带。"
+
+
 # ── 主体 ────────────────────────────────────────────────────────────────────
 class Bot:
     def __init__(self, wx, db):
@@ -227,6 +306,10 @@ class Bot:
         self.self_username = ""
         self.title_cache = {}
         self.reply_times = deque(maxlen=40)   # 全局限速用
+        # 这一批消息已经回过没有：chat_id -> deque[(ts, joined, reply)]
+        # 出口查重只能拦「措辞相似的回复」，拦不住「同一个问题被重放、模型换了个说法」，
+        # 所以要在入站这一层按「整批内容」再拦一道。
+        self.answered = {}
         self.stats = {"in": 0, "dup": 0, "skip": 0, "out": 0}
         # 会话水位（chat → 已处理的最大 sort_seq）：落盘，进程重启后不重放旧消息
         self.wm = {}
@@ -402,6 +485,18 @@ class Bot:
         n = int(wcfg.get("context_n") or 12)
         smart = wcfg.get("smart_skip", True)
 
+        # —— 整批去重：同一批消息在窗口期内已经回过了，就别再回（换措辞也不行）——
+        batch_key = _norm("\n".join(items))
+        ttl = float(wcfg.get("repeat_guard_sec") or (600 if len(items) > 1 else 90))
+        now = time.time()
+        with self.lock:
+            prev = list(self.answered.get(chat_id, ()))
+        for ts, old_key, old_reply in prev:
+            if now - ts < ttl and _similar(old_key, batch_key) >= 0.9:
+                self.stats["skip"] += 1
+                log(f"[跳过] {title[:16]} · 这批话已经回过一次了（{int(now - ts)}s 前：“{old_reply[:16]}”）")
+                return
+
         hist = self.mem.recent(chat_id, n)
         # 最后若干条里，把刚收到的这批摘出去（它们已经在 hist 里，不能重复喂）
         joined = "\n".join(items)
@@ -415,7 +510,7 @@ class Bot:
         extra = ""
         if smart:
             extra = "\n\n【现在】如果这批消息不需要你接话，就只输出 [SKIP]。"
-        msgs = [{"role": "system", "content": persona + "\n\n" + RULES + extra}]
+        msgs = [{"role": "system", "content": persona + "\n\n" + RULES + "\n" + sticker_rule() + extra}]
         msgs += hist
         msgs.append({"role": "user", "content": joined if len(items) > 1 else items[0]})
 
@@ -442,7 +537,9 @@ class Bot:
                     return
             self.sent_recent.setdefault(chat_id, deque(maxlen=6)).append((time.time(), reply))
 
-        self.mem.add(chat_id, "assistant", reply)
+        self.mem.add(chat_id, "assistant", split_sticker(reply)[0] or reply)
+        with self.lock:
+            self.answered.setdefault(chat_id, deque(maxlen=8)).append((time.time(), batch_key, reply))
         with self.out_cv:
             self.out_q.append((title, reply, chat_id))
             self.out_cv.notify()
@@ -463,6 +560,12 @@ class Bot:
 
     def deliver(self, title, text):
         """真正的一次发送（含每分钟限速）。拆出来是为了单测能直接调。"""
+        body, tag = split_sticker(text)
+        img = pick_sticker(tag) if tag else None
+        if not body and not img and tag in FACE_FALLBACK:
+            body = FACE_FALLBACK[tag]      # 图库空着也不能哑巴
+        if not body and not img:
+            return
         cfg, wcfg, _ = self.cfg()
         rpm = int(wcfg.get("max_replies_per_min") or 8)
         now = time.time()
@@ -478,21 +581,37 @@ class Bot:
             time.sleep(wait)
 
         t0 = time.time()
-        resp = self.wx.SendMsg(text, title)
-        status, msg = _resp_of(resp)
-        cost = time.time() - t0
-        if status != "成功" and ("会话没打开" in msg or "输入框没定位" in msg):
-            log(f"[重试] {title[:16]} 会话没打开，再试一次：{msg[:40]}")
-            resp = self.wx.SendMsg(text, title)
+        if body:
+            resp = self.wx.SendMsg(body, title)
             status, msg = _resp_of(resp)
+            if status != "成功" and ("会话没打开" in msg or "输入框没定位" in msg):
+                log(f"[重试] {title[:16]} 会话没打开，再试一次：{msg[:40]}")
+                resp = self.wx.SendMsg(body, title)
+                status, msg = _resp_of(resp)
             cost = time.time() - t0
-        with self.lock:
-            self.reply_times.append(time.time())
-        if status == "成功":
-            self.stats["out"] += 1
-            log(f"[发出] {title[:16]} ← {text[:40]}（{cost:.1f}s）")
-        else:
-            log(f"[失败] {title[:16]}：{msg[:60]}")
+            with self.lock:
+                self.reply_times.append(time.time())
+            if status == "成功":
+                self.stats["out"] += 1
+                log(f"[发出] {title[:16]} ← {body[:40]}（{cost:.1f}s）")
+            else:
+                log(f"[失败] {title[:16]}：{msg[:60]}")
+        if img:
+            try:
+                r = self.wx.SendFiles(img, title)
+                st, m2 = _resp_of(r)
+                with self.lock:
+                    self.reply_times.append(time.time())
+                log(f"[表情] {title[:16]} ← {tag}（{st}）" if st == "成功" else f"[表情失败] {title[:16]}：{m2[:50]}")
+                if st != "成功" and tag in FACE_FALLBACK:
+                    self.wx.SendMsg(FACE_FALLBACK[tag], title)
+            except Exception as e:
+                log(f"[表情失败] {title[:16]}：{str(e)[:80]}")
+                if tag in FACE_FALLBACK:
+                    try:
+                        self.wx.SendMsg(FACE_FALLBACK[tag], title)
+                    except Exception:
+                        pass
 
 
 def main():
