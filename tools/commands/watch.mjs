@@ -28,7 +28,7 @@ function runPy(argv, cfg) {
   try {
     return execFileSync(pyPath(cfg), [scriptPath(cfg), ...argv, '--cookie', cookiePath(cfg)], { encoding: 'utf8', timeout: 300000, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
   } catch (e) {
-    throw new Error(String(e.stderr ?? e.message).slice(0, 400))
+    throw new Error(String(e.stderr ?? e.message).slice(0, 3000))
   }
 }
 function jsonOf(out) { const m = String(out).match(/\{[\s\S]*\}/); if (!m) return {}; try { return JSON.parse(m[0]) } catch { return {} } }
@@ -80,7 +80,7 @@ export async function run(argv = []) {
         feed = jsonOf(runPy(silent ? ['feed'] : ['feed', '--headed'], cfg))
         feedOk = true
       } catch (e) {
-        log(`[watch] feed 失败（第 ${attempt}/3 次）：${String(e.message).slice(0, 160)}`)
+        log(`[watch] feed 失败（第 ${attempt}/3 次）：${String(e.message).slice(0, 3000)}`)
         if (attempt < 3) await sleep(5000 * attempt)
       }
     }

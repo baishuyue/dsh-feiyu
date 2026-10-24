@@ -58,7 +58,10 @@ export function isPending(state, now = Date.now()) {
     Number.isFinite(state.atMs) && Number.isFinite(state.endsAt) && state.endsAt > now
 }
 export function makePlan(cfg, state = {}, now = Date.now(), random = Math.random) {
-  if (isPending(state, now)) return state
+  // 关键修复：isPending 只查"有没有未完成的计划"，不查"这个计划的窗口还是不是当前配置的窗口"。
+  // 用户把作息从 20:00 改成 17:00 后，旧的 pending 计划（20:00–24:00）会被直接复用，导致新窗口不生效。
+  // 这里补一条：pending 计划的 windowKey 必须仍在当前配置的 occurrences 里，否则作废重算。
+  if (isPending(state, now) && occurrences(cfg, now).some(w => w.key === state.windowKey)) return state
   const history = historyOf(state, now)
   const done = reason => ({ ...history, action: 'done', done: true, reason })
   if (history.wakes >= maxWakes(cfg)) return done('今天醒来次数已用完（或所有窗口为零次）')
