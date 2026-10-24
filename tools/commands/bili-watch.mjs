@@ -64,7 +64,8 @@ export async function run(argv = []) {
 
   let done = 0
   let items = []
-  let shareQuotaOut = false   // 分享额度用完 → 后面只看不 @，别每条都报错刷屏
+  let shareQuotaOut = false   // 分享额度用完 → 只跳过评论，弹幕/点赞/投币照常
+  let quotaFailAt = 0         // 额度判死的时间：10 分钟后自动重试（主人可能刚改配置 0=不限）
   let lastReplyScan = 0       // 回评论扫描节流：30 分钟一次
   while (done < max) {
     try { items = jsonOf(runFeiyu(['feed', '--json'])).items || [] } catch (e) {
@@ -83,7 +84,7 @@ export async function run(argv = []) {
       log(`\n[bili-watch] 看《${it.title}》(${bvid})`)
       memory.remember('bilibili', `bilibili:${bvid}`, it.owner || '', 'event', String(it.title).slice(0, 120))
       let ctx = ''
-      try { ctx = runFeiyu(['debrief', '--bvid', bvid]) } catch { ctx = it.title }
+      try { ctx = runFeiyu(['debrief', '--bvid', bvid]); log('  📖 ' + String(ctx).split('\n').filter(Boolean).slice(-2).join(' ').slice(0, 120)) } catch { ctx = it.title }
       const ctxBrief = ctx.replace(/\n+/g, ' ').slice(0, 1200)
 
       let comment = '', reason = '', score = 15, danmaku = '', sticker = ''
@@ -101,13 +102,23 @@ export async function run(argv = []) {
       } catch (e) { log('[bili-watch] 评论生成失败：' + e.message); continue }
 
       if (!comment) { log('  ✗ 评论为空，跳过'); continue }
-      if (shareQuotaOut) { log('  💤 分享额度已用完，这条只看不 @'); done++; if (restMs > 0) await sleep(restMs + Math.random() * 60_000); continue }
-      const args = ['comment', '--share', '--bvid', bvid, '--message', comment, '--reason', reason, '--score', String(Math.round(score)), '--rank', '1']
-      if (!dry) args.push('--go')
-      try { log(runFeiyu(args)) } catch (e) {
-        if (/额度|上限/.test(String(e.message))) { shareQuotaOut = true; log('  💤 分享额度用完，后面只看不 @') }
-        else if (/已发过/.test(String(e.message))) { log('  💤 这条发过了，跳过') }
-        else log('[bili-watch] 评论失败：' + e.message)
+      // 额度重试：主人可能刚把 shareDaily 改成 0（不限），10 分钟后自动再试，别锁死到天明
+      if (shareQuotaOut && Date.now() - quotaFailAt > 10 * 60_000) {
+        shareQuotaOut = false
+        log('  🔁 分享额度重试中（配置可能已改）')
+      }
+      if (dry) {
+        log(`  【干跑 ✓】评论：${comment.slice(0, 60)}`)
+      } else if (shareQuotaOut) {
+        log('  💤 分享额度用完，这条只看不 @（弹幕点赞照常）')
+      } else {
+        const args = ['comment', '--share', '--bvid', bvid, '--message', comment, '--reason', reason, '--score', String(Math.round(score)), '--rank', '1', '--go']
+        try { log(runFeiyu(args)) } catch (e) {
+          const msg = String(e.message)
+          if (/额度|上限/.test(msg)) { shareQuotaOut = true; quotaFailAt = Date.now(); log('  💤 分享额度用完，后面只看不 @') }
+          else if (/已发过/.test(msg)) { log('  💤 这条发过了，跳过') }
+          else log('[bili-watch] 评论失败：' + msg)
+        }
       }
       done++
       // 弹幕：LLM 觉得值得才发（danmaku.enabled + 日额度在 bili-write 里把关）

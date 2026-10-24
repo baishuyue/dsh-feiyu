@@ -22,8 +22,10 @@ export function capOk(kind, max) { return !(Number(max) > 0) || actCount(kind) <
 export function capRecord(kind) {
   const j = readActs()
   const fresh = j.day !== dayKey()
+  // ⚠️ 展开顺序：旧值必须在前，新值在后 —— 以前写反了（...j 在后把刚 +1 的值又覆盖回去，账本永远 1）
+  const next = fresh ? { day: dayKey(), [kind]: 1 } : { ...j, day: dayKey(), [kind]: Number(j[kind] ?? 0) + 1 }
   fs.mkdirSync(path.dirname(ACT_FILE), { recursive: true })
-  fs.writeFileSync(ACT_FILE, JSON.stringify({ day: dayKey(), [kind]: (fresh ? 0 : Number(j[kind] ?? 0)) + 1, ...(!fresh ? j : {}) }))
+  fs.writeFileSync(ACT_FILE, JSON.stringify(next))
 }
 export const actStats = () => { const j = readActs(); return j.day === dayKey() ? j : {} }
 
@@ -76,8 +78,26 @@ export async function sendDanmaku(bvid, rawText, { go = false, atSec = 0 } = {})
     progress: String(at * 1000), fontsize: '25', pool: '0', mode: '1', color: '16777215', rnd: String(Date.now()).slice(0, -3), plat: '1',
   })
   const res = okOf(j)
-  if (res.ok) capRecord('danmaku')
-  return { ...res, why: res.ok ? `弹幕已发（第 ${at}s）：${text}` : `弹幕失败 code=${res.code} ${res.message}` }
+  if (res.ok) { capRecord('danmaku'); return { ...res, why: `弹幕已发（第 ${at}s）：${text}` } }
+  // 直连被拦（B站对脚本直连的写接口回 HTML 拦截页，json 解析失败 code=-1）→ CDP 真浏览器页内发
+  if (Number(res.code) === -1 || Number(res.code) === -400) {
+    try {
+      const { execFile } = await import('node:child_process')
+      const full = await import('./config.mjs')
+      const py = full.config().douyin?.python || 'D:/social-auto-upload/.venv/Scripts/python.exe'
+      const out = await new Promise((resolve) => {
+        execFile(py, ['D:/social-auto-upload/bili_act_cdp.py', 'dm', bvid, text, String(at)],
+          { encoding: 'utf8', timeout: 180000, windowsHide: true }, (e2, so, se) => resolve(String((so || se || e2?.message) || '')))
+      })
+      if (out.includes('SEND_DM') && (/"code"\s*:\s*0/.test(out) || /"action"/.test(out) === false && / SEND_DM:\s*\{/.test(out))) {
+        // post.so 成功时返回的 JSON 里没有 code 字段（老接口），只要不是 NEED_LOGIN/报错就算成
+        capRecord('danmaku'); return { ok: true, why: `弹幕已发（CDP 通道，第 ${at}s）：${text}` }
+      }
+      if (out.includes('NEED_LOGIN')) return { ok: false, why: '弹幕需要先在 CDP Chrome 里登录一次B站（扫码）' }
+      return { ok: false, why: '弹幕失败：' + out.slice(-120) }
+    } catch (e2) { return { ok: false, why: 'CDP 弹幕失败：' + String(e2?.message ?? e2).slice(0, 120) } }
+  }
+  return { ...res, why: `弹幕失败 code=${res.code} ${res.message}` }
 }
 
 // ── ② 文字动态 ────────────────────────────────────────────────────────────
@@ -129,9 +149,11 @@ export async function likeVideo(bvid, { go = false } = {}) {
   if (!capOk('like', Number(cfg.likeDaily ?? 10))) return { ok: false, why: '今日点赞额度已用完' }
   const cred = loadCred()
   const j = await formPost(cred, 'https://api.bilibili.com/x/web-interface/archive/like', { aid: String(info.aid), like: '1' })
-  const res = okOf(j)
-  if (res.ok) capRecord('like')
-  return { ...res, why: res.ok ? '已点赞' : `点赞失败 ${res.message}` }
+  // "重复点赞"（code 65006）是幂等结果：已经赞过，当成功处理（不占当日额度）
+  const dup = Number(j?.code) === 65006 || /重复/.test(String(j?.message ?? ''))
+  const res = { ...okOf(j), ok: Number(j?.code) === 0 || dup }
+  if (res.ok && !dup) capRecord('like')
+  return { ...res, why: res.ok ? (dup ? '已赞过（幂等）' : '已点赞') : `点赞失败 ${res.message}` }
 }
 
 /** 投币（真金白银，默认 1 枚、每天 1 枚上限）。 */
