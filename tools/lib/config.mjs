@@ -77,6 +77,10 @@ export const DEFAULTS = {
     text_lang: 'zh',
     media_type: 'wav',
     streaming_mode: false,
+    // 语音服务（GPT-SoVITS）随 DSH 自动拉起，避免"有开关没声音"
+    autoStartSovits: true,
+    sovitsCmd: 'D:/GPT-SoVITS/.venv/Scripts/python.exe',
+    sovitsScript: 'D:/GPT-SoVITS/api_v2.py',
   },
 
   // 抖音（social-auto-upload 发布）

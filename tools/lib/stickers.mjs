@@ -160,11 +160,11 @@ export function ensureSelfSticker(caption, cfg) {
 export function stickerPrompt(platform = 'qq') {
   const canImage = platform === 'qq' || platform === 'wechat'
   const tags = availableTags()
-  const lines = ['【表情的规矩】偶尔带一个颜文字或 emoji 就够（(๑•̀ㅂ•́)و✧ / 😴 / (・_・;)），一句最多一个，别每句都带。']
+  const lines = ['【表情的规矩】聊得轻松时，**大约一半的回复要带一个颜文字或 emoji**（(๑•̀ㅂ•́)و✧ / 😴 / (・_・;) / 哈哈 / 嘿嘿）。别一句都不带，也别每句都带。']
 
   if (canImage) {
-    lines.push(`想发图时，在回复最后单独写 [表情:标签]（标签：${tags.join('/')}，一次最多一个）。`)
-    lines.push('如果这六个都不贴切，可以写 [自制表情:不超过八个字的短句] —— 会当场画一张文字贴纸。表情宁缺毋滥，没有就不写。')
+    lines.push(`情绪到点的时候，直接在回复句尾写 [表情:标签]（标签：${tags.join('/')}）发一张图，一次最多一个。`)
+    lines.push('这六个都不贴切就写 [自制表情:不超过八个字的短句]，会当场画一张文字贴纸。')
   } else if (platform === 'bilibili') {
     const live = readFaceCache() || BILI_FACES
     const faces = BILI_FACES.filter(f => live.includes(f)).slice(0, 10)   // 按精选顺序，别按面板顺序
