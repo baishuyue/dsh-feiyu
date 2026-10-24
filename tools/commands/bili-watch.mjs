@@ -3,13 +3,20 @@
 //
 //   node feiyu.mjs bili-watch [--max 2] [--dry]
 import { execFileSync } from 'node:child_process'
+import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { config } from '../lib/config.mjs'
 import * as llm from '../lib/llm.mjs'
+import * as memory from '../lib/memory.mjs'
+import { dataPath } from '../lib/paths.mjs'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const FEIYU = path.join(HERE, '..', 'feiyu.mjs')
+
+// 宿主 stdio:ignore 起进程，不打文件日志等于瞎 —— 出问题只能靠猜
+const LOG = dataPath('bili-watch.log')
+const log = (...a) => { const m = a.map(x => typeof x === 'string' ? x : JSON.stringify(x)).join(' '); try { console.log(m) } catch {}; try { fs.appendFileSync(LOG, `${new Date().toISOString()} ${m}\n`) } catch {} }
 
 function runFeiyu(args) {
   return execFileSync(process.execPath, [FEIYU, ...args], { encoding: 'utf8', timeout: 300000, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
@@ -24,15 +31,16 @@ export async function run(argv = []) {
   const dry = has(argv, '--dry') || cfg.guard?.dryRun !== false
   const ownerName = cfg.owner?.name || ''
 
-  console.log(`[bili-watch] 静默刷一轮（最多 ${max} 条，${dry ? '干跑' : '真发'}）`)
+  log(`[bili-watch] 静默刷一轮（最多 ${max} 条，${dry ? '干跑' : '真发'}）`)
 
   let items = []
-  try { items = jsonOf(runFeiyu(['feed', '--json'])).items || [] } catch (e) { console.error('[bili-watch] feed 失败：' + e.message); return }
+  try { items = jsonOf(runFeiyu(['feed', '--json'])).items || [] } catch (e) { log('[bili-watch] feed 失败：' + e.message); return }
 
   let done = 0
   for (const it of items.slice(0, max)) {
     const bvid = it.bvid
-    console.log(`\n[bili-watch] 看《${it.title}》(${bvid})`)
+    log(`\n[bili-watch] 看《${it.title}》(${bvid})`)
+    memory.remember('bilibili', `bilibili:${bvid}`, it.owner || '', 'event', String(it.title).slice(0, 120))
     let ctx = ''
     try { ctx = runFeiyu(['debrief', '--bvid', bvid]) } catch { ctx = it.title }
     const ctxBrief = ctx.replace(/\n+/g, ' ').slice(0, 1200)
@@ -47,15 +55,15 @@ export async function run(argv = []) {
       const resp = await llm.chat(msgs, { temperature: 0.85 })
       const m = String(resp?.content ?? resp ?? '').match(/\{[\s\S]*\}/)
       if (m) { const j = JSON.parse(m[0]); comment = String(j.comment || ''); reason = String(j.reason || ''); score = Number(j.score) || 15 }
-    } catch (e) { console.error('[bili-watch] 评论生成失败：' + e.message); continue }
+    } catch (e) { log('[bili-watch] 评论生成失败：' + e.message); continue }
 
-    if (!comment) { console.log('  ✗ 评论为空，跳过'); continue }
+    if (!comment) { log('  ✗ 评论为空，跳过'); continue }
     const args = ['comment', '--share', '--bvid', bvid, '--message', comment, '--reason', reason, '--score', String(Math.round(score)), '--rank', '1']
     if (!dry) args.push('--go')
-    try { console.log(runFeiyu(args)) } catch (e) { console.error('[bili-watch] 评论失败：' + e.message) }
+    try { log(runFeiyu(args)) } catch (e) { log('[bili-watch] 评论失败：' + e.message) }
     done++
   }
-  console.log(`\n[bili-watch] 结束：处理 ${done} 条。`)
+  log(`\n[bili-watch] 结束：处理 ${done} 条。`)
 }
 
 if (process.argv[1] && process.argv[1].endsWith('bili-watch.mjs')) {
