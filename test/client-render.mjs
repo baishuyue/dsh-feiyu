@@ -176,7 +176,7 @@ const switches = collect(platforms[0], (n) => String(n.props.className || '').in
 assert.equal(switches.length, 4, '平台开关数量应为 4，实际 ' + switches.length)
 assert.equal(switches.filter((n) => n.props.className.includes('on')).length, 3, '默认应有 3 个平台开启')
 const allSwitches = collect(tree, (n) => String(n.props.className || '').includes('fy-switch'))
-assert.equal(allSwitches.length, 7, '全页开关应为 7 个（4 平台 + 微信 smart_skip + 分享 + 抖音 @）')
+assert.equal(allSwitches.length, 9, '全页开关应为 9 个（4 平台 + 微信 smart_skip + 分享 + 抖音 @ + 抖音分享 + 抖音自主评论）')
 
 assert.ok(fetchCalls.includes('/dsh-feiyu/api/config'), '没有请求 /config')
 assert.ok(styleTags.length >= 1, '样式没注入')

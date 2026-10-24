@@ -89,6 +89,11 @@ export const DEFAULTS = {
     account: 'creator',                        // sau 账号别名
     // 评论不带 @（LockyBee 结论：公开评论含 @ 是抖音风控主因）；显式开才真 @
     atMention: false,
+    // 看到有意思的视频，直接发 QQ 给主人（替代评论 @）；每天最多 shareDaily 条
+    shareToOwner: false,
+    shareDaily: 1,
+    // 自主观看时也以"自学习人格"发评论（受 douyin.dryRun 控制，默认只演练）
+    autoComment: false,
     watch: { enabled: false, durationMin: 10, maxVideos: 3, dry: true },
   },
 }

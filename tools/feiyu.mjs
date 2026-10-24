@@ -31,6 +31,8 @@ const COMMANDS = {
   douyin: '抖音互动（login/feed/comments/comment/interact）',
   report: '观看日报（B站/抖音 聚合 Markdown，不调模型）',
   watch: '抖音自主观看（feed→决策→兴趣记忆，时长限制）',
+  review: '复盘学习日记（B站/抖音 提炼，写进私人日记）',
+  'bili-watch': 'B站静默自助刷一轮（feed→深读→@评论）',
 }
 
 const cmd = process.argv[2]

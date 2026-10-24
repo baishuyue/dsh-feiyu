@@ -215,6 +215,8 @@ textarea.fy-input{width:100%;min-height:136px;resize:vertical;line-height:1.65;f
 				shareMinScore: (c.share && c.share.minScore) || 13,
 				douyinCount: (c.douyin && c.douyin.maxPerRun) || 2,
 				douyinAt: !!(c.douyin && c.douyin.atMention),
+				douyinShare: !!(c.douyin && c.douyin.shareToOwner),
+				douyinAutoComment: !!(c.douyin && c.douyin.autoComment),
 					voiceChance: (c.qq && c.qq.voice_chance) || 0,
 					voicePath: (c.voice && c.voice.ref_audio_path) || "",
 					wxRhythm: (c.wechat && c.wechat.rhythm) || "fast",
@@ -282,6 +284,27 @@ textarea.fy-input{width:100%;min-height:136px;resize:vertical;line-height:1.65;f
 					flash(r.ok ? (r.note || "自主观看已开始") : (r.errors || []).join("；") || "启动失败", !r.ok);
 				} catch (e) {
 					flash("启动自主观看失败：" + ((e && e.message) || e), true);
+				} finally { setBusy(""); }
+			}, [flash]);
+
+			const genReview = useCallback(async () => {
+				setBusy("review");
+				try {
+					const r = await api("/review", { method: "POST", body: JSON.stringify({ days: 1 }) });
+					if (r.ok) { setReport(r.text || ""); flash("复盘已写进私人日记"); }
+					else flash((r.errors || []).join("；") || "复盘失败", true);
+				} catch (e) {
+					flash("复盘失败：" + ((e && e.message) || e), true);
+				} finally { setBusy(""); }
+			}, [flash]);
+
+			const startBiliWatch = useCallback(async () => {
+				setBusy("biliwatch");
+				try {
+					const r = await api("/bili-watch", { method: "POST", body: JSON.stringify({ max: 2 }) });
+					flash(r.ok ? (r.note || "B站静默刷已开始") : (r.errors || []).join("；") || "启动失败", !r.ok);
+				} catch (e) {
+					flash("启动 B站静默刷失败：" + ((e && e.message) || e), true);
 				} finally { setBusy(""); }
 			}, [flash]);
 
@@ -635,6 +658,41 @@ textarea.fy-input{width:100%;min-height:136px;resize:vertical;line-height:1.65;f
 							onBlur: () => save({ douyin: { maxPerRun: Number(draft.douyinCount) || 2 } }, "抖音条数已保存"),
 						}),
 						h("span", { className: "fy-hint", style: { marginTop: 0 } }, "一轮刷几条就收手（防 shadowban）"))),
+
+				// B站 · 抖音（分享/评论/复盘）
+				h(Card, {
+					title: "B站 · 抖音",
+					hint: "抖音分享走 QQ 私聊（替代评论 @，防风控）；自主观看评论和 B站静默刷都受干跑开关控制。",
+				},
+					h(Row, { label: "抖音 · 分享给主人" },
+						h(Switch, {
+							on: draft.douyinShare,
+							label: "douyinShare",
+							onChange: (v) => {
+								setDraft(Object.assign({}, draft, { douyinShare: v }));
+								save({ douyin: { shareToOwner: v } }, v ? "已开启：看到有意思的视频会发 QQ 给你" : "已关闭分享给主人");
+							},
+						}),
+						h("span", { className: "fy-hint", style: { marginTop: 0 } }, "替代评论 @，附链接 + 她的吐槽，可接着聊")),
+					h(Row, { label: "抖音 · 自主评论" },
+						h(Switch, {
+							on: draft.douyinAutoComment,
+							label: "douyinAutoComment",
+							onChange: (v) => {
+								setDraft(Object.assign({}, draft, { douyinAutoComment: v }));
+								save({ douyin: { autoComment: v } }, v ? "已开启：刷到也会以自学习人格发评论" : "已关闭自主评论");
+							},
+						}),
+						h("span", { className: "fy-hint", style: { marginTop: 0 } }, "用自学习人格发评论；douyin.dryRun=false 才真发")),
+					h(Row, { label: "B站 · 静默刷" },
+						h("button", { className: "fy-btn", disabled: busy === "biliwatch", onClick: startBiliWatch },
+							busy === "biliwatch" ? "启动中…" : "静默刷一轮"),
+						h("span", { className: "fy-hint", style: { marginTop: 0 } }, "feed→深读→@评论（干跑/真发看 guard.dryRun）")),
+					h(Row, { label: "复盘学习日记" },
+						h("button", { className: "fy-btn", disabled: busy === "review", onClick: genReview },
+							busy === "review" ? "生成中…" : "写今日复盘"),
+						h("span", { className: "fy-hint", style: { marginTop: 0 } }, "LLM 提炼今天看过的，追加进私人日记")),
+					report ? h("pre", { className: "fy-report" }, report) : null),
 
 				// 角色设定
 				h(Card, {

@@ -10,6 +10,8 @@ import path from 'node:path'
 import { config } from '../lib/config.mjs'
 import * as memory from '../lib/memory.mjs'
 import * as llm from '../lib/llm.mjs'
+import { sendOwnerQQ } from '../lib/notify.mjs'
+import fs from 'node:fs'
 
 function arg(argv, name, d) { const i = argv.indexOf(name); return i >= 0 ? (argv[i + 1] ?? d) : d }
 function has(argv, name) { return argv.includes(name) }
@@ -38,6 +40,21 @@ function matchPrefs(v, cfg) {
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms))
 
+function douyinDry(cfg) { return cfg.douyin?.dryRun !== false }
+const SHARE_FILE = () => path.join(os.homedir(), '.feiyu-ai', 'douyin-share.json')
+function shareDay() { return new Date().toLocaleDateString('sv-SE') }
+function shareQuotaOk(cfg) {
+  const max = Number(cfg.douyin?.shareDaily || 1)
+  try { const j = JSON.parse(fs.readFileSync(SHARE_FILE(), 'utf8')); return (j.day === shareDay() ? j.count : 0) < max } catch { return true }
+}
+function shareQuotaRecord(cfg) {
+  try {
+    const max = Number(cfg.douyin?.shareDaily || 1)
+    const cur = (() => { try { const j = JSON.parse(fs.readFileSync(SHARE_FILE(), 'utf8')); return j.day === shareDay() ? j.count : 0 } catch { return 0 } })()
+    fs.writeFileSync(SHARE_FILE(), JSON.stringify({ day: shareDay(), count: Math.min(cur + 1, max) }))
+  } catch {}
+}
+
 export async function run(argv = []) {
   const cfg = config()
   const dry = has(argv, '--dry') || cfg.douyin?.watch?.dry === true
@@ -65,28 +82,51 @@ export async function run(argv = []) {
     let hot = []
     try { const c = jsonOf(runPy(['comments', '--vid', v.vid, '--headed'], cfg)); hot = (c.comments || []).filter(x => x.text).slice(0, 4).map(x => x.text) } catch {}
 
-    // 决策：继续 / 换片 / 停
-    let decision = '继续', reason = ''
+    // 决策：继续 / 换片 / 停；顺带判断 值不值得分享给主人 / 值不值得评论
+    let decision = '继续', reason = '', share = false, comment = ''
     try {
       const msgs = [
-        { role: 'system', content: '你是"大肥鱼"，一条爱刷抖音的小鲸鱼，有自己口味。看一条视频后决定下一步。只输出 JSON：{"action":"继续|换片|停","reason":"不超过20字的原因"}' },
+        { role: 'system', content: '你是"大肥鱼"，一条爱刷抖音的小鲸鱼，有自己口味。看一条视频后决定下一步。只输出 JSON：'
+          + '{"action":"继续|换片|停","reason":"不超过20字的原因","share":true或false(特别有意思、想给主人看的才 true),'
+          + '"comment":"15~40字的评论，只有你觉得值得评论时才写，否则省略"}' },
         { role: 'user', content: `视频《${v.desc}》（作者 ${v.author}）\n热评：${hot.join(' / ') || '（无）'}\n下一步？` },
       ]
       const resp = await llm.chat(msgs, { temperature: 0.7 })
       const m = String(resp?.content ?? resp ?? '').match(/\{[\s\S]*\}/)
-      if (m) { const j = JSON.parse(m[0]); decision = j.action || '继续'; reason = j.reason || '' }
+      if (m) { const j = JSON.parse(m[0]); decision = j.action || '继续'; reason = j.reason || ''; share = !!j.share; comment = String(j.comment || '').slice(0, 60) }
     } catch (e) { console.error('[watch] 决策失败：' + e.message) }
 
     watched++
-    console.log(`  → ${decision}${reason ? '（' + reason + '）' : ''}`)
+    console.log(`  → ${decision}${reason ? '（' + reason + '）' : ''}${share ? ' · 分享主人' : ''}${comment ? ' · 评论' : ''}`)
+
+    // ① 分享给主人（替代评论 @）：发 QQ + 视频链接 + 她的吐槽
+    if (share && cfg.douyin?.shareToOwner === true) {
+      if (shareQuotaOk(cfg)) {
+        const url = `https://www.douyin.com/video/${v.vid}`
+        const line = comment || reason || '这个有意思，你看看'
+        const ok = await sendOwnerQQ(`在抖音刷到个好玩的：《${String(v.desc).slice(0, 40)}》 ${url}\n${line} 😆`)
+        if (ok) { shareQuotaRecord(cfg); memory.addLore('兴趣', `抖音《${String(v.desc).slice(0, 30)}》——分享给了主人`); console.log('  📨 已分享给主人') }
+        else console.log('  ✗ 分享主人失败（NapCat 没起？）')
+      } else {
+        console.log('  ⏭ 今日分享给主人的额度已用完')
+      }
+    }
+
+    // ② 自主评论（自学习人格生成，受 douyin.dryRun 控制，默认只演练不真发）
+    if (comment && cfg.douyin?.autoComment === true) {
+      const args = ['comment', '--vid', v.vid, '--message', comment]
+      if (douyinDry(cfg)) args.push('--cdp')   // 演练也走 CDP 路径，打印即可
+      else args.push('--go', '--cdp')
+      try { console.log(runPy(args, cfg)) } catch (e) { console.error('[watch] 评论失败：' + e.message) }
+      await sleep(60_000 + Math.random() * 60_000)   // 真发之间长间隔，防风控
+    }
 
     if (decision !== '换片' && decision !== '继续') {
-      // 停之前把"为什么停"也记一笔兴趣
       if (reason) memory.addLore('兴趣', `抖音《${String(v.desc).slice(0, 30)}》——${reason}`)
       break
     }
     if (reason) memory.addLore('兴趣', `抖音《${String(v.desc).slice(0, 30)}》——${reason}`)
-    await sleep(2500 + Math.random() * 2000)   // 拟人节奏
+    await sleep(2500 + Math.random() * 2000)
   }
 
   const secs = Math.round((Date.now() - started) / 1000)
