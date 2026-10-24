@@ -243,6 +243,9 @@ textarea.fy-input{width:100%;min-height:136px;resize:vertical;line-height:1.65;f
 				dykFish: !!(c.bilibili && c.bilibili.fishCircle && c.bilibili.fishCircle.enabled),
 				dykFollow: !!(c.bilibili && c.bilibili.follow && c.bilibili.follow.enabled),
 					voiceChance: (c.qq && c.qq.voice_chance) || 0,
+				qqProactive: !!(c.qq && c.qq.proactive && c.qq.proactive.enabled),
+				qqProactiveMax: (c.qq && c.qq.proactive && c.qq.proactive.dailyMax) || 3,
+				qqProactiveGap: (c.qq && c.qq.proactive && c.qq.proactive.minGapMin) || 150,
 					voicePath: (c.voice && c.voice.ref_audio_path) || "",
 					wxRhythm: (c.wechat && c.wechat.rhythm) || "fast",
 					wxMerge: (c.wechat && c.wechat.merge_window_sec) || 3,
@@ -581,7 +584,24 @@ textarea.fy-input{width:100%;min-height:136px;resize:vertical;line-height:1.65;f
 							className: "fy-btn", disabled: busy === "voice",
 							onClick: testVoice,
 						}, busy === "voice" ? "合成中…" : "试听（发到 QQ）")),
-					h("div", { className: "fy-hint" }, "0~1，QQ/微信 每条回复走语音的概率（0.5 = 一半）。")),
+					h("div", { className: "fy-hint" }, "0~1，QQ/微信 每条回复走语音的概率（0.5 = 一半）。"),
+					h(Row, { label: "主动搭话" },
+						h(Switch, {
+							on: draft.qqProactive,
+							label: "qqProactive",
+							onChange: (v) => { setDraft(Object.assign({}, draft, { qqProactive: v })); save({ qq: { proactive: { enabled: v } } }, v ? "主动搭话已开：安静久了她会主动找你" : "主动搭话已关"); },
+						}),
+						h("input", {
+							className: "fy-input fy-w-xs", type: "number", min: 0, max: 20, value: draft.qqProactiveMax,
+							onChange: (e) => setDraft(Object.assign({}, draft, { qqProactiveMax: e.target.value })),
+							onBlur: () => save({ qq: { proactive: { dailyMax: Math.max(0, Number(draft.qqProactiveMax) || 0) } } }, "主动搭话日上限已保存（0 = 不限）"),
+						}),
+						h("input", {
+							className: "fy-input fy-w-xs", type: "number", min: 10, max: 1440, value: draft.qqProactiveGap,
+							onChange: (e) => setDraft(Object.assign({}, draft, { qqProactiveGap: e.target.value })),
+							onBlur: () => save({ qq: { proactive: { minGapMin: Math.max(10, Number(draft.qqProactiveGap) || 150) } } }, "两次搭话最小间隔已保存（分钟）"),
+						}),
+						h("span", { className: "fy-hint", style: { marginTop: 0 } }, "条/天 · 间隔分钟（正聊不打扰、深夜不打扰）"))),
 
 				// 微信（UI 自动化，节奏与合并窗口直接决定像不像人、回得快不快）
 				h(Card, {

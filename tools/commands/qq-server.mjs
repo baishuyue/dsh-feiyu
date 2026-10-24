@@ -16,6 +16,7 @@ import * as llm from '../lib/llm.mjs'
 import { buildMessages, thinkingInstruction } from '../lib/persona.mjs'
 import { splitSticker, pickSticker, FACE_FALLBACK, ensureSelfSticker } from '../lib/stickers.mjs'
 import { synth } from '../lib/tts.mjs'
+import { tickMood } from '../lib/mood.mjs'
 
 const LOG_FILE = dataPath('qq-server.log')
 
@@ -116,6 +117,11 @@ export async function run(argv = []) {
       if (isGroup && QQ.at_only !== false && !atMe) return   // 群里只被 @ 才回
 
       const chatId = isGroup ? `qq:${groupId}` : `qq:${userId}`
+      // 主动搭话的安静计时：主人（私聊）每说一句话就刷新
+      try {
+        const ownerQQNow = String(config().owner?.qq || '')
+        if (!isGroup && ownerQQNow && String(userId) === ownerQQNow) ownerLastMsgAt = Date.now()
+      } catch {}
       const userText = text.replace(new RegExp(`@?${selfId}\\s*`), '').trim()
       if (!userText) return
 
@@ -295,4 +301,55 @@ export async function run(argv = []) {
     log(`    NapCat WebUI → 网络配置 → HTTP 上报 → http://127.0.0.1:${port}/onebot（messagePostFormat=array）`)
     log(`    dryRun=${!!config().guard?.dryRun} · at_only=${QQ.at_only !== false} · voice=${!!QQ.voice_enabled} · napcat=${NAPCAT}`)
   })
+
+  // ── 主动搭话引擎（B站同款自主性）：主人安静久了，带着由头主动开口 ──────────
+  // 原则：随机拟人不定点；正聊着不打扰（minQuietMin）；深夜不打扰（activeHours）；
+  //       每天有上限（dailyMax）；开口前情绪先漂移一次；发完即写记忆（推送即记忆）。
+  const PROACT_FILE = dataPath('qq-proactive.json')
+  let ownerLastMsgAt = 0
+  const dayKeyNow = () => new Date().toLocaleDateString('sv-SE')
+  const readProact = () => { try { return JSON.parse(fs.readFileSync(PROACT_FILE, 'utf8')) } catch { return {} } }
+  const writeProact = (st) => { try { fs.writeFileSync(PROACT_FILE, JSON.stringify(st)) } catch {} }
+
+  async function tryProactive() {
+    try {
+      const cfgNow = config()
+      const pp = cfgNow.qq?.proactive ?? {}
+      if (pp.enabled !== true) return
+      const hour = new Date().getHours()
+      const [a, b] = (Array.isArray(pp.activeHours) && pp.activeHours.length === 2) ? pp.activeHours : [10, 23]
+      if (hour < a || hour >= b) return
+      let st = readProact()
+      if (st.day !== dayKeyNow()) st = { day: dayKeyNow(), count: 0, lastAt: 0 }
+      const dailyMax = Number(pp.dailyMax ?? 3)
+      if (dailyMax > 0 && Number(st.count ?? 0) >= dailyMax) return
+      if (Date.now() - Number(st.lastAt ?? 0) < Number(pp.minGapMin ?? 150) * 60_000) return
+      if (ownerLastMsgAt && Date.now() - ownerLastMsgAt < Number(pp.minQuietMin ?? 90) * 60_000) return
+      if (Math.random() > Number(pp.chance ?? 0.12)) return
+
+      const ownerQQ = String(cfgNow.owner?.qq || '')
+      if (!ownerQQ) return
+      tickMood()
+      const quietH = ownerLastMsgAt ? Math.floor((Date.now() - ownerLastMsgAt) / 3600_000) : 99
+      // 复用整套 QQ 人格装配（人设+主人画像+世界块+lore+情绪），只换最后的行为指令
+      const built = buildMessages({ platform: 'qq', userText: '', chatId: `qq:${ownerQQ}`, userId: ownerQQ, turnsToday: 0 })
+      const quietHint = quietH >= 5 ? `（主人已经 ${quietH} 个小时没理你了，可以带一点点小委屈或调侃他，但别过头）` : ''
+      const msgs = [
+        built[0],
+        { role: 'user', content: `【主动搭话】主人有一阵子没说话了${quietH < 99 ? `（约 ${quietH} 小时）` : ''}。${quietHint}\n`
+          + '现在你主动给他发一条 QQ 消息。像真人主动发微信那样：一条，一两句话，自然、有具体由头（刚看到的视频、饭点饿了、想起他之前说过的话、B站有人回了你评论）。\n'
+          + '禁止"在吗/你好"式开场，不要长篇，不要一次发多条，只输出消息正文。' },
+      ]
+      const resp = await llm.chat(msgs, { temperature: 0.95, max_tokens: 120 })
+      const out = guard.clean(String(resp ?? ''), cfgNow)
+      if (!out) return
+      if (cfgNow.guard?.dryRun) { log(`[qq][干跑] 本要主动搭话：${out.slice(0, 50)}`); return }
+      const ok = await send('send_private_msg', { user_id: Number(ownerQQ), message: [{ type: 'text', data: { text: out } }] })
+      if (!ok) return
+      memory.remember('qq', `qq:${ownerQQ}`, ownerQQ, 'assistant', out)   // 推送即记忆：她自己"说过"这句
+      writeProact({ day: dayKeyNow(), count: Number(st.count ?? 0) + 1, lastAt: Date.now() })
+      log(`[qq] 🐟 主动搭话：${out.slice(0, 50)}`)
+    } catch (e) { logErr('[qq] 主动搭话失败：' + e.message) }
+  }
+  setInterval(tryProactive, 60_000)
 }

@@ -66,6 +66,16 @@ export const DEFAULTS = {
     voice_enabled: false,                    // 语音条开关
     voice_chance: 0.15,                      // 回复用语音的概率
     qzone_enabled: false,                    // 发空间说说开关
+    // 主动搭话（B站同款自主性）：主人安静久了她会带着由头主动开口。
+    // 随机拟人不定点；正聊着不打扰；深夜不打扰；每天有上限 —— 宁可少说不刷屏。
+    proactive: {
+      enabled: false,
+      dailyMax: 3,          // 每天最多主动找主人几次（0 = 不限）
+      minQuietMin: 90,      // 主人安静至少这么久才开口（最近在聊就别插话）
+      minGapMin: 150,       // 两次主动之间的最小间隔
+      activeHours: [10, 23],// 活跃时段（10:00~23:00 之外不打扰）
+      chance: 0.12,         // 每 60s tick 命中概率（不定点闹钟，随机开口）
+    },
   },
 
   // 语音（GPT-SoVITS 本地音色克隆；xiaoxiao 音色）
