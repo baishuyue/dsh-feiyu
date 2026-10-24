@@ -166,6 +166,11 @@ export async function coinVideo(bvid, { go = false, num = 1 } = {}) {
   if (!capOk('coin', Number(cfg.coinDaily ?? 1))) return { ok: false, why: '今日投币额度已用完' }
   const cred = loadCred()
   const j = await formPost(cred, 'https://api.bilibili.com/x/web-interface/coin/add', { aid: String(info.aid), multiply: String(num), select_like: '0' })
+  // B站给投币上了 gaia 风控闸（-401 非法访问 + risk_level obtain 挑战），页内 fetch 和 UI 点击都过不去
+  // —— 全站防护最重的接口之一（真金白银），暂缓自动化，想要投币去 App 手动
+  if (Number(j?.code) === -401 || /非法访问/.test(String(j?.message ?? ''))) {
+    return { ok: false, why: '投币暂不可用：B站 gaia 风控闸（接口/页内/UI 三层都拦），去 App 手动投吧' }
+  }
   const res = okOf(j)
   if (res.ok) capRecord('coin')
   return { ...res, why: res.ok ? `已投 ${num} 枚` : `投币失败 ${res.message}` }
