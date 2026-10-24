@@ -28,6 +28,7 @@ import hashlib
 import io
 import json
 import os
+import queue
 import re
 import sys
 import threading
@@ -84,22 +85,54 @@ def acquire_single_instance():
         return "fallback"                        # 非 Windows：不拦，交给人工
 
 
-# ── 日志（不刷屏：同一个进程只开一个句柄）────────────────────────────────────
-_log_fh = None
+# ── 日志：异步写，调用方永不阻塞 ───────────────────────────────────────────
+# 踩过的坑：某个进程被杀后，日志文件处于半关闭状态，open(path, "a") 会一直阻塞，
+# 于是整个机器人卡死在第一行 log 上 —— 表现为"服务在跑、就是不回复"。
+# 现在 log() 只往队列里丢，真正的 IO 由独立线程做；队列满就丢日志，绝不拖住业务。
+_log_q = queue.Queue(maxsize=4000)
+_log_started = False
+_log_lock = threading.Lock()
+
+
+def _log_writer():
+    fh = None
+    while True:
+        line = _log_q.get()
+        if line is None:
+            break
+        try:
+            print(line, flush=True)
+        except Exception:
+            pass
+        try:
+            if fh is None:
+                os.makedirs(MEMORY_DIR, exist_ok=True)
+                if os.path.exists(LOG_PATH) and os.path.getsize(LOG_PATH) > 2 * 1024 * 1024:
+                    try:
+                        os.replace(LOG_PATH, LOG_PATH + ".1")
+                    except Exception:
+                        pass
+                fh = open(LOG_PATH, "a", encoding="utf-8")
+            fh.write(line + "\n")
+            fh.flush()
+        except Exception:
+            try:
+                if fh:
+                    fh.close()
+            except Exception:
+                pass
+            fh = None
 
 
 def log(msg: str):
+    global _log_started
+    with _log_lock:
+        if not _log_started:
+            threading.Thread(target=_log_writer, name="log", daemon=True).start()
+            _log_started = True
     line = f"{time.strftime('%m-%d %H:%M:%S')} {msg}"
-    print(line, flush=True)
-    global _log_fh
     try:
-        if _log_fh is None:
-            os.makedirs(MEMORY_DIR, exist_ok=True)
-            if os.path.exists(LOG_PATH) and os.path.getsize(LOG_PATH) > 2 * 1024 * 1024:
-                os.replace(LOG_PATH, LOG_PATH + ".1")
-            _log_fh = open(LOG_PATH, "a", encoding="utf-8")
-        _log_fh.write(line + "\n")
-        _log_fh.flush()
+        _log_q.put_nowait(line)
     except Exception:
         pass
 
@@ -704,6 +737,42 @@ class Bot:
                         pass
 
 
+HEARTBEAT = os.path.join(MEMORY_DIR, "wechat-heartbeat.json")
+
+
+def heartbeat(state: str, extra=None):
+    """给面板/宿主看的存活信号；失败也不影响业务。"""
+    try:
+        data = {"ts": int(time.time() * 1000), "pid": os.getpid(), "state": state}
+        if extra:
+            data.update(extra)
+        tmp = HEARTBEAT + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
+        os.replace(tmp, HEARTBEAT)
+    except Exception:
+        pass
+
+
+def connect_wechat(wcfg, tries=8, wait=20):
+    """连不上就等一会儿重试 —— 微信窗口最小化/锁屏都会让 uia 初始化失败，但那不是致命错误。"""
+    last = None
+    for i in range(1, tries + 1):
+        try:
+            log(f"[连接] 第 {i}/{tries} 次尝试连接微信…")
+            heartbeat("connecting", {"try": i})
+            wx = WeChat()
+            log(f"[启动] 已连接：{wx.nickname}")
+            heartbeat("connected", {"nickname": wx.nickname})
+            return wx
+        except Exception as e:
+            last = e
+            log(f"[连接] 失败：{str(e)[:140]}；{wait}s 后重试（把微信窗口恢复出来会更快）")
+            heartbeat("connect-failed", {"error": str(e)[:160], "try": i})
+            time.sleep(wait)
+    raise last if last else RuntimeError("连接微信失败")
+
+
 def main():
     lock = acquire_single_instance()
     if lock is None:
@@ -724,9 +793,7 @@ def main():
         os.environ["WECHATAUTO_RHYTHM"] = rhythm_name
         log(f"[节奏] 用环境变量设置 {rhythm_name}（{str(e)[:60]}）")
 
-    log("[启动] 连接微信…")
-    wx = WeChat()
-    log(f"[启动] 已连接：{wx.nickname}")
+    wx = connect_wechat(wcfg)
 
     db = WeChatDB()
     info = db.get_self_info() or {}
@@ -758,4 +825,14 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    import traceback
+    while True:
+        try:
+            main()
+            break
+        except KeyboardInterrupt:
+            break
+        except Exception:
+            log("[致命] " + traceback.format_exc().replace("\n", " | ")[:600])
+            heartbeat("crashed")
+            time.sleep(15)

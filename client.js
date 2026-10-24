@@ -282,6 +282,16 @@ textarea.fy-input{width:100%;min-height:136px;resize:vertical;line-height:1.65;f
 					"作息已保存：" + start + " → " + end + "，醒 " + wakes + " 次");
 			}, [draft, save]);
 
+			const startNapcat = useCallback(async () => {
+				setBusy("svc:napcat");
+				try {
+					const r = await api("/services", { method: "POST", body: JSON.stringify({ target: "napcat", action: "start" }) });
+					flash(r.ok ? (r.note || "已请求启动 QQ 网关，请在 UAC 窗口点「是」") : (r.errors || []).join("；") || "启动失败", !r.ok);
+				} catch (e) {
+					flash("启动 QQ 网关失败：" + ((e && e.message) || e), true);
+				} finally { setBusy(""); }
+			}, [flash]);
+
 			const runSelftest = useCallback(async () => {
 				setBusy("selftest");
 				setSelftest(null);
@@ -328,6 +338,11 @@ textarea.fy-input{width:100%;min-height:136px;resize:vertical;line-height:1.65;f
 
 			const platforms = (cfg && cfg.platforms) || {};
 			const schedulerOn = !!(status && status.scheduler && status.scheduler.ok);
+			// 通道是否真的通：进程活着不等于能收发
+			const napcatOk = !!(status && status.qqChannel && status.qqChannel.napcat && status.qqChannel.napcat.ok);
+			const beat = (status && status.wxBeat) || null;
+			const beatAge = beat && beat.ts ? Math.max(0, Math.round((Date.now() - Number(beat.ts)) / 1000)) : null;
+			const beatFresh = beatAge !== null && beatAge <= 120;
 			const mood = (status && status.mood) || { value: 0, hunger: 0 };
 
 			return h("div", { className: "fy-panel" },
@@ -359,10 +374,23 @@ textarea.fy-input{width:100%;min-height:136px;resize:vertical;line-height:1.65;f
 						h("div", { className: "fy-chip" }, "情绪 ", h("b", null, mood.value), " · 饿 ", h("b", null, mood.hunger)),
 						h("div", { className: "fy-chip" + ((status && status.dryRun) ? "" : " bad") },
 							"干跑 ", h("b", null, (status && status.dryRun) ? "开（只演练）" : "关（真发）"))),
-					h("div", { className: "fy-row", style: { marginTop: 10, marginBottom: 0 } },
-						h("span", { className: "fy-hint", style: { marginTop: 0 } },
-							"QQ ", svc && svc.qq && svc.qq.running ? "在跑 pid " + svc.qq.pid : "没跑",
-							" · 微信 ", svc && svc.wechat && svc.wechat.running ? "在跑 pid " + svc.wechat.pid : "没跑"),
+					// 通道健康：进程活着 ≠ 能收发。QQ 要看 NapCat 网关，微信要看心跳
+					h("div", { className: "fy-stats", style: { marginTop: 10 } },
+						h("div", { className: "fy-chip" + (napcatOk ? "" : " bad") },
+							h("span", { className: "fy-dot" + (napcatOk ? "" : " off") }),
+							"QQ 网关 ", h("b", null, napcatOk ? "在线" : "断开")),
+						h("div", { className: "fy-chip" + (svc && svc.qq && svc.qq.running ? "" : " bad") },
+							"QQ 进程 ", h("b", null, svc && svc.qq && svc.qq.running ? "在跑" : "没跑")),
+						h("div", { className: "fy-chip" + (beatFresh ? "" : " bad") },
+							"微信 ", h("b", null, beatAge === null ? "无心跳" : beatFresh ? beatAge + "s 前心跳 · " + (beat.state || "") : "心跳停了 " + beatAge + "s"))),
+					h("div", { className: "fy-row", style: { marginTop: 8, marginBottom: 0 } },
+						!napcatOk ? h("span", { className: "fy-hint", style: { marginTop: 0, flex: "1 1 260px" } },
+							"⚠️ QQ 网关（NapCat）不通：她在跑，但收不到也发不出任何 QQ 消息。点右边按钮启动（需要管理员，会弹 UAC）。") : null,
+						!napcatOk ? h("button", {
+							className: "fy-btn primary",
+							disabled: busy === "svc:napcat",
+							onClick: startNapcat,
+						}, busy === "svc:napcat" ? "启动中…" : "启动 QQ 网关") : null,
 						h("button", {
 							className: "fy-btn",
 							disabled: busy === "svc:all",
