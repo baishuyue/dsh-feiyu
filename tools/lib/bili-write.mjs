@@ -99,8 +99,24 @@ export async function postDynamic(rawText, { go = false } = {}) {
   }
   const j = await formPost(cred, 'https://api.bilibili.com/x/dynamic/feed/create/dyn', dynReq)
   const res = okOf(j)
-  if (res.ok) capRecord('dyn')
-  return { ...res, why: res.ok ? '动态已发' : `动态失败 code=${res.code} ${res.message}` }
+  if (res.ok) { capRecord('dyn'); return { ...res, why: '动态已发' } }
+  // 直连被 -400 拦（B站对脚本直连有风控）→ 走 CDP 真浏览器页面内发（借官方之口，登录一次永久有效）
+  if (Number(res.code) === -400) {
+    try {
+      const { execFile } = await import('node:child_process')
+      const full = await import('./config.mjs')
+      const py = full.config().douyin?.python || 'D:/social-auto-upload/.venv/Scripts/python.exe'
+      const out = await new Promise((resolve) => {
+        execFile(py, ['D:/social-auto-upload/bili_dyn_cdp.py', text],
+          { encoding: 'utf8', timeout: 180000, windowsHide: true }, (e2, so, se) => resolve(String((so || se || e2?.message) || '')))
+      })
+      if (/"code"\s*:\s*0/.test(out) && out.includes('CREATE_DYN')) { capRecord('dyn'); return { ok: true, why: '动态已发（CDP 真浏览器通道）' } }
+      if (out.includes('NEED_LOGIN')) return { ok: false, why: '动态需要先在 CDP Chrome 窗口里登录一次B站（扫码），之后永久免登' }
+      if (out.includes('CDP_CONNECT_FAIL')) return { ok: false, why: 'CDP Chrome(9222) 没开（动态的兜底通道）' }
+      return { ok: false, why: '动态失败：' + out.slice(-150) }
+    } catch (e2) { return { ok: false, why: 'CDP 动态失败：' + String(e2?.message ?? e2).slice(0, 150) } }
+  }
+  return { ...res, why: `动态失败 code=${res.code} ${res.message}` }
 }
 
 // ── ③ 点赞 / 投币 ─────────────────────────────────────────────────────────

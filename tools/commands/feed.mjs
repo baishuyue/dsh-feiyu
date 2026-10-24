@@ -23,7 +23,7 @@ export async function run(argv = []) {
   for (const v of popular?.data?.list ?? []) {
     if (v?.bvid) candidates.set(v.bvid, {
       bvid: v.bvid, aid: v.aid, title: v.title?.replace(/<[^>]+>/g, '') ?? '',
-      owner: v.owner?.name ?? '', desc: (v.desc ?? '').replace(/<[^>]+>/g, ''), play: v.stat?.view ?? 0, danmaku: v.stat?.danmaku ?? 0,
+      owner: v.owner?.name ?? '', ownerMid: v.owner?.mid ?? '', desc: (v.desc ?? '').replace(/<[^>]+>/g, ''), play: v.stat?.view ?? 0, danmaku: v.stat?.danmaku ?? 0,
       duration: v.duration ?? 0, source: 'popular',
     })
   }
@@ -43,7 +43,7 @@ export async function run(argv = []) {
         const f = (v.description ?? '').replace(/<[^>]+>/g, '')
         candidates.set(v.bvid, {
           bvid: v.bvid, aid: v.aid, title: (v.title ?? '').replace(/<[^>]+>/g, '') || f.slice(0, 40),
-          owner: v.author ?? '', desc: f, play: v.play ?? 0, danmaku: v.video_review ?? 0,
+          owner: v.author ?? '', ownerMid: v.mid ?? '', desc: f, play: v.play ?? 0, danmaku: v.video_review ?? 0,
           duration: v.duration ?? 0, source: kw === '大肥鱼' ? 'fish:大肥鱼' : `search:${kw}`,
         })
       }

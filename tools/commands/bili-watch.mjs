@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url'
 import { config } from '../lib/config.mjs'
 import * as llm from '../lib/llm.mjs'
 import * as memory from '../lib/memory.mjs'
+import { ensureSelfSticker } from '../lib/stickers.mjs'
 import { dataPath } from '../lib/paths.mjs'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
@@ -59,6 +60,7 @@ export async function run(argv = []) {
   let done = 0
   let items = []
   let shareQuotaOut = false   // 分享额度用完 → 后面只看不 @，别每条都报错刷屏
+  let lastReplyScan = 0       // 回评论扫描节流：30 分钟一次
   while (done < max) {
     try { items = jsonOf(runFeiyu(['feed', '--json'])).items || [] } catch (e) {
       // 自由刷不能因为一次 feed 失败就退出（进程一死面板开关还亮着）—— 歇 5 分钟再试
@@ -79,17 +81,18 @@ export async function run(argv = []) {
       try { ctx = runFeiyu(['debrief', '--bvid', bvid]) } catch { ctx = it.title }
       const ctxBrief = ctx.replace(/\n+/g, ' ').slice(0, 1200)
 
-      let comment = '', reason = '', score = 15, danmaku = ''
+      let comment = '', reason = '', score = 15, danmaku = '', sticker = ''
       try {
         const msgs = [
           { role: 'system', content: '你是"大肥鱼"，替主人在 B站 评论区写一条 @ 主人的分享评论。身份透明：是AI鱼不装人，评论里自然自称"本鱼"或保持鱼的口吻。只输出 JSON：'
             + '{"comment":"15~60字，开头 @' + (ownerName || '主人') + '，像真人、有梗","reason":"至少8字，为什么值得分享给主人","score":0到20的整数,'
-            + '"danmaku":"10~20字的视频弹幕，只有这条视频值得发弹幕才写，否则省略"}' },
+            + '"danmaku":"10~20字的视频弹幕，只有这条视频值得发弹幕才写，否则省略",'
+            + '"sticker":"4~8字的表情贴纸文案（比如 太搞笑了8 / 本鱼饿了），只有这条特别戳你才写，否则省略"}' },
           { role: 'user', content: `视频《${it.title}》\n看懂的信息：${ctxBrief}\n写评论：` },
         ]
         const resp = await llm.chat(msgs, { temperature: 0.85 })
         const m = String(resp?.content ?? resp ?? '').match(/\{[\s\S]*\}/)
-        if (m) { const j = JSON.parse(m[0]); comment = String(j.comment || ''); reason = String(j.reason || ''); score = Number(j.score) || 15; danmaku = String(j.danmaku || '').slice(0, 25) }
+        if (m) { const j = JSON.parse(m[0]); comment = String(j.comment || ''); reason = String(j.reason || ''); score = Number(j.score) || 15; danmaku = String(j.danmaku || '').slice(0, 25); sticker = String(j.sticker || '').slice(0, 12) }
       } catch (e) { log('[bili-watch] 评论生成失败：' + e.message); continue }
 
       if (!comment) { log('  ✗ 评论为空，跳过'); continue }
@@ -111,12 +114,34 @@ export async function run(argv = []) {
         } catch {}
       }
       // 投币：评分很高才投（react.coin 显式开 + 每日额度）
-      if (score >= 17 && cfg.bilibili?.react?.coin === true && dry === false) {
+      if (score >= 16 && cfg.bilibili?.react?.coin === true && dry === false) {
         try {
           const w = await import('../lib/bili-write.mjs')
           const r = await w.coinVideo(bvid, { go: true, num: 1 })
           if (r.ok) log('  🪙 ' + r.why)
         } catch {}
+      }
+      // 关注好 UP：评分高的视频作者值得关注（follow 显式开）
+      if (score >= 16 && cfg.bilibili?.follow?.enabled === true && dry === false) {
+        try {
+          const w = await import('../lib/bili-write.mjs')
+          const r = await w.followUser(String(it.ownerMid || ''), { go: true })
+          if (r.ok) log('  ➕ 已关注 UP：' + (it.owner || ''))
+        } catch {}
+      }
+      // 图片评论（表情贴纸）：LLM 给了贴纸文案就画一张发出去（imageComment 显式开 + 日额度）
+      if (sticker && cfg.bilibili?.imageComment?.enabled === true && dry === false) {
+        try {
+          const pic = ensureSelfSticker(sticker, cfg)
+          if (pic) {
+            log(runFeiyu(['act', 'pic', '--bvid', bvid, '--message', comment.slice(0, 60), '--image', pic, '--go']))
+          }
+        } catch (e) { log('  （贴纸评论没成：' + String(e.message).slice(0, 60) + '）') }
+      }
+      // 回评论社交：每 30 分钟扫一次别人对我评论的回复（replies 显式开）
+      if (cfg.bilibili?.replies?.enabled === true && dry === false && Date.now() - lastReplyScan > 30 * 60_000) {
+        lastReplyScan = Date.now()
+        try { log(runFeiyu(['replies', '--go', '--max', '2']).split('\n').slice(0, 4).join(' | ')) } catch {}
       }
       if (restMs > 0) await sleep(restMs + Math.random() * 60_000)
     }
