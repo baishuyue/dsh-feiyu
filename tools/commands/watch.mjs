@@ -61,7 +61,7 @@ function shareQuotaRecord(cfg) {
 
 export async function run(argv = []) {
   const cfg = config()
-  const dry = has(argv, '--dry') || cfg.douyin?.watch?.dry === true
+  const dry = has(argv, '--dry') || douyinDry(cfg)
   const silent = has(argv, '--silent') || cfg.douyin?.watch?.silent === true   // 无头后台，不弹 Chrome
   const durationMin = Number(arg(argv, '--duration', cfg.douyin?.watch?.durationMin || 10))
   const max = Number(arg(argv, '--max', cfg.douyin?.watch?.maxVideos || 3))
@@ -74,7 +74,17 @@ export async function run(argv = []) {
 
   while (watched < max && Date.now() < deadline) {
     let feed = {}
-    try { feed = jsonOf(runPy(silent ? ['feed'] : ['feed', '--headed'], cfg)) } catch (e) { log('[watch] feed 失败：' + e.message); break }
+    let feedOk = false
+    for (let attempt = 1; attempt <= 3 && !feedOk; attempt++) {
+      try {
+        feed = jsonOf(runPy(silent ? ['feed'] : ['feed', '--headed'], cfg))
+        feedOk = true
+      } catch (e) {
+        log(`[watch] feed 失败（第 ${attempt}/3 次）：${String(e.message).slice(0, 160)}`)
+        if (attempt < 3) await sleep(5000 * attempt)
+      }
+    }
+    if (!feedOk) { log('[watch] feed 连续 3 次失败，本轮结束（下次再试）'); break }
     const videos = (feed.videos || []).filter(v => v.desc && v.author && !seen.has(v.vid)).filter(v => matchPrefs(v, cfg))
     if (!videos.length) { log('[watch] 没有更多对口味的视频，结束。'); break }
 
