@@ -215,6 +215,7 @@ textarea.fy-input{width:100%;min-height:136px;resize:vertical;line-height:1.65;f
 				shareOn: !!(c.share && c.share.enabled),
 				shareMinScore: (c.share && c.share.minScore) || 13,
 				douyinCount: (c.douyin && c.douyin.maxPerRun) || 2,
+				douyinShareDaily: (c.douyin && c.douyin.shareDaily) || 5,
 				douyinAt: !!(c.douyin && c.douyin.atMention),
 				douyinShare: !!(c.douyin && c.douyin.shareToOwner),
 				douyinAutoComment: !!(c.douyin && c.douyin.autoComment),
@@ -715,6 +716,13 @@ textarea.fy-input{width:100%;min-height:136px;resize:vertical;line-height:1.65;f
 							onBlur: () => save({ douyin: { maxPerRun: Number(draft.douyinCount) || 2 } }, "抖音条数已保存"),
 						}),
 						h("span", { className: "fy-hint", style: { marginTop: 0 } }, "一轮刷几条就收手（防 shadowban）")),
+					h(Row, { label: "分享上限" },
+						h("input", {
+							className: "fy-input fy-w-sm", type: "number", min: 1, max: 20, value: draft.douyinShareDaily,
+							onChange: (e) => setDraft(Object.assign({}, draft, { douyinShareDaily: e.target.value })),
+							onBlur: () => save({ douyin: { shareDaily: Math.max(1, Number(draft.douyinShareDaily) || 1) } }, "每天分享给主人的上限已保存"),
+						}),
+						h("span", { className: "fy-hint", style: { marginTop: 0 } }, "每天最多分享几条给主人（抖音私信卡片）")),
 					h("div", { className: "fy-sub", style: { marginTop: 10 } }, "自由刷 · 大肥鱼自己逛"),
 					h(Row, { label: "自由刷" },
 						h(Switch, {
