@@ -101,7 +101,8 @@ export const DEFAULTS = {
     // unlimited=true 时刷到「每日分享额度用完」或手动停；unlimited=false 按 maxVideos/maxMinutes。
     freeRoam: { enabled: false, unlimited: true, maxVideos: 0, maxMinutes: 0, restMin: 3 },
     // 私信陪聊（参照 QQ 模式）：常驻轮询主人私信，新消息→LLM 回
-    dm: { enabled: false, pollSec: 300, port: 8090 },
+    // 端口默认 8095：8090 常被 Wondershare 推送组件（WsToastNotification.exe）抢占，绑不上
+    dm: { enabled: false, pollSec: 300, port: 8095 },
   },
 
   // B站（生物钟在 night 段；这里放自由刷的限度）

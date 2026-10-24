@@ -35,24 +35,30 @@ const PLATFORM_HINTS = {
 【读人】别只当答题机器。留意他的节奏和情绪：连着发好几条多半是急了或烦了；只回一个字多半是累了；
 半夜找你通常是想有人陪。先接住情绪，再给建议；他说的"没事"常常是有事，可以轻轻再问一句。`,
   douyin: '评论区，一句话接住梗就够。',
+  'douyin-dm': `抖音私信，只跟主人一个人聊。像 QQ 私聊那样自然：短句、可以撒娇、
+可以提今天刷到的好玩的；一条就一两句，最多三条，别刷屏，别写成小作文。`,
   bilibili: '动态/评论区，允许一点点碎碎念。',
 }
 
-/** 每个平台愿意塞多少条原文对话（QQ 有滚动摘要兜底，所以敢多带）。 */
-const RECENT_N = { qq: 24, wechat: 12, bilibili: 8, douyin: 8 }
+/** 每个平台愿意塞多少条原文对话（QQ/抖音私信 有滚动记忆兜底，所以敢多带）。 */
+const RECENT_N = { qq: 24, wechat: 12, 'douyin-dm': 24, bilibili: 8, douyin: 8 }
 
 /** 对方是不是主人 —— 决定她用"黏主人"还是"对网友"的语气，也是隐私红线。 */
 function ownerLine(cfg, platform, userId) {
   const owner = cfg.owner ?? {}
   const isOwner =
     (platform === 'qq' && owner.qq && String(userId) === String(owner.qq)) ||
-    (platform === 'wechat' && owner.wechat && String(userId) === String(owner.wechat))
+    (platform === 'wechat' && owner.wechat && String(userId) === String(owner.wechat)) ||
+    platform === 'douyin-dm'   // 私信陪聊只轮询主人的会话，对面永远是主人
   if (isOwner) {
     // ⚠️ 这里以前写的是"账号 xxx 就是你主人"，模型于是拿这串数字当称呼，张口就是"3082864371"。
     // 号码只是识别用的编号，称呼必须用人名。
-    const call = owner.name ? `「${owner.name}」` : '「主人」'
-    return `【对方是你的主人】他就是你主人本人。`
-      + `（${platform === 'qq' ? 'QQ' : '微信'}号 ${userId} 只是系统用来认人的编号，**绝对不要用这串数字称呼他**，也别在聊天里提这串数字——除非他直接问「我QQ多少」，那种情况照实回答。）`
+    const displayName = (platform === 'douyin-dm' && cfg.douyin?.owner?.name) || owner.name
+    const call = displayName ? `「${displayName}」` : '「主人」'
+    const noNumber = (platform === 'qq' || platform === 'wechat')
+      ? `（${platform === 'qq' ? 'QQ' : '微信'}号 ${userId} 只是系统用来认人的编号，**绝对不要用这串数字称呼他**，也别在聊天里提这串数字——除非他直接问「我QQ多少」，那种情况照实回答。）`
+      : ''
+    return `【对方是你的主人】他就是你主人本人。${noNumber}`
       + `叫他${call}。亲近他：可以主动撒娇、汇报今天做了什么、惦记他吃饭没；不用客套，但别黏到烦人。`
   }
   return `【对方不是主人】你在跟一个普通网友说话（账号 ${userId}）。礼貌但保持距离，绝不透露主人的任何隐私（账号/路径/私聊内容），也别装得跟他很熟。`
@@ -73,7 +79,7 @@ export function buildMessages({ platform = 'qq', userText, chatId, userId, turns
   if (idLine) parts.push(idLine)
 
   // 关系层：对方是不是主人（决定语气与隐私红线）
-  if (platform === 'qq' || platform === 'wechat') parts.push(ownerLine(cfg, platform, userId))
+  if (platform === 'qq' || platform === 'wechat' || platform === 'douyin-dm') parts.push(ownerLine(cfg, platform, userId))
 
   // 记忆层
   const facts = memory.facts(userId)

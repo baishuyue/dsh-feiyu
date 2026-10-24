@@ -2,7 +2,11 @@
 // 轮询：dm-read 读主人会话 → 只挑主人的新消息 → LLM 回 → dm-send 发出。
 // 复用 guard（去重/清洗）、persona、记忆、llm，省掉一套独立逻辑。
 //
-//   node feiyu.mjs douyin-dm-server [8090]
+//   node feiyu.mjs douyin-dm-server [--port 8095]
+//
+// 两条铁律（都是踩过坑的）：
+//   · 只有发送成功才进水位 —— 发送失败下一轮自动重试同一条，绝不静默丢回复。
+//   · 对话要 remember 进记忆 —— 否则 buildMessages 没有上下文，主人接着聊就接不上。
 import http from 'node:http'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -12,9 +16,11 @@ import { config } from '../lib/config.mjs'
 import * as persona from '../lib/persona.mjs'
 import * as llm from '../lib/llm.mjs'
 import * as guard from '../lib/guard.mjs'
+import * as memory from '../lib/memory.mjs'
 import { dataPath } from '../lib/paths.mjs'
 
 const WM_FILE = dataPath('douyin-dm-watermark.json')
+const CHAT_ID = 'douyin-dm:owner'
 
 function arg(argv, name, d) { const i = argv.indexOf(name); return i >= 0 ? (argv[i + 1] ?? d) : d }
 
@@ -35,31 +41,53 @@ const writeJson = (f, v) => { try { fs.mkdirSync(path.dirname(f), { recursive: t
 
 const norm = (s) => String(s || '').replace(/\s+/g, '').slice(0, 60)
 
+/** 报错取真因：python stderr 开头常是 patchright 驱动的 Node 弃用警告（几百字），
+ *  真正的 Traceback 在尾部 —— 从头截 200 字符会把真错全切掉（17:17 那次就是这么瞎的）。 */
+function errTail(e) {
+  const raw = String((e && e.stderr) || (e && e.message) || e || '')
+  const lines = raw.split(/\r?\n/).filter((l) => !/DeprecationWarning|CVEs are not issued|In addition, the behavior/.test(l))
+  const clean = lines.join('\n').replace(/\n{2,}/g, '\n').trim()
+  return (clean || raw).slice(-600)
+}
+
 export async function run(argv = []) {
   const cfg = config()
   const ownerName = String(cfg.douyin?.owner?.name || '').trim()
   const secUid = String(cfg.douyin?.owner?.sec_uid || '').trim()
   if (!secUid) { log('[douyin-dm] 未配置 douyin.owner.sec_uid，无法陪聊'); process.exit(1) }
-  const pollSec = Number(cfg.douyin?.dm?.pollSec || 20)
+  const ownerKey = ownerName || 'owner'
+  const pollSec = Number(cfg.douyin?.dm?.pollSec || 300)
   const dry = cfg.douyin?.dryRun !== false
   const silent = cfg.douyin?.watch?.silent === true || cfg.douyin?.dm?.headless === true
 
-  // 水位：最近处理过的主人消息（文本指纹），重启不重放
+  // 水位：已处理过的主人消息（文本指纹）。dm-read 的消息没有时间戳/ID，只能按文本去重；
+  // 同一句话发两遍会被当成一条 —— 跟主人聊天够用，别过度设计。
+  // 首次运行（没有水位文件）先把现有消息全部当基线，从"下一条"开始陪聊 ——
+  // 否则第一次启动会拿着几个月前的旧卡片煞有介事地回一句。
+  const wmExisted = fs.existsSync(WM_FILE)
+  let seeded = wmExisted
   let handled = readJson(WM_FILE, { handled: [] }).handled || []
-  let lastInbound = ''   // 上一条主人的消息（合并用）
+  const commitHandled = (key) => {
+    handled.push(key)
+    if (handled.length > 200) handled = handled.slice(-200)
+    writeJson(WM_FILE, { handled })
+  }
+  let failStreak = 0
 
   const server = http.createServer((req, res) => {
     res.setHeader('Content-Type', 'application/json')
     if (req.url === '/health') {
-      res.end(JSON.stringify({ ok: true, owner: ownerName, dry, pollSec, handled: handled.length }))
+      res.end(JSON.stringify({ ok: true, owner: ownerName, dry, pollSec, handled: handled.length, failStreak }))
       return
     }
     res.end(JSON.stringify({ ok: true }))
   })
-  const port = Number(arg(argv, '--port', cfg.douyin?.dm?.port || 8090))
+  // 默认 8095：8090 常被 Wondershare 推送组件（WsToastNotification.exe）占着，绑不上
+  const port = Number(arg(argv, '--port', cfg.douyin?.dm?.port || 8095))
   server.listen(port, '127.0.0.1', () => log(`[douyin-dm] 监听 http://127.0.0.1:${port}/health · 每 ${pollSec}s 轮询主人私信 · dry=${dry} · silent=${silent}`))
 
   async function tick() {
+    let text = ''
     try {
       const readArgs = ['dm-read', '--sec-uid', secUid, '--name', ownerName, '--n', '20']
       if (silent) readArgs.push('--headless')
@@ -69,32 +97,51 @@ export async function run(argv = []) {
       // 只看主人发来的、最新的
       const inbound = msgs.filter(m => m.dir === 'in').map(m => String(m.text || '').trim()).filter(Boolean)
       if (!inbound.length) return
-      const text = inbound[inbound.length - 1]
+      // 首次运行：把现有消息全部记为基线（不回），从下一条新消息开始陪聊
+      if (!seeded) {
+        seeded = true
+        for (const t of inbound) { const k = norm(t); if (k && !handled.includes(k)) handled.push(k) }
+        writeJson(WM_FILE, { handled })
+        log(`[douyin-dm] 首次运行：以现有 ${inbound.length} 条消息为基线，从下一条开始陪聊`)
+        return
+      }
+      text = inbound[inbound.length - 1]
       const key = norm(text)
-      if (!key || key === lastInbound || handled.includes(key)) return
+      if (!key || handled.includes(key)) return
 
-      lastInbound = key
       log(`[douyin-dm] 主人：${text.slice(0, 50)}`)
 
-      // 复用 QQ 那套：人格 + 记忆 + 清洗
-      const msgsOut = persona.buildMessages({ platform: 'douyin', userText: text, chatId: 'douyin-dm:owner', turnsToday: handled.length })
+      // 先记进对话记忆（platform=douyin · 独立 chatId）：buildMessages 才能带回上下文，
+      // 主人连发几句也接得住；这句话以后还会进 recall 的"主动回忆"池。
+      memory.remember('douyin', CHAT_ID, ownerKey, 'user', text)
+
+      // 复用 QQ 那套：人格 + 记忆 + 清洗（douyin-dm 平台提示 = 私聊语气，不是评论区语气）
+      const msgsOut = persona.buildMessages({ platform: 'douyin-dm', userText: text, chatId: CHAT_ID, userId: ownerKey, turnsToday: handled.length })
       const resp = await llm.chat(msgsOut, { temperature: 0.85 })
       const reply = guard.clean(String(resp?.content ?? resp ?? ''))
-      if (!reply || reply.toUpperCase() === 'SKIP') { log('[douyin-dm] 不接话，跳过'); return }
+      if (!reply || reply.toUpperCase() === 'SKIP') {
+        log('[douyin-dm] 不接话，跳过')
+        memory.remember('douyin', CHAT_ID, ownerKey, 'assistant', '（这次没接话）')
+        commitHandled(key)
+        return
+      }
 
       if (dry) {
         log(`[douyin-dm] 【干跑 ✓】本要回复：${reply.slice(0, 50)}`)
       } else {
-        const sendArgs = ['dm-send', '--sec-uid', secUid, '--name', ownerName, '--message', reply, '--go', '--cdp']
-        if (silent) sendArgs.push('--headless')
-        runPy(sendArgs, cfg)
+        // silent 自起无头浏览器（CDP Chrome 9222 不一定开着，别再硬走 --cdp 秒失败）；
+        // 非 silent 走 CDP 共享那个带界面的 Chrome。
+        const sendArgs = ['dm-send', '--sec-uid', secUid, '--name', ownerName, '--message', reply, '--go']
+        sendArgs.push(...(silent ? ['--headless'] : ['--cdp']))
+        runPy(sendArgs, cfg)   // 失败会抛 → 进 catch → 不进水位 → 下一轮重试
         log(`[douyin-dm] ✅ 已回复：${reply.slice(0, 50)}`)
       }
-      handled.push(key)
-      if (handled.length > 200) handled = handled.slice(-200)
-      writeJson(WM_FILE, { handled })
+      memory.remember('douyin', CHAT_ID, ownerKey, 'assistant', reply)
+      commitHandled(key)
+      failStreak = 0
     } catch (e) {
-      log('[douyin-dm] tick 失败：' + String(e.stderr || e.message).slice(0, 200))
+      failStreak += 1
+      log(`[douyin-dm] tick 失败（连续 ${failStreak} 次，未标记已处理、下轮重试）：${text ? `回复「${text.slice(0, 20)}」时 ` : ''}${errTail(e)}`)
     }
   }
 

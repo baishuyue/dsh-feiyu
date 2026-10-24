@@ -175,7 +175,9 @@ node tools/feiyu.mjs watch [--duration 10] [--max 3] [--dry]      # 抖音自主
 - `interact`：feed→口味过滤→读热评→LLM 评论→发（独立 `douyin.dryRun`，默认只演练）
 - `comment`：**纯文字，默认不带 @**（LockyBee 结论：公开评论含 @ 是抖音风控主因；`douyin.atMention` 可显式开）
 - `watch`：feed→决策 继续/换片/停（带理由）→记兴趣→循环，带时长限制
-- 画面采样 + Whisper 音频理解：下一阶段（需给 douyin_interact.py 加截图 + 装 Whisper）
+- `douyin-dm-server`：私信陪聊常驻服务（默认端口 8095，8090 常被 Wondershare 推送组件抢占）——轮询主人私信，新消息→LLM 回→发出；对话有记忆（主人接着聊接得上），发送失败下轮自动重试，首次运行以现有消息为基线不回旧卡片；随 DSH 自动起停
+- 自由刷（抖音/B站）：大肥鱼自己长时间逛，**只能面板按钮手动开**、不随 DSH 自启；DSH 退出时开关自动复位，面板看到的永远是真实状态
+- 画面采样 + Whisper 音频理解：暂缓（用户拍板先不做）
 
 ---
 

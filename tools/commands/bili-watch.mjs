@@ -33,14 +33,15 @@ export async function run(argv = []) {
   // 自由刷：大肥鱼自己长时间刷 B站，不限条数/时长（unlimited）或按限度
   const free = has(argv, '--free') || cfg.bilibili?.freeRoam?.enabled === true
   const fr = cfg.bilibili?.freeRoam || {}
-  let max, restSec
+  let max, restMs   // sleep 收毫秒 —— 间隔直接算成毫秒（曾把 5 分钟喂成 5ms 级）
   if (free) {
     const unlimited = fr.unlimited !== false
     max = unlimited ? 999999 : (Number(fr.maxVideos) || 999999)
-    restSec = Math.max(0, Number(fr.restMin) || 5) * 60
+    const restMin = Number(fr.restMin)
+    restMs = Math.max(0, Number.isFinite(restMin) ? restMin : 5) * 60_000
   } else {
     max = Number(arg(argv, '--max', 2)) || 2
-    restSec = 0
+    restMs = 0
   }
 
   log(`[bili-watch] ${free ? '自由刷' : '静默刷一轮'}开始（${free && max > 99998 ? '不限量' : '最多 ' + max + ' 条'}，${dry ? '干跑' : '真发'}）`)
@@ -49,7 +50,7 @@ export async function run(argv = []) {
   let items = []
   while (done < max) {
     try { items = jsonOf(runFeiyu(['feed', '--json'])).items || [] } catch (e) { log('[bili-watch] feed 失败：' + e.message); break }
-    if (!items.length) { if (free) { log('[bili-watch] 没刷到视频，歇会儿再试'); await sleep(restSec || 30_000); continue } break }
+      if (!items.length) { if (free) { log('[bili-watch] 没刷到视频，歇会儿再试'); await sleep(restMs || 30_000); continue } break }
     for (const it of items) {
       if (done >= max) break
       const bvid = it.bvid
@@ -76,7 +77,7 @@ export async function run(argv = []) {
       if (!dry) args.push('--go')
       try { log(runFeiyu(args)) } catch (e) { log('[bili-watch] 评论失败：' + e.message) }
       done++
-      if (restSec > 0) await sleep(restSec + Math.random() * 60_000)
+      if (restMs > 0) await sleep(restMs + Math.random() * 60_000)
     }
     if (!free) break
   }

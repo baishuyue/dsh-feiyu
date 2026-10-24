@@ -28,7 +28,11 @@ function runPy(argv, cfg) {
   try {
     return execFileSync(pyPath(cfg), [scriptPath(cfg), ...argv, '--cookie', cookiePath(cfg)], { encoding: 'utf8', timeout: 300000, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
   } catch (e) {
-    throw new Error(String(e.stderr ?? e.message).slice(0, 3000))
+    // python 的 log() 打到 stdout、真报错常在尾部；stderr 开头是 patchright 驱动的 Node 弃用警告，
+    // 只取 stderr 头部等于把真错全扔了（踩过：评论失败只看到一句 DeprecationWarning）。
+    const clean = (s) => String(s || '').split(/\r?\n/).filter((l) => !/DeprecationWarning|CVEs are not issued|trace-deprecation/.test(l)).join('\n').trim()
+    const real = [clean(e.stdout), clean(e.stderr)].filter(Boolean).join(' | ')
+    throw new Error((real || String(e.message)).slice(-600))
   }
 }
 function jsonOf(out) { const m = String(out).match(/\{[\s\S]*\}/); if (!m) return {}; try { return JSON.parse(m[0]) } catch { return {} } }
@@ -66,22 +70,23 @@ export async function run(argv = []) {
   // 自由刷：大肥鱼自己长时间刷，不限条数/时长（unlimited）或按限度，每条之间休息更久（防风控）
   const free = has(argv, '--free') || cfg.douyin?.freeRoam?.enabled === true
   const fr = cfg.douyin?.freeRoam || {}
-  let durationMin, max, restSec
+  let durationMin, max, restMs   // sleep 收毫秒 —— 间隔直接算成毫秒，别拿秒去喂（曾把 3 分钟喂成 3ms 级）
   if (free) {
     const unlimited = fr.unlimited !== false
     max = unlimited ? 999999 : (Number(fr.maxVideos) || 999999)
     durationMin = unlimited ? 999999 : (Number(fr.maxMinutes) || 999999)
-    restSec = Math.max(0, Number(fr.restMin) || 3) * 60
+    const restMin = Number(fr.restMin)
+    restMs = Math.max(0, Number.isFinite(restMin) ? restMin : 3) * 60_000
   } else {
     durationMin = Number(arg(argv, '--duration', cfg.douyin?.watch?.durationMin || 10))
     max = Number(arg(argv, '--max', cfg.douyin?.watch?.maxVideos || 3))
-    restSec = 0
+    restMs = 0
   }
   const started = Date.now()
   const deadline = started + durationMin * 60_000
 
   const limitText = (free && max > 99998) ? '不限量' : `最长 ${durationMin} 分钟 / 最多 ${max} 条`
-  log(`[watch] ${free ? '自由刷' : '自主观看'}开始：${limitText}${dry ? '（DRY：只决策不真发评论）' : ''}${free ? ` · 每条间隔约 ${Math.round(restSec / 60)} 分钟` : ''}`)
+  log(`[watch] ${free ? '自由刷' : '自主观看'}开始：${limitText}${dry ? '（DRY：只决策不真发评论）' : ''}${free ? ` · 每条间隔约 ${Math.round(restMs / 60_000)} 分钟` : ''}`)
   const seen = new Set()
   let watched = 0
 
@@ -100,7 +105,7 @@ export async function run(argv = []) {
     if (!feedOk) { log('[watch] feed 连续 3 次失败，本轮结束（下次再试）'); break }
     const videos = (feed.videos || []).filter(v => v.desc && v.author && !seen.has(v.vid)).filter(v => matchPrefs(v, cfg))
     if (!videos.length) {
-      if (free) { log('[watch] 这一屏没有对口味的视频，歇一会儿再刷'); await sleep(restSec || 30_000); continue }
+      if (free) { log('[watch] 这一屏没有对口味的视频，歇一会儿再刷'); await sleep(restMs || 30_000); continue }
       log('[watch] 没有更多对口味的视频，结束。'); break
     }
 
@@ -171,11 +176,11 @@ export async function run(argv = []) {
 
     if (decision !== '换片' && decision !== '继续') {
       if (reason) memory.addLore('兴趣', `抖音《${String(v.desc).slice(0, 30)}》——${reason}`)
-      if (free) { log('  → 想停一下，歇会儿再看'); await sleep(restSec * 2); continue }
+      if (free) { log('  → 想停一下，歇会儿再看'); await sleep(restMs * 2 || 60_000); continue }
       break
     }
     if (reason) memory.addLore('兴趣', `抖音《${String(v.desc).slice(0, 30)}》——${reason}`)
-    await sleep(restSec > 0 ? restSec + Math.random() * 30_000 : 2500 + Math.random() * 2000)
+    await sleep(restMs > 0 ? restMs + Math.random() * 30_000 : 2500 + Math.random() * 2000)
   }
 
   const secs = Math.round((Date.now() - started) / 1000)
