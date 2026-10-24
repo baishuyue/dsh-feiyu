@@ -44,7 +44,7 @@ window.__ModuleLoader__.load({
 		const PLATFORMS = [
 			["bilibili", "B站", "定时养鱼：看视频、写评论、@你"],
 			["qq", "QQ", "常驻秒回 + 语音 + 说说", "restart"],
-			["wechat", "微信", "只回私聊（UI 自动化，5 秒级）", "restart"],
+			["wechat", "微信", "替你回消息（工作模式，按联系人分开记）", "restart"],
 			["douyin", "抖音", "定时刷视频 + 真发评论 + @人"],
 		];
 

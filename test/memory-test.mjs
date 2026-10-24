@@ -28,6 +28,7 @@ const persona = await import('../tools/lib/persona.mjs')
 
 const dataDir = path.join(tmp, '.feiyu-ai')
 const QQ_EP = path.join(dataDir, 'qq', 'episodes.jsonl')
+const WX_EP = path.join(dataDir, 'wechat', 'episodes.jsonl')
 const MAIN_EP = path.join(dataDir, 'episodes.jsonl')
 
 // 1) QQ 的记忆写进独立文件，微信写主文件
@@ -36,10 +37,11 @@ memory.remember('qq', 'qq:3082864371', '3082864371', 'assistant', '在的，主�
 memory.remember('wechat', 'wechat:wxid_a', 'wxid_a', 'user', '微信来的消息')
 
 assert.ok(fs.existsSync(QQ_EP), 'QQ 应该有独立的 episodes 文件：' + QQ_EP)
+assert.ok(fs.existsSync(WX_EP), '微信应该有独立的 episodes 文件：' + WX_EP)
 const qqRaw = fs.readFileSync(QQ_EP, 'utf8')
-const mainRaw = fs.readFileSync(MAIN_EP, 'utf8')
-assert.ok(qqRaw.includes('在吗') && !mainRaw.includes('在吗'), 'QQ 消息不该落进主记忆文件')
-assert.ok(mainRaw.includes('微信来的消息') && !qqRaw.includes('微信来的消息'), '微信消息不该落进 QQ 记忆文件')
+const wxRaw = fs.readFileSync(WX_EP, 'utf8')
+assert.ok(qqRaw.includes('在吗') && !wxRaw.includes('在吗'), 'QQ 消息不该进微信记忆')
+assert.ok(wxRaw.includes('微信来的消息') && !qqRaw.includes('微信来的消息'), '微信消息不该进 QQ 记忆')
 
 // 2) 按会话读：互不串台
 assert.deepEqual(memory.recent('qq:3082864371', 10).map(m => m.content), ['在吗', '在的，主人。'])
@@ -79,6 +81,14 @@ const world = qqMemory.worldBlock()
 assert.ok(world.includes('红烧肉教程'), 'worldBlock 应该带上 B站 见闻：' + world)
 assert.ok(world.includes('会开门的猫'), 'worldBlock 应该带上抖音 见闻')
 assert.ok(world.includes('喜欢看人做饭'), 'worldBlock 应该带上她记住的观念')
+
+// 5.5) 微信记录不参与人格回忆：写一条很久以前的微信内容，recall 不能命中
+fs.appendFileSync(WX_EP, JSON.stringify({ ts: Date.now() - 30 * 86400e3, platform: 'wechat', chatId: 'wechat:wxid_a', userId: 'wxid_a', role: 'user', text: '供应商报销单我下周交', summary: '供应商报销单我下周交' }) + '\n')
+assert.deepEqual(memory.recall('报销'), [], '微信的工作记录不该被人格回忆捡到')
+assert.deepEqual(memory.recall('报销', 2, 7, { includeWechat: true }).length, 1, '显式 includeWechat 时才读')
+// 老的微信数据还在主文件里，也要挡住
+fs.appendFileSync(MAIN_EP, JSON.stringify({ ts: Date.now() - 30 * 86400e3, platform: 'wechat', chatId: 'wechat:wxid_a', userId: 'wxid_a', role: 'user', text: '报销单记得盖章', summary: '报销单记得盖章' }) + '\n')
+assert.deepEqual(memory.recall('报销单'), [], '主文件里的历史微信记录同样不能进人格回忆')
 
 // 6) 拼 prompt：带画像/摘要/见闻，且不再把 QQ 号当称呼
 const msgs = persona.buildMessages({ platform: 'qq', userText: '我是谁', chatId: 'qq:3082864371', userId: '3082864371', turnsToday: 2 })

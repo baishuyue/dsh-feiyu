@@ -14,6 +14,9 @@ const FACT_FILE = dataPath('facts.json')
 // QQ 有自己的记忆空间：单独一个 episodes 文件（跟微信/B站分开，也方便以后单独做"自我迭代"）。
 // 老数据还在主文件里，读取时两个文件一起读，所以换了位置也接得上。
 const QQ_EP_FILE = dataPath('qq', 'episodes.jsonl')
+// 微信也有自己的记忆空间，而且定位不同：那是"替主人干活"的工作记录，
+// 不属于她的人格经历 —— 所以 recall() 默认不读它，绝不串进 QQ/B站/抖音的提示词。
+const WECHAT_EP_FILE = dataPath('wechat', 'episodes.jsonl')
 const LORE_FILE = dataPath('lore.json')
 
 function readJson(file, fallback) {
@@ -49,9 +52,11 @@ export function platformOf(chatId) {
   return String(chatId || '').split(':')[0] || 'misc'
 }
 
-/** 平台对应的记忆文件：QQ 独立，其它（微信/B站/抖音）共用主文件。 */
+/** 平台对应的记忆文件：QQ / 微信 各自独立，B站/抖音 共用主文件。 */
 export function episodeFile(platform) {
-  return platform === 'qq' ? QQ_EP_FILE : EP_FILE
+  if (platform === 'qq') return QQ_EP_FILE
+  if (platform === 'wechat') return WECHAT_EP_FILE
+  return EP_FILE
 }
 
 /** 记一条事件。role: user|assistant|event。summary 取前 120 字。 */
@@ -66,9 +71,15 @@ export function remember(platform, chatId, userId, role, text) {
   fs.appendFileSync(file, JSON.stringify(rec) + '\n')
 }
 
-/** 读某个会话的全部记忆行（主文件 + 平台专属文件，兼容老数据）。 */
-function readRows(chatId) {
-  const files = [...new Set([EP_FILE, episodeFile(platformOf(chatId))])]
+/**
+ * 读记忆行。
+ * @param {string} chatId 指定会话；传空串表示"全量"（回忆/统计用）
+ * @param {{includeWechat?: boolean}} opts 全量读取时是否带上微信（默认不带）
+ */
+function readRows(chatId, opts = {}) {
+  const files = chatId
+    ? [...new Set([EP_FILE, episodeFile(platformOf(chatId))])]
+    : [EP_FILE, QQ_EP_FILE, ...(opts.includeWechat ? [WECHAT_EP_FILE] : [])]
   const rows = []
   for (const file of files) {
     let lines = []
@@ -76,7 +87,8 @@ function readRows(chatId) {
     for (const line of lines) {
       try {
         const r = JSON.parse(line)
-        if (!chatId || r.chatId === chatId) rows.push(r)
+        if (!chatId) { rows.push(r); continue }
+        if (r.chatId === chatId) rows.push(r)
       } catch {}
     }
   }
@@ -90,12 +102,14 @@ export function recent(chatId, n = 8) {
 }
 
 /** 关键词回忆：命中 >7 天前的旧事（用来「主动想起」）。 */
-export function recall(query, n = 2, minDays = 7) {
+export function recall(query, n = 2, minDays = 7, opts = {}) {
   const qs = tokens(query).filter(w => w.length > 1)
   if (!qs.length) return []
   const cutoff = Date.now() - minDays * 86400_000
   const hits = []
-  for (const r of readRows('')) {
+  for (const r of readRows('', opts)) {
+    // 微信是工作记录，不进人格回忆（老数据也在主文件里，这里一并挡掉）
+    if (!opts.includeWechat && r.platform === 'wechat') continue
     if (r.role !== 'user' || Number(r.ts ?? 0) >= cutoff) continue
     const grams = new Set(tokens(r.summary + r.text))
     let hitCount = 0
@@ -107,10 +121,11 @@ export function recall(query, n = 2, minDays = 7) {
 }
 
 /** 随机想起一条旧事（没有线索时的「被动回忆」）。 */
-export function randomOld(days = 7, random = Math.random) {
+export function randomOld(days = 7, random = Math.random, opts = {}) {
   const cutoff = Date.now() - days * 86400_000
   const pool = []
-  for (const r of readRows('')) {
+  for (const r of readRows('', opts)) {
+    if (!opts.includeWechat && r.platform === 'wechat') continue
     if (r.role === 'user' && Number(r.ts ?? 0) < cutoff) pool.push(r.summary)
   }
   if (!pool.length) return []
@@ -149,7 +164,7 @@ export function lore(tag) {
 
 export function stats() {
   let episodes = 0
-  for (const file of [EP_FILE, QQ_EP_FILE]) {
+  for (const file of [EP_FILE, QQ_EP_FILE, WECHAT_EP_FILE]) {
     try { episodes += fs.readFileSync(file, 'utf8').trim().split('\n').filter(Boolean).length } catch {}
   }
   const f = readJson(FACT_FILE, {})
