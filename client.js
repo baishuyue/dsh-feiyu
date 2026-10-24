@@ -595,7 +595,7 @@ textarea.fy-input{width:100%;min-height:136px;resize:vertical;line-height:1.65;f
 						}),
 						h("span", { className: "fy-hint", style: { marginTop: 0 } }, "关掉就退回「每句都回」"))),
 
-				// 作息与限额
+				// 作息与限额（B站和抖音共用的生物钟窗口）
 				h(Card, {
 					title: "作息与限额",
 					hint: "窗口内随机挑时间醒（拟人，不整点）；B站和抖音共用这个窗口。",
@@ -618,13 +618,89 @@ textarea.fy-input{width:100%;min-height:136px;resize:vertical;line-height:1.65;f
 							onChange: (e) => setDraft(Object.assign({}, draft, { nightWakes: e.target.value })),
 							onBlur: commitNight,
 						})),
-					h(Row, { label: "每天分享上限" },
-						h("input", {
-							className: "fy-input fy-w-sm", type: "number", min: 0, max: 10, value: draft.shareDaily,
-							onChange: (e) => setDraft(Object.assign({}, draft, { shareDaily: e.target.value })),
-							onBlur: () => save({ quota: { shareDaily: Number(draft.shareDaily) || 0 } }, "分享上限已保存"),
+					h(Row, { label: "观看日报" },
+						h("button", { className: "fy-btn", disabled: busy === "report", onClick: genReport },
+							busy === "report" ? "生成中…" : "生成今日日报"),
+						h("span", { className: "fy-hint", style: { marginTop: 0 } }, "聚合 B站/抖音 当天看过的，不调模型")),
+					h(Row, { label: "复盘学习日记" },
+						h("button", { className: "fy-btn", disabled: busy === "review", onClick: genReview },
+							busy === "review" ? "生成中…" : "写今日复盘"),
+						h("span", { className: "fy-hint", style: { marginTop: 0 } }, "LLM 提炼今天看过的，追加进私人日记")),
+					report ? h("pre", { className: "fy-report" }, report) : null),
+
+				// 抖音
+				h(Card, {
+					title: "抖音",
+					hint: "刷视频 → 自主决策 →（可选）分享给主人 / 发评论 / 私信陪聊。外发默认全关。",
+				},
+					h(Row, { label: "自主观看" },
+						h("button", { className: "fy-btn primary", disabled: busy === "watch", onClick: startWatch },
+							busy === "watch" ? "启动中…" : "开始看（10 分钟）"),
+						h("span", { className: "fy-hint", style: { marginTop: 0 } }, "feed → 自主决策 → 记兴趣（后台跑，日志 ~/.feiyu-ai/watch.log）")),
+					h(Row, { label: "静默模式" },
+						h(Switch, {
+							on: draft.douyinSilent,
+							label: "douyinSilent",
+							onChange: (v) => {
+								setDraft(Object.assign({}, draft, { douyinSilent: v }));
+								save({ douyin: { watch: { silent: v } } }, v ? "已开启静默：刷/看/分享都无头后台跑" : "已关闭静默（有头，可看操作过程）");
+							},
 						}),
-						h("span", { className: "fy-hint", style: { marginTop: 0 } }, "一天最多 @ 你几次")),
+						h("span", { className: "fy-hint", style: { marginTop: 0 } }, "无头后台：不弹 Chrome")),
+					h(Row, { label: "分享给主人" },
+						h(Switch, {
+							on: draft.douyinShare,
+							label: "douyinShare",
+							onChange: (v) => {
+								setDraft(Object.assign({}, draft, { douyinShare: v }));
+								save({ douyin: { shareToOwner: v } }, v ? "已开启：看到有意思的视频会抖音私信发你" : "已关闭分享给主人");
+							},
+						}),
+						h("span", { className: "fy-hint", style: { marginTop: 0 } }, "抖音私信发你链接+她的评论（替代 @）")),
+					h(Row, { label: "自主评论" },
+						h(Switch, {
+							on: draft.douyinAutoComment,
+							label: "douyinAutoComment",
+							onChange: (v) => {
+								setDraft(Object.assign({}, draft, { douyinAutoComment: v }));
+								save({ douyin: { autoComment: v } }, v ? "已开启：刷到也会以自学习人格发评论" : "已关闭自主评论");
+							},
+						}),
+						h("span", { className: "fy-hint", style: { marginTop: 0 } }, "douyin.dryRun=false 才真发")),
+					h(Row, { label: "私信陪聊" },
+						h(Switch, {
+							on: draft.douyinDm,
+							label: "douyinDm",
+							onChange: (v) => {
+								setDraft(Object.assign({}, draft, { douyinDm: v }));
+								save({ douyin: { dm: { enabled: v } } }, v ? "私信陪聊已开启" : "私信陪聊已关闭");
+								restartService("douyin-dm", v ? "start" : "stop");
+							},
+						}),
+						h("span", { className: "fy-hint", style: { marginTop: 0 } }, "常驻轮询主人私信，新消息自动回")),
+					h(Row, { label: "评论 @ 通知" },
+						h(Switch, {
+							on: draft.douyinAt,
+							label: "douyinAt",
+							onChange: (v) => {
+								setDraft(Object.assign({}, draft, { douyinAt: v }));
+								save({ douyin: { atMention: v } }, v ? "已开启评论 @（风控风险高）" : "已关闭评论 @（推荐，防风控）");
+							},
+						}),
+						h("span", { className: "fy-hint", style: { marginTop: 0 } }, "抖音评论带 @ 是风控主因，默认关")),
+					h(Row, { label: "每次条数" },
+						h("input", {
+							className: "fy-input fy-w-sm", type: "number", min: 1, max: 5, value: draft.douyinCount,
+							onChange: (e) => setDraft(Object.assign({}, draft, { douyinCount: e.target.value })),
+							onBlur: () => save({ douyin: { maxPerRun: Number(draft.douyinCount) || 2 } }, "抖音条数已保存"),
+						}),
+						h("span", { className: "fy-hint", style: { marginTop: 0 } }, "一轮刷几条就收手（防 shadowban）"))),
+
+				// B站
+				h(Card, {
+					title: "B站",
+					hint: "生物钟自主刷视频；分享 = 评论里 @ 你（B站原生 at_name_to_mid，非风控点）。",
+				},
 					h(Row, { label: "分享（@ 你）" },
 						h(Switch, {
 							on: draft.shareOn,
@@ -641,90 +717,19 @@ textarea.fy-input{width:100%;min-height:136px;resize:vertical;line-height:1.65;f
 							onBlur: () => save({ share: { minScore: Number(draft.shareMinScore) || 0 } }, "分享门槛已保存"),
 						}),
 						h("span", { className: "fy-hint", style: { marginTop: 0 } }, " 分才 @ 你")),
-					h(Row, { label: "观看日报" },
-						h("button", { className: "fy-btn", disabled: busy === "report", onClick: genReport },
-							busy === "report" ? "生成中…" : "生成今日日报"),
-						h("span", { className: "fy-hint", style: { marginTop: 0 } }, "聚合 B站/抖音 当天看过的，不调模型")),
-					report ? h("pre", { className: "fy-report" }, report) : null,
-					h(Row, { label: "自主观看（抖音）" },
-						h("button", { className: "fy-btn", disabled: busy === "watch", onClick: startWatch },
-							busy === "watch" ? "启动中…" : "开始看（10 分钟）"),
-						h("span", { className: "fy-hint", style: { marginTop: 0 } }, "feed → 自主决策 → 记兴趣；默认只决策不真发评论")),
-					h(Row, { label: "评论 @ 通知" },
-						h(Switch, {
-							on: draft.douyinAt,
-							label: "douyinAt",
-							onChange: (v) => {
-								setDraft(Object.assign({}, draft, { douyinAt: v }));
-								save({ douyin: { atMention: v } }, v ? "已开启评论 @（风控风险高）" : "已关闭评论 @（推荐，防风控）");
-							},
-						}),
-						h("span", { className: "fy-hint", style: { marginTop: 0 } }, "抖音评论带 @ 是风控主因，默认关")),
-					h(Row, { label: "抖音每次条数" },
+					h(Row, { label: "每天分享上限" },
 						h("input", {
-							className: "fy-input fy-w-sm", type: "number", min: 1, max: 5, value: draft.douyinCount,
-							onChange: (e) => setDraft(Object.assign({}, draft, { douyinCount: e.target.value })),
-							onBlur: () => save({ douyin: { maxPerRun: Number(draft.douyinCount) || 2 } }, "抖音条数已保存"),
+							className: "fy-input fy-w-sm", type: "number", min: 0, max: 10, value: draft.shareDaily,
+							onChange: (e) => setDraft(Object.assign({}, draft, { shareDaily: e.target.value })),
+							onBlur: () => save({ quota: { shareDaily: Number(draft.shareDaily) || 0 } }, "分享上限已保存"),
 						}),
-						h("span", { className: "fy-hint", style: { marginTop: 0 } }, "一轮刷几条就收手（防 shadowban）"))),
-
-				// B站 · 抖音（分享/评论/复盘）
-				h(Card, {
-					title: "B站 · 抖音",
-					hint: "抖音分享走 QQ 私聊（替代评论 @，防风控）；自主观看评论和 B站静默刷都受干跑开关控制。",
-				},
-					h(Row, { label: "抖音 · 分享给主人" },
-						h(Switch, {
-							on: draft.douyinShare,
-							label: "douyinShare",
-							onChange: (v) => {
-								setDraft(Object.assign({}, draft, { douyinShare: v }));
-								save({ douyin: { shareToOwner: v } }, v ? "已开启：看到有意思的视频会抖音私信发你（附链接+评论）" : "已关闭分享给主人");
-							},
-						}),
-						h("span", { className: "fy-hint", style: { marginTop: 0 } }, "抖音私信发你链接+她的评论，可接着聊；替代评论 @")),
-					h(Row, { label: "抖音 · 自主评论" },
-						h(Switch, {
-							on: draft.douyinAutoComment,
-							label: "douyinAutoComment",
-							onChange: (v) => {
-								setDraft(Object.assign({}, draft, { douyinAutoComment: v }));
-								save({ douyin: { autoComment: v } }, v ? "已开启：刷到也会以自学习人格发评论" : "已关闭自主评论");
-							},
-						}),
-						h("span", { className: "fy-hint", style: { marginTop: 0 } }, "用自学习人格发评论；douyin.dryRun=false 才真发")),
-					h(Row, { label: "抖音 · 私信陪聊" },
-						h(Switch, {
-							on: draft.douyinDm,
-							label: "douyinDm",
-							onChange: (v) => {
-								setDraft(Object.assign({}, draft, { douyinDm: v }));
-								save({ douyin: { dm: { enabled: v } } }, v ? "私信陪聊已开启（启动中…）" : "私信陪聊已关闭");
-								restartService("douyin-dm", v ? "start" : "stop");
-							},
-						}),
-						h("span", { className: "fy-hint", style: { marginTop: 0 } }, "像 QQ 那样常驻：轮询主人私信，新消息自动回")),
-					h(Row, { label: "抖音 · 静默模式" },
-						h(Switch, {
-							on: draft.douyinSilent,
-							label: "douyinSilent",
-							onChange: (v) => {
-								setDraft(Object.assign({}, draft, { douyinSilent: v }));
-								save({ douyin: { watch: { silent: v } } }, v ? "已开启静默：刷/看/分享都无头后台跑" : "已关闭静默（有头，可看操作过程）");
-							},
-						}),
-						h("span", { className: "fy-hint", style: { marginTop: 0 } }, "无头后台：不弹 Chrome，看/分享/评论全流程静默")),
-					h(Row, { label: "B站 · 静默刷" },
+						h("span", { className: "fy-hint", style: { marginTop: 0 } }, "一天最多 @ 你几次")),
+					h(Row, { label: "静默自助刷" },
 						h("button", { className: "fy-btn", disabled: busy === "biliwatch", onClick: startBiliWatch },
 							busy === "biliwatch" ? "启动中…" : "静默刷一轮"),
-						h("span", { className: "fy-hint", style: { marginTop: 0 } }, "feed→深读→@评论（干跑/真发看 guard.dryRun）")),
-					h(Row, { label: "复盘学习日记" },
-						h("button", { className: "fy-btn", disabled: busy === "review", onClick: genReview },
-							busy === "review" ? "生成中…" : "写今日复盘"),
-						h("span", { className: "fy-hint", style: { marginTop: 0 } }, "LLM 提炼今天看过的，追加进私人日记")),
-					report ? h("pre", { className: "fy-report" }, report) : null),
+						h("span", { className: "fy-hint", style: { marginTop: 0 } }, "feed→深读→@评论（干跑/真发看 guard.dryRun）"))),
 
-				// 角色设定
+// 角色设定
 				h(Card, {
 					title: "角色设定",
 					extra: h("button", { className: "fy-btn primary", disabled: busy === "persona", onClick: savePersona },

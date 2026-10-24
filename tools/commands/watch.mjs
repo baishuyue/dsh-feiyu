@@ -11,7 +11,11 @@ import { config } from '../lib/config.mjs'
 import * as memory from '../lib/memory.mjs'
 import * as llm from '../lib/llm.mjs'
 import { sendOwnerQQ } from '../lib/notify.mjs'
+import { dataPath } from '../lib/paths.mjs'
 import fs from 'node:fs'
+
+const LOG = dataPath('watch.log')
+const log = (...a) => { const m = a.map(x => typeof x === 'string' ? x : JSON.stringify(x)).join(' '); try { console.log(m) } catch {}; try { fs.appendFileSync(LOG, `${new Date().toISOString()} ${m}\n`) } catch {} }
 
 function arg(argv, name, d) { const i = argv.indexOf(name); return i >= 0 ? (argv[i + 1] ?? d) : d }
 function has(argv, name) { return argv.includes(name) }
@@ -64,19 +68,19 @@ export async function run(argv = []) {
   const started = Date.now()
   const deadline = started + durationMin * 60_000
 
-  console.log(`[watch] 自主观看开始：最长 ${durationMin} 分钟 / 最多 ${max} 条${dry ? '（DRY：只决策不真发评论）' : ''}`)
+  log(`[watch] 自主观看开始：最长 ${durationMin} 分钟 / 最多 ${max} 条${dry ? '（DRY：只决策不真发评论）' : ''}`)
   const seen = new Set()
   let watched = 0
 
   while (watched < max && Date.now() < deadline) {
     let feed = {}
-    try { feed = jsonOf(runPy(silent ? ['feed'] : ['feed', '--headed'], cfg)) } catch (e) { console.error('[watch] feed 失败：' + e.message); break }
+    try { feed = jsonOf(runPy(silent ? ['feed'] : ['feed', '--headed'], cfg)) } catch (e) { log('[watch] feed 失败：' + e.message); break }
     const videos = (feed.videos || []).filter(v => v.desc && v.author && !seen.has(v.vid)).filter(v => matchPrefs(v, cfg))
-    if (!videos.length) { console.log('[watch] 没有更多对口味的视频，结束。'); break }
+    if (!videos.length) { log('[watch] 没有更多对口味的视频，结束。'); break }
 
     const v = videos[0]
     seen.add(v.vid)
-    console.log(`\n[watch] 看《${String(v.desc).slice(0, 40)}》（${v.author}）`)
+    log(`\n[watch] 看《${String(v.desc).slice(0, 40)}》（${v.author}）`)
     memory.remember('douyin', `douyin:${v.vid}`, v.author, 'event', String(v.desc).slice(0, 120))
 
     // 读热评，当作"看了内容"
@@ -95,10 +99,10 @@ export async function run(argv = []) {
       const resp = await llm.chat(msgs, { temperature: 0.7 })
       const m = String(resp?.content ?? resp ?? '').match(/\{[\s\S]*\}/)
       if (m) { const j = JSON.parse(m[0]); decision = j.action || '继续'; reason = j.reason || ''; share = !!j.share; comment = String(j.comment || '').slice(0, 60) }
-    } catch (e) { console.error('[watch] 决策失败：' + e.message) }
+    } catch (e) { log('[watch] 决策失败：' + e.message) }
 
     watched++
-    console.log(`  → ${decision}${reason ? '（' + reason + '）' : ''}${share ? ' · 分享主人' : ''}${comment ? ' · 评论' : ''}`)
+    log(`  → ${decision}${reason ? '（' + reason + '）' : ''}${share ? ' · 分享主人' : ''}${comment ? ' · 评论' : ''}`)
 
     // ① 分享给主人（在抖音里，替代评论 @）：抖音私信发 视频链接 + 她的评论，之后可在私信里继续聊
     if (share && cfg.douyin?.shareToOwner === true) {
@@ -123,10 +127,10 @@ export async function run(argv = []) {
             ok = await sendOwnerQQ(`在抖音刷到个好玩的：${text}`)
           }
         }
-        if (ok) { shareQuotaRecord(cfg); memory.addLore('兴趣', `抖音《${String(v.desc).slice(0, 30)}》——分享给了主人`); console.log('  📨 已分享给主人（抖音私信）') }
-        else console.log('  ✗ 分享主人失败（没配 douyin.owner.name 或 NapCat 没起）')
+        if (ok) { shareQuotaRecord(cfg); memory.addLore('兴趣', `抖音《${String(v.desc).slice(0, 30)}》——分享给了主人`); log('  📨 已分享给主人（抖音私信）') }
+        else log('  ✗ 分享主人失败（没配 douyin.owner.name 或 NapCat 没起）')
       } else {
-        console.log('  ⏭ 今日分享给主人的额度已用完')
+        log('  ⏭ 今日分享给主人的额度已用完')
       }
     }
 
@@ -135,7 +139,7 @@ export async function run(argv = []) {
       const args = ['comment', '--vid', v.vid, '--message', comment]
       if (douyinDry(cfg)) args.push('--cdp')   // 演练也走 CDP 路径，打印即可
       else args.push('--go', '--cdp')
-      try { console.log(runPy(args, cfg)) } catch (e) { console.error('[watch] 评论失败：' + e.message) }
+      try { console.log(runPy(args, cfg)) } catch (e) { log('[watch] 评论失败：' + e.message) }
       await sleep(60_000 + Math.random() * 60_000)   // 真发之间长间隔，防风控
     }
 
@@ -148,7 +152,7 @@ export async function run(argv = []) {
   }
 
   const secs = Math.round((Date.now() - started) / 1000)
-  console.log(`\n[watch] 结束：看了 ${watched} 条，用时 ${secs}s。观看日报：node feiyu.mjs report`)
+  log(`\n[watch] 结束：看了 ${watched} 条，用时 ${secs}s。观看日报：node feiyu.mjs report`)
   return { watched, secs, lore: memory.lore('兴趣').length }
 }
 
