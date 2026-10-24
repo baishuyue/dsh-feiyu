@@ -18,6 +18,15 @@ const FEIYU = path.join(HERE, '..', 'feiyu.mjs')
 const LOG = dataPath('bili-watch.log')
 const log = (...a) => { const m = a.map(x => typeof x === 'string' ? x : JSON.stringify(x)).join(' '); try { console.log(m) } catch {}; try { fs.appendFileSync(LOG, `${new Date().toISOString()} ${m}\n`) } catch {} }
 
+/** 近 N 天发过评论的视频（quota 账本）—— feed 端直接过滤，别每轮都先撞同一个视频。 */
+function recentPostedBvids(days) {
+  try {
+    const q = JSON.parse(fs.readFileSync(dataPath('quota.json'), 'utf8'))
+    const cutoff = Date.now() - days * 86400_000
+    return new Set((q.log ?? []).filter(x => x.target && new Date(x.at).getTime() >= cutoff).map(x => x.target))
+  } catch { return new Set() }
+}
+
 function runFeiyu(args) {
   return execFileSync(process.execPath, [FEIYU, ...args], { encoding: 'utf8', timeout: 300000, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
 }
@@ -57,6 +66,10 @@ export async function run(argv = []) {
       log('[bili-watch] feed 失败：' + e.message); break
     }
       if (!items.length) { if (free) { log('[bili-watch] 没刷到视频，歇会儿再试'); await sleep(restMs || 30_000); continue } break }
+    // 发过的直接跳过（查重在 comment 链路也会拦，这里提前滤掉免得每轮白撞一次）
+    const posted = recentPostedBvids(Number(cfg.quota?.sameVideoDays ?? 7) || 7)
+    items = items.filter(it => !posted.has(it.bvid))
+    if (!items.length) { if (free) { log('[bili-watch] 候选都发过了，歇会儿再刷'); await sleep(restMs || 30_000); continue } log('[bili-watch] 候选都发过（7天内），结束。'); break }
     for (const it of items) {
       if (done >= max) break
       const bvid = it.bvid
@@ -85,6 +98,7 @@ export async function run(argv = []) {
       if (!dry) args.push('--go')
       try { log(runFeiyu(args)) } catch (e) {
         if (/额度|上限/.test(String(e.message))) { shareQuotaOut = true; log('  💤 分享额度用完，后面只看不 @') }
+        else if (/已发过/.test(String(e.message))) { log('  💤 这条发过了，跳过') }
         else log('[bili-watch] 评论失败：' + e.message)
       }
       done++
