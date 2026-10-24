@@ -225,6 +225,10 @@ node tools/feiyu.mjs douyin images --dir out/imgs --desc "…"
 
 面板上「QQ 网关 断开」时点「安装并启动 QQ 网关」是同一套动作（会弹一次 UAC）。
 
+**扫码只需要一次**：启动器会把 `qq.owner.qq` 写进 `D://NapCat//qq-account.txt`，
+NapCat 用它走**快速登录**（复用保存的登录态），重启/重启 DSH 都不用再扫。
+只有登录态失效时才需要重新扫；如果每次都要扫，去 QQ 设置里打开「自动登录」。
+
 启动：双击 `D:\wechat-bot\start_wechat.bat`（无窗口），或重启 DSH 由插件自动拉起。
 
 ## 表情：颜文字 / 表情包 / 评论区的“表情包”

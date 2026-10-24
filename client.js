@@ -83,13 +83,15 @@ input.fy-w-md{width:248px}
 input.fy-w-sm{width:84px}
 select.fy-input{min-width:250px}
 textarea.fy-input{width:100%;min-height:136px;resize:vertical;line-height:1.65;font-family:inherit}
-.fy-btn{background:var(--dsw-alias-bg-l2,color-mix(in srgb,currentColor 7%,transparent));
-  border:1px solid var(--dsw-alias-border-l2,color-mix(in srgb,currentColor 18%,transparent));color:inherit;border-radius:8px;
-  padding:6px 13px;font:inherit;font-size:12.5px;cursor:pointer;transition:background .15s,border-color .15s}
-.fy-btn:hover{background:var(--dsw-alias-bg-l3,color-mix(in srgb,currentColor 12%,transparent))}
+.fy-btn{background:transparent;
+  border:1px solid var(--dsw-alias-border-l2,color-mix(in srgb,currentColor 26%,transparent));
+  color:var(--dsw-alias-label-secondary,#6b7480);border-radius:8px;
+  padding:5px 12px;font:inherit;font-size:12.5px;font-weight:400;cursor:pointer;
+  transition:background .15s,border-color .15s,color .15s}
+.fy-btn:hover{background:var(--dsw-alias-bg-l2,color-mix(in srgb,currentColor 8%,transparent));color:var(--dsw-alias-label-primary,inherit);border-color:color-mix(in srgb,currentColor 40%,transparent)}
 .fy-btn:disabled{opacity:.55;cursor:default}
-.fy-btn.primary{background:#3b6cf6;border-color:#3b6cf6;color:#fff}
-.fy-btn.primary:hover{background:#2f5be0}
+.fy-btn.primary{background:#3b6cf6;border-color:#3b6cf6;color:#fff;font-weight:600;box-shadow:0 1px 3px rgba(59,108,246,.28)}
+.fy-btn.primary:hover{background:#2f5be0;color:#fff;border-color:#2f5be0}
 
 .fy-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
 @media (max-width:460px){.fy-grid{grid-template-columns:1fr}}
@@ -345,6 +347,7 @@ textarea.fy-input{width:100%;min-height:136px;resize:vertical;line-height:1.65;f
 			const beat = (status && status.wxBeat) || null;
 			const beatAge = beat && beat.ts ? Math.max(0, Math.round((Date.now() - Number(beat.ts)) / 1000)) : null;
 			const beatFresh = beatAge !== null && beatAge <= 120;
+			const napcatQr = (status && status.napcatQr) || null;   // 网关在等扫码登录
 			const mood = (status && status.mood) || { value: 0, hunger: 0 };
 
 			return h("div", { className: "fy-panel" },
@@ -387,12 +390,14 @@ textarea.fy-input{width:100%;min-height:136px;resize:vertical;line-height:1.65;f
 							"微信 ", h("b", null, beatAge === null ? "无心跳" : beatFresh ? beatAge + "s 前心跳 · " + (beat.state || "") : "心跳停了 " + beatAge + "s"))),
 					h("div", { className: "fy-row", style: { marginTop: 8, marginBottom: 0 } },
 						!napcatOk ? h("span", { className: "fy-hint", style: { marginTop: 0, flex: "1 1 260px" } },
-							"⚠️ QQ 网关（NapCat）不通：她在跑，但收不到也发不出任何 QQ 消息。点右边按钮启动（需要管理员，会弹 UAC）。") : null,
+							napcatQr
+								? "📷 网关在等扫码登录：二维码 " + Math.max(1, Math.round(napcatQr.ageSec / 60)) + " 分钟前刚刷新，用手机 QQ 扫 D:\\NapCat\\cache\\qrcode.png。已开快速登录，正常只需要扫这一次。"
+								: "⚠️ QQ 网关（NapCat）不通：服务在跑，但收不到也发不出任何 QQ 消息。点右边按钮，UAC 点一次「是」即可；网关随 DSH 启停。") : null,
 						!napcatOk ? h("button", {
 							className: "fy-btn primary",
 							disabled: busy === "svc:napcat",
 							onClick: startNapcat,
-						}, busy === "svc:napcat" ? "授权中…" : "安装并启动 QQ 网关") : null,
+						}, busy === "svc:napcat" ? "授权中…" : (napcatQr ? "重新拉网关" : "安装并启动 QQ 网关")) : null,
 						h("button", {
 							className: "fy-btn",
 							disabled: busy === "svc:all",
