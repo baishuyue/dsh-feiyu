@@ -127,7 +127,7 @@ export async function postDynamic(rawText, { go = false } = {}) {
       const full = await import('./config.mjs')
       const py = full.config().douyin?.python || 'D:/social-auto-upload/.venv/Scripts/python.exe'
       const out = await new Promise((resolve) => {
-        execFile(py, ['D:/social-auto-upload/bili_dyn_cdp.py', text],
+        execFile(py, ['D:/social-auto-upload/bili_act_cdp.py', 'dyn', text],
           { encoding: 'utf8', timeout: 180000, windowsHide: true }, (e2, so, se) => resolve(String((so || se || e2?.message) || '')))
       })
       if (/"code"\s*:\s*0/.test(out) && out.includes('CREATE_DYN')) { capRecord('dyn'); return { ok: true, why: '动态已发（CDP 真浏览器通道）' } }
