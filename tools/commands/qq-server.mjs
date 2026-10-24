@@ -16,6 +16,7 @@ import * as llm from '../lib/llm.mjs'
 import { buildMessages, thinkingInstruction } from '../lib/persona.mjs'
 import { splitSticker, pickSticker, FACE_FALLBACK, ensureSelfSticker } from '../lib/stickers.mjs'
 import { synth } from '../lib/tts.mjs'
+import { sing } from '../lib/sing.mjs'
 import { tickMood } from '../lib/mood.mjs'
 
 const LOG_FILE = dataPath('qq-server.log')
@@ -124,6 +125,25 @@ export async function run(argv = []) {
       } catch {}
       const userText = text.replace(new RegExp(`@?${selfId}\\s*`), '').trim()
       if (!userText) return
+
+      // 🎵 唱歌分支：主人让她唱，就真的唱（LLM 写词 + 她的音色逐句合成 + 鼓点混音）
+      if (QQ.voice_enabled !== false && QQ.sing !== false && !isGroup && /唱(一首|首歌|个|段|吧|$)|唱歌|来一首|哼(一首|段)/.test(userText)) {
+        try {
+          log(`[qq] 🎵 唱歌请求：${userText.slice(0, 30)}`)
+          const theme = userText.replace(/.*(唱|来)一?(首|个|段)?/, '').replace(/首歌?吧?|[吗呢？?。~～]/g, '').trim()
+          const song = await sing(theme)
+          const sent2 = await send('send_private_msg', { user_id: Number(userId), message: [{ type: 'record', data: { file: song.file } }] })
+          if (sent2) {
+            await send('send_private_msg', { user_id: Number(userId), message: [{ type: 'text', data: { text: `🎵《${song.title}》 ${song.bpm}bpm —— ${song.lyrics.join(' / ')}` } }] })
+            memory.remember('qq', chatId, userId, 'assistant', `（唱了《${song.title}》：${song.lyrics.join('/')}）`)
+            log(`[qq] 🎵 已唱《${song.title}》(${song.bpm}bpm, ${song.lyrics.length}句)`)
+            return
+          }
+        } catch (e) {
+          logErr('[qq] 唱歌失败，降级回复文字：' + e.message)
+          // 落回普通回复
+        }
+      }
 
       memory.remember('qq', chatId, userId, 'user', userText)
 

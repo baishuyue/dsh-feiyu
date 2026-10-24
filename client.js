@@ -584,6 +584,30 @@ textarea.fy-input{width:100%;min-height:136px;resize:vertical;line-height:1.65;f
 							className: "fy-btn", disabled: busy === "voice",
 							onClick: testVoice,
 						}, busy === "voice" ? "合成中…" : "试听（发到 QQ）")),
+					h(Row, { label: "音色工坊" },
+						h("button", {
+							className: "fy-btn", disabled: busy === "voiceall",
+							onClick: async () => {
+								setBusy("voiceall");
+								try {
+									const r = await api("/voice-tryall", { method: "POST", body: JSON.stringify({}) });
+									flash(r.ok ? "全部音色逐个试听中，看 QQ 🎧" : "启动失败", !r.ok);
+								} catch (e) { flash("试听失败：" + ((e && e.message) || e), true); }
+								finally { setBusy(""); }
+							},
+						}, busy === "voiceall" ? "试听中…" : "全部音色试听"),
+						h("button", {
+							className: "fy-btn", disabled: busy === "sing",
+							onClick: async () => {
+								setBusy("sing");
+								try {
+									const r = await api("/sing", { method: "POST", body: JSON.stringify({ theme: "白饭" }) });
+									flash(r.ok ? "写词合成中，唱完发你 QQ 🎵" : "启动失败", !r.ok);
+								} catch (e) { flash("唱歌失败：" + ((e && e.message) || e), true); }
+								finally { setBusy(""); }
+							},
+						}, busy === "sing" ? "唱着呢…" : "让她唱一首"),
+						h("span", { className: "fy-hint", style: { marginTop: 0 } }, "新音色：voice import --url … --name … --text … 导入后试听切换")),
 					h("div", { className: "fy-hint" }, "0~1，QQ/微信 每条回复走语音的概率（0.5 = 一半）。"),
 					h(Row, { label: "主动搭话" },
 						h(Switch, {

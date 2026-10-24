@@ -36,6 +36,8 @@ const COMMANDS = {
   'douyin-dm-server': '抖音私信陪聊（常驻轮询主人私信，像 QQ 那样）',
   act: 'B站活人感动作：act danmaku|dyn|like|coin|pic|follow（默认干跑）',
   replies: 'B站社交：扫描别人对我评论的回复并回应（默认干跑）',
+  voice: '音色工坊：list | try | tryall | use | import（她自己学新声音）',
+  sing: '唱一首（LLM写词+她的音色逐句+鼓点混音，发主人QQ）',
 }
 
 const cmd = process.argv[2]

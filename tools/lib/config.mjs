@@ -65,6 +65,7 @@ export const DEFAULTS = {
     at_only: true,                           // 群里只被 @ 才回（铁律）
     voice_enabled: false,                    // 语音条开关
     voice_chance: 0.15,                      // 回复用语音的概率
+    sing: true,                              // 唱歌开关（"唱一首"触发：LLM 写词+她的音色逐句+鼓点混音）
     qzone_enabled: false,                    // 发空间说说开关
     // 主动搭话（B站同款自主性）：主人安静久了她会带着由头主动开口。
     // 随机拟人不定点；正聊着不打扰；深夜不打扰；每天有上限 —— 宁可少说不刷屏。

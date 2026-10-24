@@ -12,8 +12,10 @@ const PASS_THROUGH = ['ref_audio_path', 'prompt_text', 'prompt_lang', 'sovits_pa
 /**
  * 合成一段语音，返回 wav 文件绝对路径。
  * 失败抛错（调用方降级成文字 —— 语音是可选项，任何环节失败内容不能丢）。
+ * override：临时覆盖音色（{ref_audio_path, prompt_text} 等 PASS_THROUGH 字段）——
+ * 音色工坊试听/唱歌逐句合成用，不改全局配置。
  */
-export async function synth(text, outFile) {
+export async function synth(text, outFile, override = {}) {
   const v = config().voice ?? {}
   const body = {
     text,
@@ -22,6 +24,7 @@ export async function synth(text, outFile) {
     streaming_mode: v.streaming_mode ?? false,
   }
   for (const k of PASS_THROUGH) if (v[k]) body[k] = v[k]
+  for (const k of PASS_THROUGH) if (override[k]) body[k] = override[k]
 
   const r = await fetch(v.sovits_url || 'http://127.0.0.1:9880/tts', {
     method: 'POST',
