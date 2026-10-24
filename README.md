@@ -217,9 +217,13 @@ node tools/feiyu.mjs douyin images --dir out/imgs --desc "…"
 而 NapCat 靠 DLL 注入 QQ，**必须管理员权限**——普通权限启动会静默失败（QQ 进程数 0）。
 
 一次性修复：双击 `D://NapCat//start-qq-gateway.bat` → UAC 点「是」。
-它会注册计划任务 `DSH-Feiyu-NapCat`（登录即启动 + 最高权限）并立刻启动；
-之后开机自动跑，DSH 每次启动也会顺手 `/Run` 一次这个任务。
-面板上「QQ 网关 断开」时点「安装并启动 QQ 网关」是同一套动作（会弹 UAC）。
+它会注册**无触发器**的计划任务 `DSH-Feiyu-NapCat`（最高权限），然后立刻启动一次。
+
+生命周期跟 DSH 绑定（不再开机常驻，QQ 是 Electron，常驻要 400~700MB）：
+- DSH 启动 2.5s 后，若 `3000` 没通就 `schtasks /Run` 把网关拉起来
+- DSH 退出时 `schtasks /End` + 关掉 QQ（`qq.stopWithDsh` / `qq.killQqOnExit` 可关）
+
+面板上「QQ 网关 断开」时点「安装并启动 QQ 网关」是同一套动作（会弹一次 UAC）。
 
 启动：双击 `D:\wechat-bot\start_wechat.bat`（无窗口），或重启 DSH 由插件自动拉起。
 
