@@ -29,7 +29,12 @@ function recentPostedBvids(days) {
 }
 
 function runFeiyu(args) {
-  return execFileSync(process.execPath, [FEIYU, ...args], { encoding: 'utf8', timeout: 300000, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
+  try {
+    return execFileSync(process.execPath, [FEIYU, ...args], { encoding: 'utf8', timeout: 300000, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
+  } catch (e) {
+    // 子命令的拒绝理由（额度用完/已发过）打在 stdout 尾部 —— 并进错误消息，上层才认得
+    throw new Error(String(e.message || '').slice(0, 150) + ' | ' + String(e.stdout || e.stderr || '').split('\n').filter(Boolean).slice(-2).join('；').slice(0, 150))
+  }
 }
 function jsonOf(out) { const m = String(out).match(/\{[\s\S]*\}/); if (!m) return {}; try { return JSON.parse(m[0]) } catch { return {} } }
 function arg(argv, name, d) { const i = argv.indexOf(name); return i >= 0 ? (argv[i + 1] ?? d) : d }
