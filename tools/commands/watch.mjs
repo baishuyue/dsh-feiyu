@@ -75,6 +75,19 @@ async function ensureCdp(cfg) {
 function douyinDry(cfg) { return cfg.douyin?.dryRun !== false }
 const SHARE_FILE = () => path.join(os.homedir(), '.feiyu-ai', 'douyin-share.json')
 function shareDay() { return new Date().toLocaleDateString('sv-SE') }
+// 评论每日上限（自由刷不限量跑通宵，评论不设顶会被风控盯上 —— 宁可少发）
+const COMMENT_FILE = () => path.join(os.homedir(), '.feiyu-ai', 'douyin-comment.json')
+function commentQuotaOk(cfg) {
+  const max = Number(cfg.douyin?.commentDaily || 8)
+  try { const j = JSON.parse(fs.readFileSync(COMMENT_FILE(), 'utf8')); return (j.day === shareDay() ? j.count : 0) < max } catch { return true }
+}
+function commentQuotaRecord(cfg) {
+  try {
+    const max = Number(cfg.douyin?.commentDaily || 8)
+    const cur = (() => { try { const j = JSON.parse(fs.readFileSync(COMMENT_FILE(), 'utf8')); return j.day === shareDay() ? j.count : 0 } catch { return 0 } })()
+    fs.writeFileSync(COMMENT_FILE(), JSON.stringify({ day: shareDay(), count: Math.min(cur + 1, max) }))
+  } catch {}
+}
 function shareQuotaOk(cfg) {
   const max = Number(cfg.douyin?.shareDaily || 1)
   try { const j = JSON.parse(fs.readFileSync(SHARE_FILE(), 'utf8')); return (j.day === shareDay() ? j.count : 0) < max } catch { return true }
@@ -126,7 +139,12 @@ export async function run(argv = []) {
         if (attempt < 3) await sleep(5000 * attempt)
       }
     }
-    if (!feedOk) { log('[watch] feed 连续 3 次失败，本轮结束（下次再试）'); break }
+    if (!feedOk) {
+      // 自由刷不能因为几轮 feed 失败就退出 —— 进程一死，面板开关还亮着（假状态），
+      // 而且今晚就再也不刷了。歇 5 分钟接着来。普通模式才退出。
+      if (free) { log('[watch] feed 连续 3 次失败，歇 5 分钟再试（自由刷不退出）'); await sleep(5 * 60_000); continue }
+      log('[watch] feed 连续 3 次失败，本轮结束（下次再试）'); break
+    }
     const videos = (feed.videos || []).filter(v => v.desc && v.author && !seen.has(v.vid)).filter(v => matchPrefs(v, cfg))
     if (!videos.length) {
       if (free) { log('[watch] 这一屏没有对口味的视频，歇一会儿再刷'); await sleep(restMs || 30_000); continue }
@@ -209,12 +227,17 @@ export async function run(argv = []) {
       }
     }
 
-    // ② 自主评论（自学习人格生成，受 douyin.dryRun 控制，默认只演练不真发）
+    // ② 自主评论（自学习人格生成，受 douyin.dryRun 控制，默认只演练不真发；另有每日上限防风控）
     if (comment && cfg.douyin?.autoComment === true) {
       if (douyinDry(cfg)) {
         log(`  【干跑 ✓】评论：${comment}`)
+      } else if (!commentQuotaOk(cfg)) {
+        log('  ⏭ 今日抖音评论额度已用完（douyin.commentDaily），这条只看不说')
       } else if (await ensureCdp(cfg)) {
-        try { console.log(runPy(['comment', '--vid', v.vid, '--message', comment, '--go', '--cdp'], cfg)) }
+        try {
+          console.log(runPy(['comment', '--vid', v.vid, '--message', comment, '--go', '--cdp'], cfg))
+          commentQuotaRecord(cfg)
+        }
         catch (e) { log('[watch] 评论失败：' + e.message) }
         await sleep(60_000 + Math.random() * 60_000)   // 真发之间长间隔，防风控
       } else {

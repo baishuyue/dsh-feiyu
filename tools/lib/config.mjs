@@ -92,6 +92,8 @@ export const DEFAULTS = {
     // 看到有意思的视频，直接分享给主人（替代评论 @）；每天最多 shareDaily 条
     shareToOwner: false,
     shareDaily: 1,
+    // 真发评论的每日上限（自由刷不限量跑通宵，评论必须设顶，防 shadowban）
+    commentDaily: 8,
     shareVia: 'douyin',    // douyin=抖音私信发视频链接+评论 / qq=QQ私聊 / both=两边都发
     owner: { name: '' },   // 主人抖音昵称（私信分享目标）
     // 自主观看时也以"自学习人格"发评论（受 douyin.dryRun 控制，默认只演练）

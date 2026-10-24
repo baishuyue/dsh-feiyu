@@ -48,8 +48,13 @@ export async function run(argv = []) {
 
   let done = 0
   let items = []
+  let shareQuotaOut = false   // 分享额度用完 → 后面只看不 @，别每条都报错刷屏
   while (done < max) {
-    try { items = jsonOf(runFeiyu(['feed', '--json'])).items || [] } catch (e) { log('[bili-watch] feed 失败：' + e.message); break }
+    try { items = jsonOf(runFeiyu(['feed', '--json'])).items || [] } catch (e) {
+      // 自由刷不能因为一次 feed 失败就退出（进程一死面板开关还亮着）—— 歇 5 分钟再试
+      if (free) { log('[bili-watch] feed 失败，歇 5 分钟再试（自由刷不退出）：' + e.message); await sleep(5 * 60_000); continue }
+      log('[bili-watch] feed 失败：' + e.message); break
+    }
       if (!items.length) { if (free) { log('[bili-watch] 没刷到视频，歇会儿再试'); await sleep(restMs || 30_000); continue } break }
     for (const it of items) {
       if (done >= max) break
@@ -73,9 +78,13 @@ export async function run(argv = []) {
       } catch (e) { log('[bili-watch] 评论生成失败：' + e.message); continue }
 
       if (!comment) { log('  ✗ 评论为空，跳过'); continue }
+      if (shareQuotaOut) { log('  💤 分享额度已用完，这条只看不 @'); done++; if (restMs > 0) await sleep(restMs + Math.random() * 60_000); continue }
       const args = ['comment', '--share', '--bvid', bvid, '--message', comment, '--reason', reason, '--score', String(Math.round(score)), '--rank', '1']
       if (!dry) args.push('--go')
-      try { log(runFeiyu(args)) } catch (e) { log('[bili-watch] 评论失败：' + e.message) }
+      try { log(runFeiyu(args)) } catch (e) {
+        if (/额度|上限/.test(String(e.message))) { shareQuotaOut = true; log('  💤 分享额度用完，后面只看不 @') }
+        else log('[bili-watch] 评论失败：' + e.message)
+      }
       done++
       if (restMs > 0) await sleep(restMs + Math.random() * 60_000)
     }
