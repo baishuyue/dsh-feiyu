@@ -175,15 +175,27 @@ export async function run(argv = []) {
           console.log(`  【干跑 ✓】本要在抖音私信分享给「${ownerName || '主人'}」：${text.split('\n')[0]}…`)
           ok = true   // 干跑不占真额度，但记录一下决策
         } else {
-          if ((via === 'douyin' || via === 'both') && ownerSecUid) {
-            // silent 自起无头浏览器即可发（别再硬走 --cdp：CDP Chrome 不一定开着，秒失败）；
-            // 有头模式才走 CDP 共享真浏览器（先确保它在跑）。
-            if (silent) {
-              const dmArgs = ['dm-send', '--sec-uid', ownerSecUid, '--name', ownerName, '--message', text, '--go', '--headless']
-              try { console.log(runPy(dmArgs, cfg)); ok = true } catch (e) { console.error('[watch] 抖音私信分享失败：' + e.message) }
-            } else if (await ensureCdp(cfg)) {
-              const dmArgs = ['dm-send', '--sec-uid', ownerSecUid, '--name', ownerName, '--message', text, '--go', '--cdp']
-              try { console.log(runPy(dmArgs, cfg)); ok = true } catch (e) { console.error('[watch] 抖音私信分享失败：' + e.message) }
+          if ((via === 'douyin' || via === 'both') && ownerName) {
+            // ① 原生分享卡片（手机上可点开、和你手动分享一样的），随后补一句附言
+            const mode = silent ? '--headless' : (await ensureCdp(cfg) ? '--cdp' : '')
+            if (mode) {
+              try {
+                console.log(runPy(['share', '--vid', v.vid, '--friend', ownerName, '--go', mode], cfg))
+                ok = true
+                if (line && ownerSecUid) {
+                  try { runPy(['dm-send', '--sec-uid', ownerSecUid, '--name', ownerName, '--message', `${line} 😆`, '--go', mode], cfg) } catch {}
+                }
+              } catch (e) {
+                log('[watch] 原生分享失败，退回文字链接：' + e.message)
+              }
+            }
+            // ② 退路：文字链接私信（老方案）
+            if (!ok && ownerSecUid) {
+              const mode2 = silent ? '--headless' : (await ensureCdp(cfg) ? '--cdp' : '')
+              if (mode2) {
+                try { console.log(runPy(['dm-send', '--sec-uid', ownerSecUid, '--name', ownerName, '--message', text, '--go', mode2], cfg)); ok = true }
+                catch (e) { console.error('[watch] 抖音私信分享失败：' + e.message) }
+              }
             }
           }
           if (via === 'qq' || (via === 'both' && !ok)) {

@@ -41,13 +41,12 @@ const writeJson = (f, v) => { try { fs.mkdirSync(path.dirname(f), { recursive: t
 
 const norm = (s) => String(s || '').replace(/\s+/g, '').slice(0, 60)
 
-/** 报错取真因：python stderr 开头常是 patchright 驱动的 Node 弃用警告（几百字），
- *  真正的 Traceback 在尾部 —— 从头截 200 字符会把真错全切掉（17:17 那次就是这么瞎的）。 */
+/** 报错取真因：python 的 log() 打到 stdout；stderr 开头是 patchright 驱动的 Node 弃用警告（几百字），
+ *  真正的 Traceback 在尾部 —— 只看 stderr 会把真错全切掉（"Command failed"下面一片空白就是这么来的）。 */
 function errTail(e) {
-  const raw = String((e && e.stderr) || (e && e.message) || e || '')
-  const lines = raw.split(/\r?\n/).filter((l) => !/DeprecationWarning|CVEs are not issued|In addition, the behavior/.test(l))
-  const clean = lines.join('\n').replace(/\n{2,}/g, '\n').trim()
-  return (clean || raw).slice(-600)
+  const clean = (s) => String(s || '').split(/\r?\n/).filter((l) => !/DeprecationWarning|CVEs are not issued|In addition, the behavior|trace-deprecation/.test(l)).join('\n').trim()
+  const real = [clean(e && e.stdout), clean(e && e.stderr)].filter(Boolean).join(' | ')
+  return (real || String((e && e.message) || e || '')).slice(-600)
 }
 
 export async function run(argv = []) {
