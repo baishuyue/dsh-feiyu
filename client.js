@@ -43,8 +43,8 @@ window.__ModuleLoader__.load({
 
 		const PLATFORMS = [
 			["bilibili", "B站", "定时养鱼：看视频、写评论、@你"],
-			["qq", "QQ", "常驻秒回 + 语音 + 说说", "restart"],
-			["wechat", "微信", "替你回消息（工作模式，按联系人分开记）", "restart"],
+			["qq", "QQ", "点开即启动：秒回 + 网关 + 语音（按需开，不随 DSH 自启）", "restart"],
+			["wechat", "微信", "点开即启动：替你回消息（按联系人分开记）", "restart"],
 			["douyin", "抖音", "定时刷视频 + 真发评论 + @人"],
 		];
 
@@ -486,7 +486,7 @@ textarea.fy-input{width:100%;min-height:136px;resize:vertical;line-height:1.65;f
 							it.detail ? h("span", { className: "fy-tag", style: { marginLeft: 6 } }, short(it.detail, 60)) : null))) : null),
 
 				// 平台开关
-				h(Card, { title: "平台开关", hint: "B站/抖音 改完立即生效（生物钟每 60 秒读一次配置）；QQ/微信 会自动帮你重启对应服务。" },
+				h(Card, { title: "平台开关", hint: "QQ/微信/抖音私信默认不随 DSH 自启（防止开机全家桶卡死）：开关点开才启动对应服务，DSH 退出自动复位；B站是生物钟，改完立即生效。" },
 					h("div", { className: "fy-grid" },
 						PLATFORMS.map((p) => h("div", { className: "fy-sw", key: p[0] },
 							h("span", null,
