@@ -133,6 +133,8 @@ export async function run(argv = []) {
   const quota = await import('./quota.mjs')
   quota.run(['record', '--type', isShare ? 'share' : 'reply', '--target', bvid, '--note', title.slice(0, 30)])
   memory.remember('bilibili', chatId, cfg.identity?.name ?? 'feiyu', 'assistant', message)
+  // 登记 rpid：回评论扫描（replies 命令）靠它找到这条评论下的新回复
+  try { const { recordMyComment } = await import('../lib/bili-write.mjs'); recordMyComment(bvid, aid, j?.data?.rpid) } catch {}
   console.log(`✓ 已发送（rpid=${j?.data?.rpid ?? '?'}）${isShare ? ' · 分享额度已扣' : ''}`)
   console.log(`  ${title} → ${message.slice(0, 60)}`)
 

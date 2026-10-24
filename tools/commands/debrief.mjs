@@ -76,6 +76,16 @@ export async function run(argv = []) {
     if (!rep.ok) console.log(json ? '' : `  （观看历史上报没成功：${(rep.why ?? '').slice(0, 80)} —— 不影响看懂）`)
   }
 
+  // ⑤ 顺手点个赞（react.like 开了才动）：看过的视频真点过赞，账号才像活人
+  if (config().bilibili?.react?.like === true) {
+    try {
+      const w = await import('../lib/bili-write.mjs')
+      const r = await w.likeVideo(bvid, { go: true })
+      if (!r.ok) console.log(json ? '' : `  （点赞没成：${String(r.why ?? '').slice(0, 60)}）`)
+      else if (!json) console.log(`  👍 ${r.why}`)
+    } catch {}
+  }
+
   const pack = {
     ok: true,
     bvid, aid: oid, cid: d.cid,

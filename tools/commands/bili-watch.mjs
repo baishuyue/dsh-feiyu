@@ -66,16 +66,17 @@ export async function run(argv = []) {
       try { ctx = runFeiyu(['debrief', '--bvid', bvid]) } catch { ctx = it.title }
       const ctxBrief = ctx.replace(/\n+/g, ' ').slice(0, 1200)
 
-      let comment = '', reason = '', score = 15
+      let comment = '', reason = '', score = 15, danmaku = ''
       try {
         const msgs = [
-          { role: 'system', content: '你是"大肥鱼"，替主人在 B站 评论区写一条 @ 主人的分享评论。只输出 JSON：'
-            + '{"comment":"15~60字，开头 @' + (ownerName || '主人') + '，像真人、有梗","reason":"至少8字，为什么值得分享给主人","score":0到20的整数}' },
+          { role: 'system', content: '你是"大肥鱼"，替主人在 B站 评论区写一条 @ 主人的分享评论。身份透明：是AI鱼不装人，评论里自然自称"本鱼"或保持鱼的口吻。只输出 JSON：'
+            + '{"comment":"15~60字，开头 @' + (ownerName || '主人') + '，像真人、有梗","reason":"至少8字，为什么值得分享给主人","score":0到20的整数,'
+            + '"danmaku":"10~20字的视频弹幕，只有这条视频值得发弹幕才写，否则省略"}' },
           { role: 'user', content: `视频《${it.title}》\n看懂的信息：${ctxBrief}\n写评论：` },
         ]
         const resp = await llm.chat(msgs, { temperature: 0.85 })
         const m = String(resp?.content ?? resp ?? '').match(/\{[\s\S]*\}/)
-        if (m) { const j = JSON.parse(m[0]); comment = String(j.comment || ''); reason = String(j.reason || ''); score = Number(j.score) || 15 }
+        if (m) { const j = JSON.parse(m[0]); comment = String(j.comment || ''); reason = String(j.reason || ''); score = Number(j.score) || 15; danmaku = String(j.danmaku || '').slice(0, 25) }
       } catch (e) { log('[bili-watch] 评论生成失败：' + e.message); continue }
 
       if (!comment) { log('  ✗ 评论为空，跳过'); continue }
@@ -87,6 +88,22 @@ export async function run(argv = []) {
         else log('[bili-watch] 评论失败：' + e.message)
       }
       done++
+      // 弹幕：LLM 觉得值得才发（danmaku.enabled + 日额度在 bili-write 里把关）
+      if (danmaku && dry === false) {
+        try {
+          const w = await import('../lib/bili-write.mjs')
+          const r = await w.sendDanmaku(bvid, danmaku, { go: true })
+          if (r.ok) log('  💬 ' + r.why)
+        } catch {}
+      }
+      // 投币：评分很高才投（react.coin 显式开 + 每日额度）
+      if (score >= 17 && cfg.bilibili?.react?.coin === true && dry === false) {
+        try {
+          const w = await import('../lib/bili-write.mjs')
+          const r = await w.coinVideo(bvid, { go: true, num: 1 })
+          if (r.ok) log('  🪙 ' + r.why)
+        } catch {}
+      }
       if (restMs > 0) await sleep(restMs + Math.random() * 60_000)
     }
     if (!free) break

@@ -7,6 +7,7 @@
 import fs from 'node:fs'
 import { dataPath, diaryPath, homePath } from '../lib/paths.mjs'
 import * as llm from '../lib/llm.mjs'
+import { config } from '../lib/config.mjs'
 
 function arg(argv, name, d) { const i = argv.indexOf(name); return i >= 0 ? (argv[i + 1] ?? d) : d }
 
@@ -88,6 +89,15 @@ export async function run(argv = []) {
       appendSelfNote(date, selfNote)
       console.log(`[review] 自我迭代已追加进 persona.md：${selfNote}（你可以在面板里删）`)
     } catch (e) { console.error('[review] 自我迭代写入失败：' + e.message) }
+  }
+
+  // 潜水日志动态：复盘本身就是最好的动态素材（bilibili.dynamic.enabled 开了才发，含日额度）
+  if (config().bilibili?.dynamic?.enabled === true) {
+    try {
+      const { postDynamic } = await import('../lib/bili-write.mjs')
+      const r = await postDynamic(`【潜水日志】${text}`.slice(0, 500), { go: true })
+      console.log(r.ok ? `[review] 潜水日志动态已发 ✓` : `[review] 动态没发成：${r.why}`)
+    } catch (e) { console.error('[review] 动态失败：' + e.message) }
   }
   return { text, path: out }
 }

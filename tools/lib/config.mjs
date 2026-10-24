@@ -107,10 +107,20 @@ export const DEFAULTS = {
     dm: { enabled: false, pollSec: 300, port: 8095 },
   },
 
-  // B站（生物钟在 night 段；这里放自由刷的限度）
+  // B站（生物钟在 night 段；这里放自由刷的限度 + 活人感写通道）
   bilibili: {
     // 自由刷：评论区 @ 主人那套。unlimited=true 不限条数/时长，刷到每日分享额度用完或手动停。
     freeRoam: { enabled: false, unlimited: true, maxVideos: 0, maxMinutes: 0, restMin: 5 },
+    // 观看历史上报（debrief 后记入历史）
+    reportHistory: true,
+    // ── 活人感写通道（默认全关：养好号再开；每项独立开关 + 日额度 bili-actions.json）──
+    danmaku: { enabled: false, dailyMax: 5 },                       // 看视频发弹幕（bili-watch 顺手 / act 命令）
+    dynamic: { enabled: false, dailyMax: 2, times: ['09:30', '21:30'] }, // 潜水日志动态（早晚定时 + 复盘后同步）
+    react: { like: false, coin: false, likeDaily: 10, coinDaily: 1 },// 点赞（debrief 顺手）/投币（评分≥17）
+    imageComment: { enabled: false, dailyMax: 2 },                  // 图片评论（贴纸/生图 → B站图床）
+    replies: { enabled: false, dailyMax: 10 },                      // 回应别人对我评论的回复（replies 命令）
+    fishCircle: { enabled: false },                                 // 鱼圈社交：选题加入「大肥鱼」相关视频
+    follow: { enabled: false },                                     // 关注好 UP（act follow）
   },
 }
 

@@ -29,7 +29,10 @@ export async function run(argv = []) {
   }
 
   // ② 关键词搜索（有 keywords 才查；要 WBI 签名，bili-api 已处理）
-  for (const kw of (cfg.preferences?.keywords ?? []).slice(0, 2)) {
+  //    鱼圈社交：fishCircle 开了就把「大肥鱼」也当关键词搜 —— 同类鱼聚集地的视频进候选
+  const kws = [...(cfg.preferences?.keywords ?? []).slice(0, 2)]
+  if (cfg.bilibili?.fishCircle?.enabled === true) kws.push('大肥鱼')
+  for (const kw of kws) {
     const u = new URL('https://api.bilibili.com/x/web-interface/search/type')
     u.searchParams.set('search_type', 'video')
     u.searchParams.set('keyword', String(kw))
@@ -41,7 +44,7 @@ export async function run(argv = []) {
         candidates.set(v.bvid, {
           bvid: v.bvid, aid: v.aid, title: (v.title ?? '').replace(/<[^>]+>/g, '') || f.slice(0, 40),
           owner: v.author ?? '', desc: f, play: v.play ?? 0, danmaku: v.video_review ?? 0,
-          duration: v.duration ?? 0, source: `search:${kw}`,
+          duration: v.duration ?? 0, source: kw === '大肥鱼' ? 'fish:大肥鱼' : `search:${kw}`,
         })
       }
     }

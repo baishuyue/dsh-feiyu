@@ -34,6 +34,8 @@ const COMMANDS = {
   review: '复盘学习日记（B站/抖音 提炼，写进私人日记）',
   'bili-watch': 'B站静默自助刷一轮（feed→深读→@评论）',
   'douyin-dm-server': '抖音私信陪聊（常驻轮询主人私信，像 QQ 那样）',
+  act: 'B站活人感动作：act danmaku|dyn|like|coin|pic|follow（默认干跑）',
+  replies: 'B站社交：扫描别人对我评论的回复并回应（默认干跑）',
 }
 
 const cmd = process.argv[2]
