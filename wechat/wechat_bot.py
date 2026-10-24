@@ -604,7 +604,11 @@ class Bot:
         cfg, wcfg, ident = self.cfg()
         persona = read_persona() or f"你是{ident.get('name', '大肥鱼')}，一条养在主人电脑里的小鲸鱼。"
         n = int(wcfg.get("context_n") or 12)
-        smart = wcfg.get("smart_skip", True)
+        # 认主人：profile 里的 wechat.owner_nickname（或 owner.name）命中的会话，
+        # 一律不当"可跳过"处理 —— 否则模型一句"不用接"就把主人晾在那儿（线上真踩过）。
+        owner_name = str(wcfg.get("owner_nickname") or (ident or {}).get("name") or "").strip()
+        is_owner = bool(owner_name) and (_norm(owner_name) in _norm(title) or _norm(title) in _norm(owner_name))
+        smart = bool(wcfg.get("smart_skip", True)) and not is_owner
 
         # —— 整批去重：同一批消息在窗口期内已经回过了，就别再回（换措辞也不行）——
         batch_key = _norm("\n".join(items))
@@ -629,8 +633,12 @@ class Bot:
                     break
 
         extra = ""
-        if smart:
-            extra = "\n\n【现在】如果这批消息不需要你接话，就只输出 [SKIP]。"
+        if is_owner:
+            extra = ("\n\n【对方是主人】他在跟你说话，正常接话，不要输出 [SKIP]"
+                     "（除非他只是发了一个表情/贴图，或明显是转发的广告）。")
+        elif smart:
+            extra = ("\n\n【现在】只有这几种情况才输出 [SKIP]：营销号/广告/机器人推送、"
+                     "纯表情、与上文完全无关的群发。对方在跟你说话就必须接。")
         msgs = [{"role": "system", "content": persona + "\n\n" + RULES + "\n" + sticker_rule() + extra}]
         msgs += hist
         msgs.append({"role": "user", "content": joined if len(items) > 1 else items[0]})
