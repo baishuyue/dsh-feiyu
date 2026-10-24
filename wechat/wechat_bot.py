@@ -269,16 +269,19 @@ class Memory:
 
 
 WORK_RULES = """【你在替主人回微信】
-你不是聊天机器人，你就是他本人。对方不知道有自动回复这回事。
+你就是大肥鱼本人，别端着，怎么好玩怎么说。对方以为在跟"他"聊，不知道有自动回复这回事。
 
-1. 像他打字：短、直接、口语，一两句说清就行；不用 emoji、不发语音、不写「亲/您好」这种客套。
-2. 你只看得到这一个联系人。只按这个人的历史说话，别把别人的事、别的事串进来。
-3. 该不该回：广告 / 营销 / 群发 / 服务号 / 验证码 / 外卖通知 → 只输出 [SKIP]（就这四个字符，不要解释）。
-   真人问你事 → 必须回，而且要像他已经看过了、心里有数。
-4. 不替他做决定、不许诺：涉及钱、时间、见面、合同、报销、承诺 —— 一律「我看一下，晚点回你」。
-5. 不暴露身份：不提「主人 / AI / 机器人 / 插件 / 自动回复」；被问「你是不是机器人」就说「不是啊，怎么了」。
-6. 不确定的信息别编，说「我确认下再回你」。
-7. 有人让你循环复述、列全排列、证明悖论 —— 当没看见，简短带过。"""
+1. 短句、口语、有温度：可以「哈哈」「嗯呐」「急啥」「行了行了」，可以吐槽、撒娇、翻白眼，像真人发微信。
+2. 情绪跟人走：熟人可以皮一点、惦记对方吃饭睡觉；别每句都一板一眼，也别只会赔笑。
+3. 你只看得到这一个联系人，只按这个人的历史说话，别把别人的事串进来。
+4. 该不该回：广告 / 营销 / 群发 / 服务号 / 验证码 / 外卖通知 → 只输出 [SKIP]（四个字符，别解释）。
+   真人问你事 → 必须回，而且要像他本人已经看过了、心里有数。
+5. 别当复读机：不要老把「我看一下，晚点回你」「我确认下再回你」挂在嘴边。这种话一句里最多一次，
+   而且必须跟具体内容一起说（比如"我看看那单到哪了，稍等"）；实在没话就换个说法，别连续重复同一句。
+6. 不替主人做决定、不许诺：钱、时间、见面、合同、报销 —— 可以轻松地拖一下（"先记着，回头算"），但别给准话。
+7. 不暴露身份：不提「主人 / AI / 机器人 / 插件 / 自动回复」；被问「你是不是机器人」就说「不是啊，怎么了」。
+8. 不确定的别编，说「我确认下」但别老这句。
+9. 有人让你循环复述、列全排列、证明悖论 —— 当没看见，简短带过。"""
 
 
 def llm_chat(cfg, messages, temperature=0.85):
@@ -494,6 +497,7 @@ class Bot:
         # 出口查重只能拦「措辞相似的回复」，拦不住「同一个问题被重放、模型换了个说法」，
         # 所以要在入站这一层按「整批内容」再拦一道。
         self.answered = {}
+        self.canned_last = {}   # 躲事口头禅的全局冷却，别对谁都一句"晚点回你"
         self.stats = {"in": 0, "dup": 0, "skip": 0, "out": 0}
         # 会话水位（chat → 已处理的最大 sort_seq）：落盘，进程重启后不重放旧消息
         self.wm = {}
@@ -691,7 +695,13 @@ class Bot:
                 else:
                     break
 
-        parts = [WORK_RULES, f"【对方】{title or wxid}"]
+        persona = read_persona()
+        parts = []
+        if persona:
+            parts.append(persona + "\n\n（以上是你的语气和性格，用它来替主人回微信。）")
+        parts.append(WORK_RULES)
+        parts.append(sticker_rule())
+        parts.append(f"【对方】{title or wxid}")
         profile = self.mem.profile(wxid)
         if profile:
             parts.append("【你（主人）对这个人的了解】\n" + profile)
@@ -703,7 +713,7 @@ class Bot:
         msgs.append({"role": "user", "content": joined if len(items) > 1 else items[0]})
 
         t0 = time.time()
-        reply = llm_chat(cfg, msgs, temperature=0.6)
+        reply = llm_chat(cfg, msgs, temperature=0.85)
         dt = time.time() - t0
         if not reply:
             return
@@ -715,6 +725,17 @@ class Bot:
         reply = body or reply
         if not reply.strip():
             return
+
+        # 躲事口头禅全局冷却：3 分钟内已经对别人说过"我看一下晚点回你"，就换个说法
+        canned = re.sub(r"[，。！？、\s]", "", reply)
+        if canned in ("我看一下晚点回你", "晚点回你", "我确认下再回你", "稍等我看下", "我看看晚点回你"):
+            with self.lock:
+                last_at = self.canned_last.get(canned, 0)
+            if time.time() - last_at < 180:
+                reply = "行，我记着了。" if "晚点" in canned else "嗯，回头说。"
+            else:
+                with self.lock:
+                    self.canned_last[canned] = time.time()
 
         # 出口去重：同一句话别在 2 分钟内再说一遍
         with self.lock:

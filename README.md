@@ -191,10 +191,9 @@ node tools/feiyu.mjs douyin images --dir out/imgs --desc "…"
 
 ## 微信机器人（独立进程，`D:/wechat-bot/wechat_bot.py`）
 
-> **微信是工作渠道，不是陪伴渠道。** 它替主人回微信（对方不知道有自动回复），
-> 不是"大肥鱼"在聊天：不读人设、不带情绪、不发表情包，也不参与人格演变。
-> 记忆按联系人分开（`~/.feiyu-ai/wechat/<wxid>/`），既不会串到别人身上，
-> 也不会被 QQ/B站/抖音 的人格回忆捡到（`recall()` 默认排除 platform=wechat）。
+> **微信是工作渠道，但语气还是大肥鱼本人。** 它替主人回微信（对方不知道有自动回复），
+> 用 persona.md 的人设说话——有温度、会吐槽，但记忆按联系人分开（`~/.feiyu-ai/wechat/<wxid>/`），
+> 既不会串到别人身上，也不会被 QQ/B站/抖音 的人格回忆捡到（`recall()` 默认排除 platform=wechat）。
 
 微信不走协议、走 UI 自动化，所以它是个独立 Python 进程（仓库 `wechat/` 里存了一份副本，**运行的是 `D:/wechat-bot/` 那份**）：
 
