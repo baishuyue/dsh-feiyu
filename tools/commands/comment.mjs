@@ -5,7 +5,7 @@
 //   node feiyu.mjs comment --bvid BV1xx --message "…" [--root rpid --parent rpid] [--go]
 //   node feiyu.mjs comment --share --bvid BV1xx --message "…" --reason "至少八字" --score 15 --rank 1 [--go]
 //   不带 --go = 干跑：全链路检查但只打印要发什么，不 POST ✓
-import { makeHeaders } from '../lib/bili-api.mjs'
+import { apiGet, makeHeaders } from '../lib/bili-api.mjs'
 import { loadCred, missingForWrite, looksLikeJct, explainCode, HARD_STOP_CODES } from '../lib/cred.mjs'
 import { config } from '../lib/config.mjs'
 import { validateShare } from '../lib/share-policy.mjs'
@@ -101,8 +101,17 @@ export async function run(argv = []) {
   const body = new URLSearchParams({ type: '1', oid: String(aid), message, plat: '1', csrf: cred.bili_jct })
   if (root) body.set('root', root)
   if (parent) body.set('parent', parent)
-  // 真 @：at_name_to_mid 携带 昵称→mid 映射（不带 @ 的昵称作为 key）
+  // ⑤ 真 @：at_name_to_mid 携带 昵称→mid 映射（不带 @ 的昵称作为 key）
   if (ownerName && ownerMid) body.set('at_name_to_mid', JSON.stringify({ [ownerName]: ownerMid }))
+  // 防呆：凭据若是主人自己的号，@ 主人 = 自己 @ 自己，B站不会发通知（10-24 实锤）。
+  // 不拦发送（QQ 推送会兜底通知），但必须喊出来让主人知道该换鱼的凭据。
+  try {
+    const nav = await apiGet('https://api.bilibili.com/x/web-interface/nav', H)
+    if (String(nav?.data?.mid ?? '') === String(ownerMid)) {
+      console.error(`⚠️ 当前凭据是主人自己的号（${nav.data.uname}）：这条评论会以主人身份发出、@ 不会弹任何通知。`)
+      console.error('   请在浏览器登录鱼的号（御坂美琴Rosie）后重新提交凭据 —— 面板「凭据」或 POST /api/cookie。')
+    }
+  } catch { /* nav 挂了不拦发送 */ }
   const res = await fetch('https://api.bilibili.com/x/v2/reply/add', {
     method: 'POST',
     headers: { ...H, 'content-type': 'application/x-www-form-urlencoded' },

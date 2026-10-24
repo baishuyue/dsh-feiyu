@@ -35,7 +35,7 @@ export async function run(argv = []) {
     add('凭据文件', false, e.message)
   }
 
-  // ③ 登录态（真打一次 nav —— 缓存 10 分钟）
+  // ③ 登录态（真打一次 nav —— 缓存 10 分钟）+ 凭据账号身份检查
   let self = null
   if (cred?.sessdata) {
     try {
@@ -43,6 +43,15 @@ export async function run(argv = []) {
       if (Number(res?.code) === 0 && res.data?.isLogin) {
         self = { mid: String(res.data.mid), name: String(res.data.uname) }
         add('B站 登录态', true, `已登录：${self.name}（mid ${self.mid}）`)
+        // 防呆：凭据必须是鱼自己的小号。用主人的号发「@主人」= 主人 @ 自己，永远收不到通知
+        // （10-24 实锤：评论发出且公开可见，主人却毫无感知）。
+        const ownerMid = String(cfg.owner?.mid ?? '')
+        if (ownerMid && self.mid === ownerMid) {
+          add('凭据账号', false, `现在登录的是主人自己的号（${self.name}）—— 鱼用它 @ 主人 = 自己 @ 自己，B站不发通知！`
+            + ` 请在浏览器登录鱼的号（御坂美琴Rosie）后重新提交凭据`)
+        } else {
+          add('凭据账号', true, `鱼的号：${self.name} —— 分享 @ 主人（${cfg.owner?.name ?? '?'}）会真正弹通知`)
+        }
       } else {
         add('B站 登录态', false, `未登录：${res?.message ?? 'nav 未返回登录态'} —— SESSDATA 大概率复制时截断，双击 Value 全选再复制`)
       }
