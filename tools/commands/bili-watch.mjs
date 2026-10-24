@@ -24,44 +24,61 @@ function runFeiyu(args) {
 function jsonOf(out) { const m = String(out).match(/\{[\s\S]*\}/); if (!m) return {}; try { return JSON.parse(m[0]) } catch { return {} } }
 function arg(argv, name, d) { const i = argv.indexOf(name); return i >= 0 ? (argv[i + 1] ?? d) : d }
 function has(argv, name) { return argv.includes(name) }
+const sleep = (ms) => new Promise(r => setTimeout(r, ms))
 
 export async function run(argv = []) {
   const cfg = config()
-  const max = Number(arg(argv, '--max', 2)) || 2
   const dry = has(argv, '--dry') || cfg.guard?.dryRun !== false
   const ownerName = cfg.owner?.name || ''
+  // 自由刷：大肥鱼自己长时间刷 B站，不限条数/时长（unlimited）或按限度
+  const free = has(argv, '--free') || cfg.bilibili?.freeRoam?.enabled === true
+  const fr = cfg.bilibili?.freeRoam || {}
+  let max, restSec
+  if (free) {
+    const unlimited = fr.unlimited !== false
+    max = unlimited ? 999999 : (Number(fr.maxVideos) || 999999)
+    restSec = Math.max(0, Number(fr.restMin) || 5) * 60
+  } else {
+    max = Number(arg(argv, '--max', 2)) || 2
+    restSec = 0
+  }
 
-  log(`[bili-watch] 静默刷一轮（最多 ${max} 条，${dry ? '干跑' : '真发'}）`)
-
-  let items = []
-  try { items = jsonOf(runFeiyu(['feed', '--json'])).items || [] } catch (e) { log('[bili-watch] feed 失败：' + e.message); return }
+  log(`[bili-watch] ${free ? '自由刷' : '静默刷一轮'}开始（${free && max > 99998 ? '不限量' : '最多 ' + max + ' 条'}，${dry ? '干跑' : '真发'}）`)
 
   let done = 0
-  for (const it of items.slice(0, max)) {
-    const bvid = it.bvid
-    log(`\n[bili-watch] 看《${it.title}》(${bvid})`)
-    memory.remember('bilibili', `bilibili:${bvid}`, it.owner || '', 'event', String(it.title).slice(0, 120))
-    let ctx = ''
-    try { ctx = runFeiyu(['debrief', '--bvid', bvid]) } catch { ctx = it.title }
-    const ctxBrief = ctx.replace(/\n+/g, ' ').slice(0, 1200)
+  let items = []
+  while (done < max) {
+    try { items = jsonOf(runFeiyu(['feed', '--json'])).items || [] } catch (e) { log('[bili-watch] feed 失败：' + e.message); break }
+    if (!items.length) { if (free) { log('[bili-watch] 没刷到视频，歇会儿再试'); await sleep(restSec || 30_000); continue } break }
+    for (const it of items) {
+      if (done >= max) break
+      const bvid = it.bvid
+      log(`\n[bili-watch] 看《${it.title}》(${bvid})`)
+      memory.remember('bilibili', `bilibili:${bvid}`, it.owner || '', 'event', String(it.title).slice(0, 120))
+      let ctx = ''
+      try { ctx = runFeiyu(['debrief', '--bvid', bvid]) } catch { ctx = it.title }
+      const ctxBrief = ctx.replace(/\n+/g, ' ').slice(0, 1200)
 
-    let comment = '', reason = '', score = 15
-    try {
-      const msgs = [
-        { role: 'system', content: '你是"大肥鱼"，替主人在 B站 评论区写一条 @ 主人的分享评论。只输出 JSON：'
-          + '{"comment":"15~60字，开头 @' + (ownerName || '主人') + '，像真人、有梗","reason":"至少8字，为什么值得分享给主人","score":0到20的整数}' },
-        { role: 'user', content: `视频《${it.title}》\n看懂的信息：${ctxBrief}\n写评论：` },
-      ]
-      const resp = await llm.chat(msgs, { temperature: 0.85 })
-      const m = String(resp?.content ?? resp ?? '').match(/\{[\s\S]*\}/)
-      if (m) { const j = JSON.parse(m[0]); comment = String(j.comment || ''); reason = String(j.reason || ''); score = Number(j.score) || 15 }
-    } catch (e) { log('[bili-watch] 评论生成失败：' + e.message); continue }
+      let comment = '', reason = '', score = 15
+      try {
+        const msgs = [
+          { role: 'system', content: '你是"大肥鱼"，替主人在 B站 评论区写一条 @ 主人的分享评论。只输出 JSON：'
+            + '{"comment":"15~60字，开头 @' + (ownerName || '主人') + '，像真人、有梗","reason":"至少8字，为什么值得分享给主人","score":0到20的整数}' },
+          { role: 'user', content: `视频《${it.title}》\n看懂的信息：${ctxBrief}\n写评论：` },
+        ]
+        const resp = await llm.chat(msgs, { temperature: 0.85 })
+        const m = String(resp?.content ?? resp ?? '').match(/\{[\s\S]*\}/)
+        if (m) { const j = JSON.parse(m[0]); comment = String(j.comment || ''); reason = String(j.reason || ''); score = Number(j.score) || 15 }
+      } catch (e) { log('[bili-watch] 评论生成失败：' + e.message); continue }
 
-    if (!comment) { log('  ✗ 评论为空，跳过'); continue }
-    const args = ['comment', '--share', '--bvid', bvid, '--message', comment, '--reason', reason, '--score', String(Math.round(score)), '--rank', '1']
-    if (!dry) args.push('--go')
-    try { log(runFeiyu(args)) } catch (e) { log('[bili-watch] 评论失败：' + e.message) }
-    done++
+      if (!comment) { log('  ✗ 评论为空，跳过'); continue }
+      const args = ['comment', '--share', '--bvid', bvid, '--message', comment, '--reason', reason, '--score', String(Math.round(score)), '--rank', '1']
+      if (!dry) args.push('--go')
+      try { log(runFeiyu(args)) } catch (e) { log('[bili-watch] 评论失败：' + e.message) }
+      done++
+      if (restSec > 0) await sleep(restSec + Math.random() * 60_000)
+    }
+    if (!free) break
   }
   log(`\n[bili-watch] 结束：处理 ${done} 条。`)
 }

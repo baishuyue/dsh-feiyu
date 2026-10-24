@@ -220,6 +220,14 @@ textarea.fy-input{width:100%;min-height:136px;resize:vertical;line-height:1.65;f
 				douyinAutoComment: !!(c.douyin && c.douyin.autoComment),
 				douyinDm: !!(c.douyin && c.douyin.dm && c.douyin.dm.enabled),
 				douyinSilent: !!(c.douyin && c.douyin.watch && c.douyin.watch.silent),
+				douyinFreeRoam: !!(c.douyin && c.douyin.freeRoam && c.douyin.freeRoam.enabled),
+				douyinUnlimited: (c.douyin && c.douyin.freeRoam && c.douyin.freeRoam.unlimited) !== false,
+				douyinMaxVideos: (c.douyin && c.douyin.freeRoam && c.douyin.freeRoam.maxVideos) || 0,
+				douyinMaxMinutes: (c.douyin && c.douyin.freeRoam && c.douyin.freeRoam.maxMinutes) || 0,
+				biliFreeRoam: !!(c.bilibili && c.bilibili.freeRoam && c.bilibili.freeRoam.enabled),
+				biliUnlimited: (c.bilibili && c.bilibili.freeRoam && c.bilibili.freeRoam.unlimited) !== false,
+				biliMaxVideos: (c.bilibili && c.bilibili.freeRoam && c.bilibili.freeRoam.maxVideos) || 0,
+				biliMaxMinutes: (c.bilibili && c.bilibili.freeRoam && c.bilibili.freeRoam.maxMinutes) || 0,
 					voiceChance: (c.qq && c.qq.voice_chance) || 0,
 					voicePath: (c.voice && c.voice.ref_audio_path) || "",
 					wxRhythm: (c.wechat && c.wechat.rhythm) || "fast",
@@ -308,6 +316,18 @@ textarea.fy-input{width:100%;min-height:136px;resize:vertical;line-height:1.65;f
 					flash(r.ok ? (r.note || "B站静默刷已开始") : (r.errors || []).join("；") || "启动失败", !r.ok);
 				} catch (e) {
 					flash("启动 B站静默刷失败：" + ((e && e.message) || e), true);
+				} finally { setBusy(""); }
+			}, [flash]);
+
+			const toggleFreeRoam = useCallback(async (platform, on) => {
+				setBusy("freeroam:" + platform);
+				try {
+					const r = await api("/services", { method: "POST", body: JSON.stringify({ target: "free-roam", platform: platform, action: on ? "start" : "stop" }) });
+					setSvc(r.services || null);
+					if (r.ok) flash(on ? (platform === "douyin" ? "抖音自由刷已启动（大肥鱼自己去逛了）" : "B站自由刷已启动（大肥鱼自己去逛了）") : "自由刷已停止");
+					else flash((r.errors || []).join("；") || "操作失败", true);
+				} catch (e) {
+					flash("自由刷操作失败：" + ((e && e.message) || e), true);
 				} finally { setBusy(""); }
 			}, [flash]);
 
@@ -694,7 +714,43 @@ textarea.fy-input{width:100%;min-height:136px;resize:vertical;line-height:1.65;f
 							onChange: (e) => setDraft(Object.assign({}, draft, { douyinCount: e.target.value })),
 							onBlur: () => save({ douyin: { maxPerRun: Number(draft.douyinCount) || 2 } }, "抖音条数已保存"),
 						}),
-						h("span", { className: "fy-hint", style: { marginTop: 0 } }, "一轮刷几条就收手（防 shadowban）"))),
+						h("span", { className: "fy-hint", style: { marginTop: 0 } }, "一轮刷几条就收手（防 shadowban）")),
+					h("div", { className: "fy-sub", style: { marginTop: 10 } }, "自由刷 · 大肥鱼自己逛"),
+					h(Row, { label: "自由刷" },
+						h(Switch, {
+							on: draft.douyinFreeRoam,
+							label: "douyinFreeRoam",
+							onChange: (v) => {
+								setDraft(Object.assign({}, draft, { douyinFreeRoam: v }));
+								save({ douyin: { freeRoam: { enabled: v } } }, v ? "已开启抖音自由刷" : "已关闭抖音自由刷");
+								toggleFreeRoam("douyin", v);
+							},
+						}),
+						h("span", { className: "fy-hint", style: { marginTop: 0 } }, "开着就一直刷，看到有意思的抖音私信发你")),
+					h(Row, { label: "不限量" },
+						h(Switch, {
+							on: draft.douyinUnlimited,
+							label: "douyinUnlimited",
+							onChange: (v) => {
+								setDraft(Object.assign({}, draft, { douyinUnlimited: v }));
+								save({ douyin: { freeRoam: { unlimited: v } } }, v ? "自由：不限条数/时长" : "按下面限度刷");
+							},
+						}),
+						h("span", { className: "fy-hint", style: { marginTop: 0 } }, "自由选项（默认开）")),
+					h(Row, { label: "最大条数" },
+						h("input", {
+							className: "fy-input fy-w-sm", type: "number", min: 0, value: draft.douyinMaxVideos, placeholder: "0",
+							onChange: (e) => setDraft(Object.assign({}, draft, { douyinMaxVideos: e.target.value })),
+							onBlur: () => save({ douyin: { freeRoam: { maxVideos: Number(draft.douyinMaxVideos) || 0 } } }, "抖音自由刷条数已保存"),
+						}),
+						h("span", { className: "fy-hint", style: { marginTop: 0 } }, "0 = 不限（关掉「不限量」才按这个数）")),
+					h(Row, { label: "最长时长" },
+						h("input", {
+							className: "fy-input fy-w-sm", type: "number", min: 0, value: draft.douyinMaxMinutes, placeholder: "0",
+							onChange: (e) => setDraft(Object.assign({}, draft, { douyinMaxMinutes: e.target.value })),
+							onBlur: () => save({ douyin: { freeRoam: { maxMinutes: Number(draft.douyinMaxMinutes) || 0 } } }, "抖音自由刷时长已保存"),
+						}),
+						h("span", { className: "fy-hint", style: { marginTop: 0 } }, "分钟，0 = 不限"))),
 
 				// B站
 				h(Card, {
@@ -727,7 +783,43 @@ textarea.fy-input{width:100%;min-height:136px;resize:vertical;line-height:1.65;f
 					h(Row, { label: "静默自助刷" },
 						h("button", { className: "fy-btn", disabled: busy === "biliwatch", onClick: startBiliWatch },
 							busy === "biliwatch" ? "启动中…" : "静默刷一轮"),
-						h("span", { className: "fy-hint", style: { marginTop: 0 } }, "feed→深读→@评论（干跑/真发看 guard.dryRun）"))),
+						h("span", { className: "fy-hint", style: { marginTop: 0 } }, "feed→深读→@评论（干跑/真发看 guard.dryRun）")),
+					h("div", { className: "fy-sub", style: { marginTop: 10 } }, "自由刷 · 大肥鱼自己逛"),
+					h(Row, { label: "自由刷" },
+						h(Switch, {
+							on: draft.biliFreeRoam,
+							label: "biliFreeRoam",
+							onChange: (v) => {
+								setDraft(Object.assign({}, draft, { biliFreeRoam: v }));
+								save({ bilibili: { freeRoam: { enabled: v } } }, v ? "已开启 B站自由刷" : "已关闭 B站自由刷");
+								toggleFreeRoam("bilibili", v);
+							},
+						}),
+						h("span", { className: "fy-hint", style: { marginTop: 0 } }, "开着就一直刷，评论区 @ 你")),
+					h(Row, { label: "不限量" },
+						h(Switch, {
+							on: draft.biliUnlimited,
+							label: "biliUnlimited",
+							onChange: (v) => {
+								setDraft(Object.assign({}, draft, { biliUnlimited: v }));
+								save({ bilibili: { freeRoam: { unlimited: v } } }, v ? "自由：不限条数/时长" : "按下面限度刷");
+							},
+						}),
+						h("span", { className: "fy-hint", style: { marginTop: 0 } }, "自由选项（默认开）")),
+					h(Row, { label: "最大条数" },
+						h("input", {
+							className: "fy-input fy-w-sm", type: "number", min: 0, value: draft.biliMaxVideos, placeholder: "0",
+							onChange: (e) => setDraft(Object.assign({}, draft, { biliMaxVideos: e.target.value })),
+							onBlur: () => save({ bilibili: { freeRoam: { maxVideos: Number(draft.biliMaxVideos) || 0 } } }, "B站自由刷条数已保存"),
+						}),
+						h("span", { className: "fy-hint", style: { marginTop: 0 } }, "0 = 不限（关掉「不限量」才按这个数）")),
+					h(Row, { label: "最长时长" },
+						h("input", {
+							className: "fy-input fy-w-sm", type: "number", min: 0, value: draft.biliMaxMinutes, placeholder: "0",
+							onChange: (e) => setDraft(Object.assign({}, draft, { biliMaxMinutes: e.target.value })),
+							onBlur: () => save({ bilibili: { freeRoam: { maxMinutes: Number(draft.biliMaxMinutes) || 0 } } }, "B站自由刷时长已保存"),
+						}),
+						h("span", { className: "fy-hint", style: { marginTop: 0 } }, "分钟，0 = 不限"))),
 
 // 角色设定
 				h(Card, {

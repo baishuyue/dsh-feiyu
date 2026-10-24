@@ -97,8 +97,17 @@ export const DEFAULTS = {
     // 自主观看时也以"自学习人格"发评论（受 douyin.dryRun 控制，默认只演练）
     autoComment: false,
     watch: { enabled: false, durationMin: 10, maxVideos: 3, dry: true, silent: false },
+    // 自由刷：大肥鱼自己长时间刷抖音看世界，不限条数/时长（unlimited），限度可调。
+    // unlimited=true 时刷到「每日分享额度用完」或手动停；unlimited=false 按 maxVideos/maxMinutes。
+    freeRoam: { enabled: false, unlimited: true, maxVideos: 0, maxMinutes: 0, restMin: 3 },
     // 私信陪聊（参照 QQ 模式）：常驻轮询主人私信，新消息→LLM 回
     dm: { enabled: false, pollSec: 300, port: 8090 },
+  },
+
+  // B站（生物钟在 night 段；这里放自由刷的限度）
+  bilibili: {
+    // 自由刷：评论区 @ 主人那套。unlimited=true 不限条数/时长，刷到每日分享额度用完或手动停。
+    freeRoam: { enabled: false, unlimited: true, maxVideos: 0, maxMinutes: 0, restMin: 5 },
   },
 }
 
