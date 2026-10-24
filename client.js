@@ -219,6 +219,7 @@ textarea.fy-input{width:100%;min-height:136px;resize:vertical;line-height:1.65;f
 				douyinShare: !!(c.douyin && c.douyin.shareToOwner),
 				douyinAutoComment: !!(c.douyin && c.douyin.autoComment),
 				douyinDm: !!(c.douyin && c.douyin.dm && c.douyin.dm.enabled),
+				douyinSilent: !!(c.douyin && c.douyin.watch && c.douyin.watch.silent),
 					voiceChance: (c.qq && c.qq.voice_chance) || 0,
 					voicePath: (c.voice && c.voice.ref_audio_path) || "",
 					wxRhythm: (c.wechat && c.wechat.rhythm) || "fast",
@@ -703,6 +704,16 @@ textarea.fy-input{width:100%;min-height:136px;resize:vertical;line-height:1.65;f
 							},
 						}),
 						h("span", { className: "fy-hint", style: { marginTop: 0 } }, "像 QQ 那样常驻：轮询主人私信，新消息自动回")),
+					h(Row, { label: "抖音 · 静默模式" },
+						h(Switch, {
+							on: draft.douyinSilent,
+							label: "douyinSilent",
+							onChange: (v) => {
+								setDraft(Object.assign({}, draft, { douyinSilent: v }));
+								save({ douyin: { watch: { silent: v } } }, v ? "已开启静默：刷/看/分享都无头后台跑" : "已关闭静默（有头，可看操作过程）");
+							},
+						}),
+						h("span", { className: "fy-hint", style: { marginTop: 0 } }, "无头后台：不弹 Chrome，看/分享/评论全流程静默")),
 					h(Row, { label: "B站 · 静默刷" },
 						h("button", { className: "fy-btn", disabled: busy === "biliwatch", onClick: startBiliWatch },
 							busy === "biliwatch" ? "启动中…" : "静默刷一轮"),

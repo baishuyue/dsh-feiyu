@@ -38,6 +38,7 @@ export async function run(argv = []) {
   if (!secUid) { console.error('[douyin-dm] 未配置 douyin.owner.sec_uid，无法陪聊'); process.exit(1) }
   const pollSec = Number(cfg.douyin?.dm?.pollSec || 20)
   const dry = cfg.douyin?.dryRun !== false
+  const silent = cfg.douyin?.watch?.silent === true || cfg.douyin?.dm?.headless === true
 
   // 水位：最近处理过的主人消息（文本指纹），重启不重放
   let handled = readJson(WM_FILE, { handled: [] }).handled || []
@@ -56,7 +57,9 @@ export async function run(argv = []) {
 
   async function tick() {
     try {
-      const out = runPy(['dm-read', '--sec-uid', secUid, '--name', ownerName, '--n', '20'], cfg)
+      const readArgs = ['dm-read', '--sec-uid', secUid, '--name', ownerName, '--n', '20']
+      if (silent) readArgs.push('--headless')
+      const out = runPy(readArgs, cfg)
       const data = jsonOf(out)
       const msgs = (data && data.messages) || []
       // 只看主人发来的、最新的
@@ -78,7 +81,9 @@ export async function run(argv = []) {
       if (dry) {
         console.log(`[douyin-dm] 【干跑 ✓】本要回复：${reply.slice(0, 50)}`)
       } else {
-        runPy(['dm-send', '--sec-uid', secUid, '--name', ownerName, '--message', reply, '--go', '--cdp'], cfg)
+        const sendArgs = ['dm-send', '--sec-uid', secUid, '--name', ownerName, '--message', reply, '--go', '--cdp']
+        if (silent) sendArgs.push('--headless')
+        runPy(sendArgs, cfg)
         console.log(`[douyin-dm] ✅ 已回复：${reply.slice(0, 50)}`)
       }
       handled.push(key)

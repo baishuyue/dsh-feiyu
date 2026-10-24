@@ -58,6 +58,7 @@ function shareQuotaRecord(cfg) {
 export async function run(argv = []) {
   const cfg = config()
   const dry = has(argv, '--dry') || cfg.douyin?.watch?.dry === true
+  const silent = has(argv, '--silent') || cfg.douyin?.watch?.silent === true   // 无头后台，不弹 Chrome
   const durationMin = Number(arg(argv, '--duration', cfg.douyin?.watch?.durationMin || 10))
   const max = Number(arg(argv, '--max', cfg.douyin?.watch?.maxVideos || 3))
   const started = Date.now()
@@ -69,7 +70,7 @@ export async function run(argv = []) {
 
   while (watched < max && Date.now() < deadline) {
     let feed = {}
-    try { feed = jsonOf(runPy(['feed', '--headed'], cfg)) } catch (e) { console.error('[watch] feed 失败：' + e.message); break }
+    try { feed = jsonOf(runPy(silent ? ['feed'] : ['feed', '--headed'], cfg)) } catch (e) { console.error('[watch] feed 失败：' + e.message); break }
     const videos = (feed.videos || []).filter(v => v.desc && v.author && !seen.has(v.vid)).filter(v => matchPrefs(v, cfg))
     if (!videos.length) { console.log('[watch] 没有更多对口味的视频，结束。'); break }
 
@@ -80,7 +81,7 @@ export async function run(argv = []) {
 
     // 读热评，当作"看了内容"
     let hot = []
-    try { const c = jsonOf(runPy(['comments', '--vid', v.vid, '--headed'], cfg)); hot = (c.comments || []).filter(x => x.text).slice(0, 4).map(x => x.text) } catch {}
+    try { const c = jsonOf(runPy(silent ? ['comments', '--vid', v.vid] : ['comments', '--vid', v.vid, '--headed'], cfg)); hot = (c.comments || []).filter(x => x.text).slice(0, 4).map(x => x.text) } catch {}
 
     // 决策：继续 / 换片 / 停；顺带判断 值不值得分享给主人 / 值不值得评论
     let decision = '继续', reason = '', share = false, comment = ''
@@ -114,7 +115,9 @@ export async function run(argv = []) {
           ok = true   // 干跑不占真额度，但记录一下决策
         } else {
           if ((via === 'douyin' || via === 'both') && ownerSecUid) {
-            try { console.log(runPy(['dm-send', '--sec-uid', ownerSecUid, '--name', ownerName, '--message', text, '--go', '--cdp'], cfg)); ok = true } catch (e) { console.error('[watch] 抖音私信分享失败：' + e.message) }
+            const dmArgs = ['dm-send', '--sec-uid', ownerSecUid, '--name', ownerName, '--message', text, '--go', '--cdp']
+            if (silent) dmArgs.push('--headless')
+            try { console.log(runPy(dmArgs, cfg)); ok = true } catch (e) { console.error('[watch] 抖音私信分享失败：' + e.message) }
           }
           if (via === 'qq' || (via === 'both' && !ok)) {
             ok = await sendOwnerQQ(`在抖音刷到个好玩的：${text}`)
