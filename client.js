@@ -88,8 +88,9 @@ textarea.fy-input{width:100%;min-height:136px;resize:vertical;line-height:1.65;f
   padding:6px 13px;font:inherit;font-size:12.5px;cursor:pointer;transition:background .15s,border-color .15s}
 .fy-btn:hover{background:var(--dsw-alias-bg-l3,color-mix(in srgb,currentColor 12%,transparent))}
 .fy-btn:disabled{opacity:.55;cursor:default}
-.fy-btn.primary{background:var(--dsw-alias-brand-primary,#3b6cf6);border-color:var(--dsw-alias-brand-primary,#3b6cf6);color:#fff}
-.fy-btn.primary:hover{filter:brightness(1.07)}
+.fy-btn.primary{background:#3b6cf6;border-color:#3b6cf6;color:#fff}
+.fy-btn.primary:hover{background:#2f5be0}
+
 .fy-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
 @media (max-width:460px){.fy-grid{grid-template-columns:1fr}}
 .fy-sw{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 12px;border-radius:10px;
@@ -285,8 +286,9 @@ textarea.fy-input{width:100%;min-height:136px;resize:vertical;line-height:1.65;f
 			const startNapcat = useCallback(async () => {
 				setBusy("svc:napcat");
 				try {
-					const r = await api("/services", { method: "POST", body: JSON.stringify({ target: "napcat", action: "start" }) });
+					const r = await api("/services", { method: "POST", body: JSON.stringify({ target: "napcat", action: "install" }) });
 					flash(r.ok ? (r.note || "已请求启动 QQ 网关，请在 UAC 窗口点「是」") : (r.errors || []).join("；") || "启动失败", !r.ok);
+					if (r.ok) setTimeout(load, 8000);
 				} catch (e) {
 					flash("启动 QQ 网关失败：" + ((e && e.message) || e), true);
 				} finally { setBusy(""); }
@@ -390,7 +392,7 @@ textarea.fy-input{width:100%;min-height:136px;resize:vertical;line-height:1.65;f
 							className: "fy-btn primary",
 							disabled: busy === "svc:napcat",
 							onClick: startNapcat,
-						}, busy === "svc:napcat" ? "启动中…" : "启动 QQ 网关") : null,
+						}, busy === "svc:napcat" ? "授权中…" : "安装并启动 QQ 网关") : null,
 						h("button", {
 							className: "fy-btn",
 							disabled: busy === "svc:all",

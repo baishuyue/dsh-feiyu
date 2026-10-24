@@ -211,6 +211,16 @@ node tools/feiyu.mjs douyin images --dir out/imgs --desc "…"
   B站 / 抖音 评论区发不了图，只走颜文字；图库空着时自动退回颜文字兜底。
 - **日志**：`~/.feiyu-ai/wechat-bot.log`（收/想好/发出/表情/跳过/失败 全在里面）。
 
+### QQ 网关（NapCat）为什么老是"服务在跑却不回"
+
+`qq-server`（8080）只是中转壳，真正收发消息的是 **NapCat（3000）+ QQ 客户端**，
+而 NapCat 靠 DLL 注入 QQ，**必须管理员权限**——普通权限启动会静默失败（QQ 进程数 0）。
+
+一次性修复：双击 `D://NapCat//一键启动QQ网关.bat` → UAC 点「是」。
+它会注册计划任务 `DSH-Feiyu-NapCat`（登录即启动 + 最高权限）并立刻启动；
+之后开机自动跑，DSH 每次启动也会顺手 `/Run` 一次这个任务。
+面板上「QQ 网关 断开」时点「安装并启动 QQ 网关」是同一套动作（会弹 UAC）。
+
 启动：双击 `D:\wechat-bot\start_wechat.bat`（无窗口），或重启 DSH 由插件自动拉起。
 
 ## 表情：颜文字 / 表情包 / 评论区的“表情包”
