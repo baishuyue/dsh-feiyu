@@ -121,8 +121,11 @@ export async function run(argv = []) {
         }
       }
       done++
+      // ⚠️ 开关热读：钩子条件每条视频都重新读配置 —— cfg 是启动时快照，
+      // 主人中途在面板开投币/回评等开关，不热读就永远不生效
+      const hc = config().bilibili ?? {}
       // 弹幕：LLM 觉得值得才发（danmaku.enabled + 日额度在 bili-write 里把关）
-      if (danmaku && dry === false) {
+      if (danmaku && dry === false && hc.danmaku?.enabled === true) {
         try {
           const w = await import('../lib/bili-write.mjs')
           const r = await w.sendDanmaku(bvid, danmaku, { go: true })
@@ -130,7 +133,7 @@ export async function run(argv = []) {
         } catch {}
       }
       // 投币：评分很高才投（react.coin 显式开 + 每日额度）
-      if (score >= 16 && cfg.bilibili?.react?.coin === true && dry === false) {
+      if (score >= 16 && hc.react?.coin === true && dry === false) {
         try {
           const w = await import('../lib/bili-write.mjs')
           const r = await w.coinVideo(bvid, { go: true, num: 1 })
@@ -138,7 +141,7 @@ export async function run(argv = []) {
         } catch {}
       }
       // 关注好 UP：评分高的视频作者值得关注（follow 显式开）
-      if (score >= 16 && cfg.bilibili?.follow?.enabled === true && dry === false) {
+      if (score >= 16 && hc.follow?.enabled === true && dry === false) {
         try {
           const w = await import('../lib/bili-write.mjs')
           const r = await w.followUser(String(it.ownerMid || ''), { go: true })
@@ -146,7 +149,7 @@ export async function run(argv = []) {
         } catch {}
       }
       // 图片评论（表情贴纸）：LLM 给了贴纸文案就画一张发出去（imageComment 显式开 + 日额度）
-      if (sticker && cfg.bilibili?.imageComment?.enabled === true && dry === false) {
+      if (sticker && hc.imageComment?.enabled === true && dry === false) {
         try {
           const pic = ensureSelfSticker(sticker, cfg)
           if (pic) {
@@ -155,7 +158,7 @@ export async function run(argv = []) {
         } catch (e) { log('  （贴纸评论没成：' + String(e.message).slice(0, 60) + '）') }
       }
       // 回评论社交：每 30 分钟扫一次别人对我评论的回复（replies 显式开）
-      if (cfg.bilibili?.replies?.enabled === true && dry === false && Date.now() - lastReplyScan > 30 * 60_000) {
+      if (hc.replies?.enabled === true && dry === false && Date.now() - lastReplyScan > 30 * 60_000) {
         lastReplyScan = Date.now()
         try { log(runFeiyu(['replies', '--go', '--max', '2']).split('\n').slice(0, 4).join(' | ')) } catch {}
       }

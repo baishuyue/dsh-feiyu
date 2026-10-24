@@ -86,11 +86,11 @@ export async function sendDanmaku(bvid, rawText, { go = false, atSec = 0 } = {})
       const full = await import('./config.mjs')
       const py = full.config().douyin?.python || 'D:/social-auto-upload/.venv/Scripts/python.exe'
       const out = await new Promise((resolve) => {
-        execFile(py, ['D:/social-auto-upload/bili_act_cdp.py', 'dm', bvid, text, String(at)],
+        execFile(py, ['D:/social-auto-upload/bili_act_cdp.py', 'dm', bvid, text, String(info.aid), String(info.cid), String(at)],
           { encoding: 'utf8', timeout: 180000, windowsHide: true }, (e2, so, se) => resolve(String((so || se || e2?.message) || '')))
       })
-      if (out.includes('SEND_DM') && (/"code"\s*:\s*0/.test(out) || /"action"/.test(out) === false && / SEND_DM:\s*\{/.test(out))) {
-        // post.so 成功时返回的 JSON 里没有 code 字段（老接口），只要不是 NEED_LOGIN/报错就算成
+      // post.so 老接口成功时返回 {"code":0,...}；失败时 code!=0 或 NEED_LOGIN
+      if (out.includes('SEND_DM') && /"code"\s*:\s*0/.test(out)) {
         capRecord('danmaku'); return { ok: true, why: `弹幕已发（CDP 通道，第 ${at}s）：${text}` }
       }
       if (out.includes('NEED_LOGIN')) return { ok: false, why: '弹幕需要先在 CDP Chrome 里登录一次B站（扫码）' }
