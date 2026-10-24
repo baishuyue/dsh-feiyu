@@ -28,6 +28,7 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms))
 
 export async function run(argv = []) {
   const cfg = config()
+  try { const n = memory.sweepEpisodes(); if (n) log(`[bili-watch] 记忆归档：${n} 条 90 天前的旧事件移入 *.archive.jsonl`) } catch {}
   const dry = has(argv, '--dry') || cfg.guard?.dryRun !== false
   const ownerName = cfg.owner?.name || ''
   // 自由刷：大肥鱼自己长时间刷 B站，不限条数/时长（unlimited）或按限度

@@ -37,13 +37,15 @@ function runPy(argv, cfg) {
 }
 function jsonOf(out) { const m = String(out).match(/\{[\s\S]*\}/); if (!m) return {}; try { return JSON.parse(m[0]) } catch { return {} } }
 
-function matchPrefs(v, cfg) {
+function matchPrefs(v, cfg, grams) {
   const like = cfg.preferences?.like || []
   const dislike = cfg.preferences?.dislike || []
   const hay = `${v.desc} ${v.author}`.toLowerCase()
   if (dislike.some(k => k && hay.includes(k))) return false
-  if (like.length && !like.some(k => k && hay.includes(k))) return false
-  return true
+  if (like.some(k => k && hay.includes(k))) return true
+  // 静态偏好没中，问她自己养成的兴趣（lore 兴趣池的 2-gram 重合）—— 口味自己长
+  if (grams && grams.size && memory.interestScore(hay, grams) >= 3) return true
+  return !like.length
 }
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms))
@@ -102,6 +104,7 @@ function shareQuotaRecord(cfg) {
 
 export async function run(argv = []) {
   const cfg = config()
+  try { const n = memory.sweepEpisodes(); if (n) log(`[watch] 记忆归档：${n} 条 90 天前的旧事件移入 *.archive.jsonl`) } catch {}
   const dry = has(argv, '--dry') || douyinDry(cfg)
   const silent = has(argv, '--silent') || cfg.douyin?.watch?.silent === true   // 无头后台，不弹 Chrome
   // 自由刷：大肥鱼自己长时间刷，不限条数/时长（unlimited）或按限度，每条之间休息更久（防风控）
@@ -126,6 +129,7 @@ export async function run(argv = []) {
   log(`[watch] ${free ? '自由刷' : '自主观看'}开始：${limitText}${dry ? '（DRY：只决策不真发评论）' : ''}${free ? ` · 每条间隔约 ${Math.round(restMs / 60_000)} 分钟` : ''}`)
   const seen = new Set()
   let watched = 0
+  const grams = memory.interestGrams()   // 她自己养成的口味，一次算好整轮用
 
   while (watched < max && Date.now() < deadline) {
     let feed = {}
@@ -145,7 +149,7 @@ export async function run(argv = []) {
       if (free) { log('[watch] feed 连续 3 次失败，歇 5 分钟再试（自由刷不退出）'); await sleep(5 * 60_000); continue }
       log('[watch] feed 连续 3 次失败，本轮结束（下次再试）'); break
     }
-    const videos = (feed.videos || []).filter(v => v.desc && v.author && !seen.has(v.vid)).filter(v => matchPrefs(v, cfg))
+    const videos = (feed.videos || []).filter(v => v.desc && v.author && !seen.has(v.vid)).filter(v => matchPrefs(v, cfg, grams))
     if (!videos.length) {
       if (free) { log('[watch] 这一屏没有对口味的视频，歇一会儿再刷'); await sleep(restMs || 30_000); continue }
       log('[watch] 没有更多对口味的视频，结束。'); break

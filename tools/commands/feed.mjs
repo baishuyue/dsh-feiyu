@@ -5,6 +5,7 @@
 import { apiGet, makeHeaders } from '../lib/bili-api.mjs'
 import { loadCred } from '../lib/cred.mjs'
 import { config } from '../lib/config.mjs'
+import * as memory from '../lib/memory.mjs'
 
 export async function run(argv = []) {
   const cfg = config()
@@ -46,9 +47,12 @@ export async function run(argv = []) {
     }
   }
 
-  // ③ 打分：偏好命中加权；dislike 命中剔除；弹幕密度做次级信号
+  // ③ 打分：偏好命中加权；dislike 命中剔除；弹幕密度做次级信号；
+  //    兴趣加权 —— 她在 lore 里养成的口味（"想再看美食"这类记忆）反哺选题，
+  //    静态 preferences 是主人给的起点，口味由她自己长（进化闭环）。
   const like = cfg.preferences?.like ?? []
   const dislike = cfg.preferences?.dislike ?? []
+  const grams = memory.interestGrams()
   const out = []
   for (const it of candidates.values()) {
     const hay = (it.title + ' ' + it.owner + ' ' + (it.desc ?? '')).toLowerCase()
@@ -58,6 +62,8 @@ export async function run(argv = []) {
     for (const w of like) {
       if (hay.includes(String(w).toLowerCase())) { hit += 2; why.push(w) }
     }
+    const iHit = grams.size ? memory.interestScore(hay, grams) : 0
+    if (iHit >= 3) { hit += Math.min(iHit, 6); why.push(`她养成的兴趣(${iHit})`) }
     const density = Number(it.play) > 0 ? it.danmaku / it.play : 0   // 弹幕密度：互动质量信号
     out.push({ ...it, hit, density: Number(density.toFixed(4)), why: why.join('、') || '无偏好命中（靠密度入选）' })
   }

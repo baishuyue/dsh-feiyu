@@ -54,14 +54,16 @@ function parseFeedJson(out) {
   try { return JSON.parse(m[0]) } catch { return { videos: [] } }
 }
 
-// 口味过滤（仿 B站 feed：标题/文案命中偏好）
+// 口味过滤（仿 B站 feed：标题/文案命中偏好；静态偏好没中时再问她自己养成的兴趣）
 function matchPrefs(v, cfg) {
   const like = cfg.preferences?.like || []
   const dislike = cfg.preferences?.dislike || []
   const hay = (v.desc + ' ' + v.author).toLowerCase()
   for (const w of dislike) if (w && hay.includes(String(w).toLowerCase())) return false
-  if (!like.length) return true
-  return like.some(w => w && hay.includes(String(w).toLowerCase()))
+  if (like.some(w => w && hay.includes(String(w).toLowerCase()))) return true
+  const grams = memory.interestGrams()
+  if (grams.size && memory.interestScore(hay, grams) >= 3) return true
+  return !like.length
 }
 
 export function run(argv = []) {

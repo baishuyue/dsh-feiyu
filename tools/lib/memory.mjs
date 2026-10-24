@@ -59,14 +59,16 @@ export function episodeFile(platform) {
   return EP_FILE
 }
 
-/** 记一条事件。role: user|assistant|event。summary 取前 120 字。 */
+/** 记一条事件。role: user|assistant|event。summary 取前 120 字。
+ *  platform 缺省时按 chatId 前缀推断（曾出过 54 条无平台标记的脏数据）。 */
 export function remember(platform, chatId, userId, role, text) {
+  const p = String(platform || platformOf(chatId) || 'misc')
   const t = String(text ?? '')
   const rec = {
-    ts: Date.now(), platform, chatId, userId, role,
+    ts: Date.now(), platform: p, chatId, userId, role,
     text: t, summary: t.slice(0, 120),
   }
-  const file = episodeFile(platform)
+  const file = episodeFile(p)
   fs.mkdirSync(path.dirname(file), { recursive: true })
   fs.appendFileSync(file, JSON.stringify(rec) + '\n')
 }
@@ -148,16 +150,82 @@ export function facts(userId, max = 30) {
 }
 
 // ---------- 世界（lore） ----------
+// lore 分两池（10-24 设计）：
+//   · 价值观（评分标尺/风控教训/边界取舍这类）—— 永久保留，常驻注入提示词
+//   · 兴趣（口味）—— FIFO 200，口味会变，老兴趣自然让位
+// 按 tag 区分：「兴趣」标签进兴趣池，其余都算价值观。
+
+const isInterest = (x) => x.kind === 'interest' || x.tag === '兴趣'
 
 export function addLore(tag, text) {
   const list = readJson(LORE_FILE, [])
-  list.push({ tag: String(tag), text: String(text), ts: Date.now() })
-  writeJson(LORE_FILE, list.slice(-200))
+  list.push({ tag: String(tag), text: String(text), ts: Date.now(), kind: String(tag) === '兴趣' ? 'interest' : 'value' })
+  const values = list.filter(x => !isInterest(x))
+  const interests = list.filter(isInterest)
+  writeJson(LORE_FILE, [...values, ...interests.slice(-200)].sort((a, b) => Number(a.ts || 0) - Number(b.ts || 0)))
 }
 
 export function lore(tag) {
   const list = readJson(LORE_FILE, [])
   return (tag ? list.filter(x => x.tag === tag) : list).map(x => x.text)
+}
+
+/** 价值观池（长期观念/标尺，永久保留）—— 提示词常驻。 */
+export function loreValues(max = 8) {
+  return readJson(LORE_FILE, []).filter(x => !isInterest(x)).slice(-max).map(x => x.text)
+}
+
+/** 兴趣池：最近 24 条里随机抽 max 条（每次聊到的话题不完全一样）。 */
+export function loreInterests(max = 3, random = Math.random) {
+  const tail = readJson(LORE_FILE, []).filter(isInterest).slice(-24)
+  if (tail.length <= max) return tail.map(x => x.text)
+  const picked = new Set()
+  let guard = 0
+  while (picked.size < max && guard++ < 50) picked.add(Math.floor(random() * tail.length))
+  return [...picked].map((i) => tail[i].text)
+}
+
+/** 她自己养成的兴趣口味 → 2-gram 池。feed/watch 选题时用它做动态偏好加权，
+ *  打通「看到→记住→想再看」的进化闭环（静态 preferences 是主人给的起点，口味自己长）。 */
+export function interestGrams(n = 24) {
+  const grams = new Set()
+  for (const item of readJson(LORE_FILE, []).filter(isInterest).slice(-n)) {
+    for (const g of tokens(item.text)) if (g.length >= 2) grams.add(g)
+  }
+  return grams
+}
+
+/** 一段文本与兴趣池的重合度（命中 2-gram 个数）。 */
+export function interestScore(haystack, grams) {
+  if (!grams || !grams.size) return 0
+  const hs = new Set(tokens(haystack))
+  let hits = 0
+  for (const g of grams) if (hs.has(g)) hits += 1
+  return hits
+}
+
+// ---------- 归档 ----------
+
+/** 把超过 days 的旧事件挪到 <file>.archive.jsonl（不删，想考古随时翻），
+ *  主文件只留近期 —— recall/最近对话的检索池保持干净。各常驻服务启动时调用。 */
+export function sweepEpisodes(days = 90) {
+  const cutoff = Date.now() - days * 86400_000
+  let archived = 0
+  for (const file of [EP_FILE, QQ_EP_FILE, WECHAT_EP_FILE]) {
+    try {
+      const lines = fs.readFileSync(file, 'utf8').trim().split('\n').filter(Boolean)
+      if (lines.length <= 1) continue
+      const keep = [], old = []
+      for (const line of lines) {
+        try { (Number(JSON.parse(line).ts ?? 0) >= cutoff ? keep : old).push(line) } catch { keep.push(line) }
+      }
+      if (!old.length) continue
+      fs.appendFileSync(file.replace(/\.jsonl$/, '') + '.archive.jsonl', old.join('\n') + '\n')
+      fs.writeFileSync(file, keep.length ? keep.join('\n') + '\n' : '')
+      archived += old.length
+    } catch {}
+  }
+  return archived
 }
 
 // ---------- 统计 ----------

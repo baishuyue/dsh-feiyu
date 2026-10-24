@@ -69,8 +69,11 @@ function diaryTail(lines = 3) {
  */
 export function worldBlock() {
   const parts = []
-  const lore = memory.lore().slice(-3)
-  if (lore.length) parts.push('你记住的世界/观念：\n' + lore.map(x => `· ${String(x).slice(0, 80)}`).join('\n'))
+  // lore 分层注入：价值观（标尺/教训）常驻，兴趣随机抽几条 —— 口味是流动的，观念是长住的
+  const values = memory.loreValues(6)
+  if (values.length) parts.push('你长期记住的观念/标尺：\n' + values.map(x => `· ${String(x).slice(0, 80)}`).join('\n'))
+  const interests = memory.loreInterests(3)
+  if (interests.length) parts.push('你最近的兴趣：\n' + interests.map(x => `· ${String(x).slice(0, 80)}`).join('\n'))
   const outer = recentOuter(4)
   if (outer.length) parts.push('你这两天在外面看到的（B站/抖音）：\n' + outer.join('\n'))
   const diary = diaryTail(2)
