@@ -220,6 +220,7 @@ export async function run(argv = []) {
   let napcatOk = false
   let napcatCheckedAt = 0
   let napcatDownSince = 0
+  let napcatFails = 0        // 连续探活失败次数（去抖用）
   let autostartAt = 0
 
   async function checkNapcat() {
@@ -231,6 +232,10 @@ export async function run(argv = []) {
     }
     napcatCheckedAt = Date.now()
     if (!napcatOk) {
+      napcatFails += 1
+      // 单次探活失败不算断（QQ 忙的时候 /get_status 也会超时，实测 26s 就自愈的瞬时抖动）：
+      // 连续 2 次失败才拉警报，不然日志全是狼来了。
+      if (napcatFails < 2) return napcatOk
       if (!napcatDownSince) napcatDownSince = Date.now()
       const downSec = Math.round((Date.now() - napcatDownSince) / 1000)
       logErr(`[napcat] 网关不通（${NAPCAT}），已持续 ${downSec}s —— 这期间收不到也发不出任何 QQ 消息`)
@@ -248,6 +253,7 @@ export async function run(argv = []) {
         }
       }
     } else {
+      napcatFails = 0
       if (napcatDownSince) log('[napcat] 网关恢复')
       napcatDownSince = 0
     }

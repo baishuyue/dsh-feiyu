@@ -96,18 +96,19 @@ export async function run(argv = []) {
       const msgs = (data && data.messages) || []
       // 只看主人发来的、最新的
       const inbound = msgs.filter(m => m.dir === 'in').map(m => String(m.text || '').trim()).filter(Boolean)
-      if (!inbound.length) return
+      if (!inbound.length) { failStreak = 0; return }
       // 首次运行：把现有消息全部记为基线（不回），从下一条新消息开始陪聊
       if (!seeded) {
         seeded = true
         for (const t of inbound) { const k = norm(t); if (k && !handled.includes(k)) handled.push(k) }
         writeJson(WM_FILE, { handled })
         log(`[douyin-dm] 首次运行：以现有 ${inbound.length} 条消息为基线，从下一条开始陪聊`)
+        failStreak = 0
         return
       }
       text = inbound[inbound.length - 1]
       const key = norm(text)
-      if (!key || handled.includes(key)) return
+      if (!key || handled.includes(key)) { failStreak = 0; return }
 
       log(`[douyin-dm] 主人：${text.slice(0, 50)}`)
 

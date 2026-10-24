@@ -58,6 +58,9 @@ WECHAT_DIR = os.path.join(MEMORY_DIR, "wechat")   # 工作记忆：按联系人�
 
 
 # ── 单实例锁：第二个实例直接退出（重复发送的根因）──────────────────────────────
+_MUTEX_HANDLE = None
+
+
 def acquire_single_instance():
     """单实例：Windows 命名互斥量（进程退出/崩溃由系统自动释放）。
 
@@ -65,7 +68,15 @@ def acquire_single_instance():
     会被同句柄后续写操作/追加模式干扰），第二个实例照样能起来 → 同一条消息
     被回两遍。命名互斥量没有这个问题：CreateMutexW 第二次拿到 ERROR_ALREADY_EXISTS
     就说明已经有人在跑。
+
+    ⚠️ main() 的崩溃重试会再次进来：同进程第二次 CreateMutexW 同名互斥量
+    同样返回 ERROR_ALREADY_EXISTS（互斥量是本进程第一次调用创建的），把自己
+    误判成"另一个实例"然后退出——自愈循环从来没生效过（10-24 19:07 实锤）。
+    用模块级句柄记住"本进程已持有"，重试直接复用。
     """
+    global _MUTEX_HANDLE
+    if _MUTEX_HANDLE:
+        return _MUTEX_HANDLE
     os.makedirs(MEMORY_DIR, exist_ok=True)
     try:
         import ctypes
@@ -76,6 +87,7 @@ def acquire_single_instance():
         if ctypes.get_last_error() == 183:      # ERROR_ALREADY_EXISTS
             kernel32.CloseHandle(handle)
             return None
+        _MUTEX_HANDLE = handle
         try:
             with open(LOCK_PATH, "w", encoding="utf-8") as f:
                 f.write(str(os.getpid()))
@@ -923,7 +935,18 @@ def main():
     wx = connect_wechat(wcfg)
 
     db = WeChatDB()
-    info = db.get_self_info() or {}
+    # 连接成功 ≠ 数据库就绪（UIA 先连上、DB 解密在后；10-24 19:06 就是这么崩的）：
+    # 读不到就等 5 秒再试，一共 60 秒，还不行才走崩溃重试。
+    info = None
+    for i in range(1, 13):
+        try:
+            info = db.get_self_info() or {}
+            break
+        except Exception as e:
+            log(f"[启动] 微信数据库还没就绪（{str(e)[:80]}），5 秒后重试 {i}/12")
+            time.sleep(5)
+    if info is None:
+        raise RuntimeError("微信数据库 60 秒内没就绪（微信客户端登录完成了吗？）")
     bot = Bot(wx, db)
     bot.self_username = info.get("username") or ""
     log(f"[启动] 数据库账号：{info.get('nick_name') or wx.nickname}（{bot.self_username}）")
@@ -960,6 +983,6 @@ if __name__ == "__main__":
         except KeyboardInterrupt:
             break
         except Exception:
-            log("[致命] " + traceback.format_exc().replace("\n", " | ")[:600])
+            log("[致命] " + traceback.format_exc().replace("\n", " | ")[-600:])
             heartbeat("crashed")
             time.sleep(15)
