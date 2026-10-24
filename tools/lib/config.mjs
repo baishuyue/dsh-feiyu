@@ -98,7 +98,7 @@ export const DEFAULTS = {
     autoComment: false,
     watch: { enabled: false, durationMin: 10, maxVideos: 3, dry: true },
     // 私信陪聊（参照 QQ 模式）：常驻轮询主人私信，新消息→LLM 回
-    dm: { enabled: false, pollSec: 20, port: 8090 },
+    dm: { enabled: false, pollSec: 60, port: 8090 },
   },
 }
 

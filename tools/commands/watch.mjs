@@ -107,13 +107,14 @@ export async function run(argv = []) {
         const text = `《${String(v.desc).slice(0, 40)}》 ${url}\n${line} 😆`
         const via = cfg.douyin?.shareVia || 'douyin'
         const ownerName = String(cfg.douyin?.owner?.name || cfg.owner?.name || '').trim()
+        const ownerSecUid = String(cfg.douyin?.owner?.sec_uid || '').trim()
         let ok = false
         if (douyinDry(cfg)) {
           console.log(`  【干跑 ✓】本要在抖音私信分享给「${ownerName || '主人'}」：${text.split('\n')[0]}…`)
           ok = true   // 干跑不占真额度，但记录一下决策
         } else {
-          if ((via === 'douyin' || via === 'both') && ownerName) {
-            try { console.log(runPy(['dm-send', '--to', ownerName, '--message', text, '--go', '--cdp'], cfg)); ok = true } catch (e) { console.error('[watch] 抖音私信分享失败：' + e.message) }
+          if ((via === 'douyin' || via === 'both') && ownerSecUid) {
+            try { console.log(runPy(['dm-send', '--sec-uid', ownerSecUid, '--name', ownerName, '--message', text, '--go', '--cdp'], cfg)); ok = true } catch (e) { console.error('[watch] 抖音私信分享失败：' + e.message) }
           }
           if (via === 'qq' || (via === 'both' && !ok)) {
             ok = await sendOwnerQQ(`在抖音刷到个好玩的：${text}`)

@@ -34,7 +34,8 @@ const norm = (s) => String(s || '').replace(/\s+/g, '').slice(0, 60)
 export async function run(argv = []) {
   const cfg = config()
   const ownerName = String(cfg.douyin?.owner?.name || '').trim()
-  if (!ownerName) { console.error('[douyin-dm] 未配置 douyin.owner.name（主人抖音昵称），无法陪聊'); process.exit(1) }
+  const secUid = String(cfg.douyin?.owner?.sec_uid || '').trim()
+  if (!secUid) { console.error('[douyin-dm] 未配置 douyin.owner.sec_uid，无法陪聊'); process.exit(1) }
   const pollSec = Number(cfg.douyin?.dm?.pollSec || 20)
   const dry = cfg.douyin?.dryRun !== false
 
@@ -55,7 +56,7 @@ export async function run(argv = []) {
 
   async function tick() {
     try {
-      const out = runPy(['dm-read', '--to', ownerName, '--n', '20'], cfg)
+      const out = runPy(['dm-read', '--sec-uid', secUid, '--name', ownerName, '--n', '20'], cfg)
       const data = jsonOf(out)
       const msgs = (data && data.messages) || []
       // 只看主人发来的、最新的
@@ -77,7 +78,7 @@ export async function run(argv = []) {
       if (dry) {
         console.log(`[douyin-dm] 【干跑 ✓】本要回复：${reply.slice(0, 50)}`)
       } else {
-        runPy(['dm-send', '--to', ownerName, '--message', reply, '--go', '--cdp'], cfg)
+        runPy(['dm-send', '--sec-uid', secUid, '--name', ownerName, '--message', reply, '--go', '--cdp'], cfg)
         console.log(`[douyin-dm] ✅ 已回复：${reply.slice(0, 50)}`)
       }
       handled.push(key)

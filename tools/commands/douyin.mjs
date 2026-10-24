@@ -131,26 +131,30 @@ export function run(argv = []) {
     return
   }
   if (cmd === 'dm' || cmd === 'dm-send') {
-    const to = arg(argv, '--to')
     const message = arg(argv, '--message')
-    if (!to || !message) { console.error('用法：node feiyu.mjs douyin dm --to <好友昵称> --message "…" [--go] [--cdp]'); process.exit(2) }
+    const secUid = arg(argv, '--sec-uid') || (cfg.douyin?.owner?.sec_uid || '')
+    const name = arg(argv, '--to') || arg(argv, '--name') || (cfg.douyin?.owner?.name || '')
+    if (!message || !secUid) { console.error('用法：node feiyu.mjs douyin dm --sec-uid <sec_uid> --message "…" [--go] [--cdp]'); process.exit(2) }
     const go = argv.includes('--go')
     const cdp = argv.includes('--cdp')
     const dry = douyinDry(cfg) || !go
-    if (dry) { console.log(`【干跑 ✓】不真发私信 → ${to}\n  内容：${message}`); return }
-    const args = ['dm-send', '--to', to, '--message', message]
+    if (dry) { console.log(`【干跑 ✓】不真发私信 → ${name || secUid}\n  内容：${message}`); return }
+    const args = ['dm-send', '--sec-uid', secUid, '--name', name, '--message', message]
     args.push('--go', ...(cdp ? ['--cdp'] : []))
     console.log(runPy(args, cfg))
     return
   }
-  if (cmd === 'dm-list') {
-    console.log(runPy(['dm-list'], cfg))
+  if (cmd === 'dm-read') {
+    const secUid = arg(argv, '--sec-uid') || (cfg.douyin?.owner?.sec_uid || '')
+    const name = arg(argv, '--name') || (cfg.douyin?.owner?.name || '')
+    if (!secUid) { console.error('需要 --sec-uid 或配置 douyin.owner.sec_uid'); process.exit(2) }
+    console.log(runPy(['dm-read', '--sec-uid', secUid, '--name', name], cfg))
     return
   }
   if (cmd === 'interact') {
     return runInteract(cfg)
   }
-  console.log('用法：login | cdp-start | feed [--headed] | comments --vid | comment --vid --message [--go --cdp] | reply --vid --cid --message [--go --cdp] | dm --to --message [--go --cdp] | dm-list | interact')
+  console.log('用法：login | cdp-start | feed [--headed] | comments --vid | comment --vid --message [--go --cdp] | reply --vid --cid --message [--go --cdp] | dm --sec-uid --message [--go --cdp] | dm-read --sec-uid | interact')
 }
 
 // 全流程：feed → 口味过滤 → 读热评 → LLM 生成评论 → 干跑发评论
