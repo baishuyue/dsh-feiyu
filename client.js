@@ -214,6 +214,7 @@ textarea.fy-input{width:100%;min-height:136px;resize:vertical;line-height:1.65;f
 				shareOn: !!(c.share && c.share.enabled),
 				shareMinScore: (c.share && c.share.minScore) || 13,
 				douyinCount: (c.douyin && c.douyin.maxPerRun) || 2,
+				douyinAt: !!(c.douyin && c.douyin.atMention),
 					voiceChance: (c.qq && c.qq.voice_chance) || 0,
 					voicePath: (c.voice && c.voice.ref_audio_path) || "",
 					wxRhythm: (c.wechat && c.wechat.rhythm) || "fast",
@@ -271,6 +272,16 @@ textarea.fy-input{width:100%;min-height:136px;resize:vertical;line-height:1.65;f
 					else flash((r.errors || []).join("；") || "生成失败", true);
 				} catch (e) {
 					flash("生成日报失败：" + ((e && e.message) || e), true);
+				} finally { setBusy(""); }
+			}, [flash]);
+
+			const startWatch = useCallback(async () => {
+				setBusy("watch");
+				try {
+					const r = await api("/watch", { method: "POST", body: JSON.stringify({ duration: 10, max: 3 }) });
+					flash(r.ok ? (r.note || "自主观看已开始") : (r.errors || []).join("；") || "启动失败", !r.ok);
+				} catch (e) {
+					flash("启动自主观看失败：" + ((e && e.message) || e), true);
 				} finally { setBusy(""); }
 			}, [flash]);
 
@@ -603,6 +614,20 @@ textarea.fy-input{width:100%;min-height:136px;resize:vertical;line-height:1.65;f
 							busy === "report" ? "生成中…" : "生成今日日报"),
 						h("span", { className: "fy-hint", style: { marginTop: 0 } }, "聚合 B站/抖音 当天看过的，不调模型")),
 					report ? h("pre", { className: "fy-report" }, report) : null,
+					h(Row, { label: "自主观看（抖音）" },
+						h("button", { className: "fy-btn", disabled: busy === "watch", onClick: startWatch },
+							busy === "watch" ? "启动中…" : "开始看（10 分钟）"),
+						h("span", { className: "fy-hint", style: { marginTop: 0 } }, "feed → 自主决策 → 记兴趣；默认只决策不真发评论")),
+					h(Row, { label: "评论 @ 通知" },
+						h(Switch, {
+							on: draft.douyinAt,
+							label: "douyinAt",
+							onChange: (v) => {
+								setDraft(Object.assign({}, draft, { douyinAt: v }));
+								save({ douyin: { atMention: v } }, v ? "已开启评论 @（风控风险高）" : "已关闭评论 @（推荐，防风控）");
+							},
+						}),
+						h("span", { className: "fy-hint", style: { marginTop: 0 } }, "抖音评论带 @ 是风控主因，默认关")),
 					h(Row, { label: "抖音每次条数" },
 						h("input", {
 							className: "fy-input fy-w-sm", type: "number", min: 1, max: 5, value: draft.douyinCount,

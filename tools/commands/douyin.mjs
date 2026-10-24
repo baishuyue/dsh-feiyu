@@ -99,7 +99,7 @@ export function run(argv = []) {
     if (!vid || !message) { console.error('用法：node feiyu.mjs douyin comment --vid <id> --message "…" [--go] [--cdp]'); process.exit(2) }
     const go = argv.includes('--go')
     const cdp = argv.includes('--cdp')
-    const atUser = cfg.douyin?.owner?.name || ''   // 真 @ 目标（弹通知）
+    const atUser = cfg.douyin?.atMention === true ? (cfg.douyin?.owner?.name || '') : ''   // 真 @ 目标（弹通知）
     const dry = douyinDry(cfg) || !go   // 抖音独立 DRY，或未显式 --go 都拦
     if (dry) {
       console.log(`【干跑 ✓】不真发评论 → ${vid}\n  内容：${atUser ? '@' + atUser + ' ' : ''}${message}`)
@@ -118,7 +118,7 @@ export function run(argv = []) {
     if (!vid || !cid || !message) { console.error('用法：node feiyu.mjs douyin reply --vid <id> --cid <评论cid> --message "…" [--go] [--cdp]'); process.exit(2) }
     const go = argv.includes('--go')
     const cdp = argv.includes('--cdp')
-    const atUser = cfg.douyin?.owner?.name || ''
+    const atUser = cfg.douyin?.atMention === true ? (cfg.douyin?.owner?.name || '') : ''
     const dry = douyinDry(cfg) || !go
     if (dry) {
       console.log(`【干跑 ✓】不真回复 cid=${cid} → ${atUser ? '@' + atUser + ' ' : ''}${message}`)
@@ -179,7 +179,7 @@ async function runInteract(cfg) {
     if (!comment) { console.log('  ✗ 评论为空，跳过'); continue }
     comment = sanitizeFor('douyin', comment)   // 抖音只认 emoji，剥掉 [xx] 与 [表情:x]
     if (!comment) { console.log('  ✗ 评论只剩表情标记，跳过'); continue }
-    const atUser = cfg.douyin?.owner?.name || ''   // 真 @ 目标
+    const atUser = cfg.douyin?.atMention === true ? (cfg.douyin?.owner?.name || '') : ''   // 真 @ 目标
     const dry = douyinDry(cfg)
     if (dry) {
       console.log(`  【干跑 ✓】${v.vid} → ${atUser ? '@' + atUser + ' ' : ''}${comment}`)

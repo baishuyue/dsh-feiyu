@@ -87,6 +87,9 @@ export const DEFAULTS = {
   douyin: {
     enabled: false,
     account: 'creator',                        // sau 账号别名
+    // 评论不带 @（LockyBee 结论：公开评论含 @ 是抖音风控主因）；显式开才真 @
+    atMention: false,
+    watch: { enabled: false, durationMin: 10, maxVideos: 3, dry: true },
   },
 }
 
