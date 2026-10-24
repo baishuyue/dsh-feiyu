@@ -104,12 +104,29 @@ export function synthBeat(bpm, bars, sr) {
 }
 
 // ── 唱歌管线 ────────────────────────────────────────────────────────────────
+/** 用 WORLD 声码器把 TTS 的基频调到旋律上（真·唱歌；调用外部 Python 脚本） */
+async function pitchToMelody(wavFile, notes, bpm) {
+  const { execFile } = await import('node:child_process')
+  const full = await import('./config.mjs')
+  const py = full.config().douyin?.python || 'D:/social-auto-upload/.venv/Scripts/python.exe'
+  const script = 'D:/social-auto-upload/melody_pitch.py'
+  const outFile = wavFile.replace('.wav', '_melody.wav')
+  return new Promise((resolve, reject) => {
+    execFile(py, [script, wavFile, outFile, notes, String(bpm)],
+      { encoding: 'utf8', timeout: 60000, windowsHide: true },
+      (e, so, se) => {
+        if (e) reject(new Error(String(se || e.message).slice(0, 200)))
+        else resolve(outFile)
+      })
+  })
+}
+
 /**
- * 让她"唱"一段：LLM 写词（鱼味歌词）→ 逐句用她的音色合成 → 按小节排布配 beat 混音。
- * @param {string} theme 主人点的主题（"唱首关于白饭的歌"→ 主题"白饭"），空则自由发挥
- * @returns {Promise<{file: string, title: string, lyrics: string[]}>}
+ * 让她"唱"一段。mode='rap'（节拍说唱）或 'melody'（WORLD 旋律操控，真歌声）。
+ * @param {string} theme 主人点的主题
+ * @param {string} mode rap | melody
  */
-export async function sing(theme = '') {
+export async function sing(theme = '', mode = 'rap') {
   // ① 写词
   const msgs = [
     { role: 'system', content: '你是"大肥鱼"，一条圆滚滚的蓝鲸鱼娘，爱吃白饭、会撒娇、有点傲娇。现在要写一首超短的说唱歌词。只输出 JSON：'
@@ -123,17 +140,41 @@ export async function sing(theme = '') {
     bpm = Math.max(60, Math.min(100, Number(j?.bpm) || 76))
     lyrics = (Array.isArray(j?.lyrics) ? j.lyrics : []).map(s => String(s).slice(0, 14)).filter(Boolean).slice(0, 8)
   } catch { /* 写词失败用兜底词 */ }
-  if (lyrics.length < 2) lyrics = ['今天也想吃白饭', '三大碗都不够', '主人快去煮饭', '本鱼饿得游不动']
+  if (lyrics.length < 2) lyrics = ['今天也想吃白饭', '三大碗都不够', '主人快去煮饭', '本鱼饿得游不动']  // ① 写词（旋律模式还产旋律序列）
+  let melodyNotes = ''
+  if (mode === 'melody') {
+    const msgs2 = [
+      { role: 'system', content: '你是作曲AI。根据歌词的情感生成一段简短旋律（八小节内，只含 C D E F G A B 的自然大小调，用科学音高记号如 C4 D4）。只输出空格分隔的 音符,持续秒 序列，总时长 6-15 秒。' },
+      { role: 'user', content: `歌词：${lyrics.join(' ')}\nBPM: ${bpm}\n生成旋律序列：` },
+    ]
+    try {
+      const resp2 = await llm.chat(msgs2, { temperature: 0.7, max_tokens: 200 })
+      melodyNotes = String(resp2 ?? '').trim().slice(0, 300)
+    } catch { melodyNotes = '' }
+  }
 
   // ② 逐句合成（她的音色；失败抛给上层降级）
   const voices = []
   let sr = 0
   for (const line of lyrics) {
     const f = await synth(line)
-    const wav = readWav(f)
-    sr = wav.sampleRate
-    voices.push(wav.data)
-    fs.rmSync(f, { force: true })   // 临时句文件不留
+    // 旋律模式：每句 TTS 后用 WORLD 声码器调到旋律上
+    if (mode === 'melody' && melodyNotes) {
+      try {
+        const mf = await pitchToMelody(f, melodyNotes, bpm)
+        const wav = readWav(mf)
+        sr = wav.sampleRate
+        voices.push(wav.data)
+        fs.rmSync(f, { force: true })
+        fs.rmSync(mf, { force: true })
+      } catch { /* WORLD 失败用原始 TTS */ }
+    }
+    if (voices.length < lyrics.indexOf(line) + 1) { // 没推入过才读原始
+      const wav = readWav(f)
+      sr = wav.sampleRate
+      voices.push(wav.data)
+      fs.rmSync(f, { force: true })
+    }
   }
 
   // ③ 排布：每句占 ceil(句长/小节) 个小节，句间留半拍气口

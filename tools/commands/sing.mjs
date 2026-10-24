@@ -5,12 +5,13 @@ import { config } from '../lib/config.mjs'
 
 export async function run(argv = []) {
   const theme = argv.filter(a => !a.startsWith('-')).join(' ').trim()
+  const mode = argv.includes('--melody') ? 'melody' : 'rap'
   const cfg = config()
   const ownerQQ = String(cfg.owner?.qq || '')
   const napcat = String(cfg.qq?.napcat_http || 'http://127.0.0.1:3000').replace(/\/+$/, '')
   if (!ownerQQ) { console.error('owner.qq 未配置'); process.exit(1) }
-  console.log(theme ? `写一首关于「${theme}」的歌…` : '自由发挥写一首…')
-  const song = await sing(theme)
+  console.log(theme ? `写一首关于「${theme}」的歌（${mode === 'melody' ? '旋律/WORLD歌声' : '说唱/节拍'}）…` : '自由发挥写一首…')
+  const song = await sing(theme, mode)
   console.log(`《${song.title}》 ${song.bpm}bpm`)
   console.log(song.lyrics.map((l, i) => `  ${i + 1}. ${l}`).join('\n'))
   const r = await fetch(`${napcat}/send_private_msg`, {
