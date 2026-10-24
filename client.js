@@ -218,6 +218,7 @@ textarea.fy-input{width:100%;min-height:136px;resize:vertical;line-height:1.65;f
 				douyinAt: !!(c.douyin && c.douyin.atMention),
 				douyinShare: !!(c.douyin && c.douyin.shareToOwner),
 				douyinAutoComment: !!(c.douyin && c.douyin.autoComment),
+				douyinDm: !!(c.douyin && c.douyin.dm && c.douyin.dm.enabled),
 					voiceChance: (c.qq && c.qq.voice_chance) || 0,
 					voicePath: (c.voice && c.voice.ref_audio_path) || "",
 					wxRhythm: (c.wechat && c.wechat.rhythm) || "fast",
@@ -691,6 +692,17 @@ textarea.fy-input{width:100%;min-height:136px;resize:vertical;line-height:1.65;f
 							},
 						}),
 						h("span", { className: "fy-hint", style: { marginTop: 0 } }, "用自学习人格发评论；douyin.dryRun=false 才真发")),
+					h(Row, { label: "抖音 · 私信陪聊" },
+						h(Switch, {
+							on: draft.douyinDm,
+							label: "douyinDm",
+							onChange: (v) => {
+								setDraft(Object.assign({}, draft, { douyinDm: v }));
+								save({ douyin: { dm: { enabled: v } } }, v ? "私信陪聊已开启（启动中…）" : "私信陪聊已关闭");
+								restartService("douyin-dm", v ? "start" : "stop");
+							},
+						}),
+						h("span", { className: "fy-hint", style: { marginTop: 0 } }, "像 QQ 那样常驻：轮询主人私信，新消息自动回")),
 					h(Row, { label: "B站 · 静默刷" },
 						h("button", { className: "fy-btn", disabled: busy === "biliwatch", onClick: startBiliWatch },
 							busy === "biliwatch" ? "启动中…" : "静默刷一轮"),

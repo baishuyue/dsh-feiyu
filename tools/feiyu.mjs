@@ -33,6 +33,7 @@ const COMMANDS = {
   watch: '抖音自主观看（feed→决策→兴趣记忆，时长限制）',
   review: '复盘学习日记（B站/抖音 提炼，写进私人日记）',
   'bili-watch': 'B站静默自助刷一轮（feed→深读→@评论）',
+  'douyin-dm-server': '抖音私信陪聊（常驻轮询主人私信，像 QQ 那样）',
 }
 
 const cmd = process.argv[2]

@@ -97,6 +97,8 @@ export const DEFAULTS = {
     // 自主观看时也以"自学习人格"发评论（受 douyin.dryRun 控制，默认只演练）
     autoComment: false,
     watch: { enabled: false, durationMin: 10, maxVideos: 3, dry: true },
+    // 私信陪聊（参照 QQ 模式）：常驻轮询主人私信，新消息→LLM 回
+    dm: { enabled: false, pollSec: 20, port: 8090 },
   },
 }
 
