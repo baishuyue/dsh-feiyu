@@ -43,7 +43,9 @@ export function run(argv = []) {
       const days = Number(cfg.quota?.sameVideoDays ?? 7)
       if (days > 0) {   // 0 = 不查重
         const cutoff = Date.now() - days * 86400_000
-        const dup = read().log.find(x => x.target === target && Number(x.at) >= cutoff)
+        // ⚠️ at 存的是 ISO 字符串：Number(ISO字符串)=NaN，以前这么写导致查重从未生效
+        //（同视频被重复发评论，10-24 自由刷实测同 BV 发了两条）
+        const dup = read().log.find(x => x.target === target && new Date(x.at).getTime() >= cutoff)
         if (dup) {
           console.log(`✗ 这条视频 ${dayOf(dup.at)} 已发过 —— ${days} 天内同一视频只发一次`)
           process.exit(1)
