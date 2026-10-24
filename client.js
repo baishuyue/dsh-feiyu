@@ -254,6 +254,11 @@ textarea.fy-input{width:100%;min-height:136px;resize:vertical;line-height:1.65;f
 				};
 			};
 
+			// proactive 完整镜像：面板每个控件只改一个字段，但后端 /api/config 按节浅合并 ——
+			// 只发 {proactive:{enabled:v}} 会把 activeHours/minQuietMin/chance 整个冲掉（10-25 实测发生过）。
+			// 每次保存都从这个镜像全量发，字段就不丢了。
+			const proactiveRef = useRef({ enabled: false, dailyMax: 3, minGapMin: 150, chance: 0.12, activeHours: null });
+
 			const load = useCallback(async () => {
 				setLoading(true);
 				setError("");
@@ -262,6 +267,7 @@ textarea.fy-input{width:100%;min-height:136px;resize:vertical;line-height:1.65;f
 					const c = j.config || {};
 					setCfg(c);
 					setDraft(toDraft(c));
+					proactiveRef.current = Object.assign({ enabled: false, dailyMax: 3, minGapMin: 150, chance: 0.12, activeHours: null }, (c.qq && c.qq.proactive) || {});
 					setVoices(j.voices || []);
 					setCfgPath(j.configPath || "");
 				} catch (e) {
@@ -293,6 +299,12 @@ textarea.fy-input{width:100%;min-height:136px;resize:vertical;line-height:1.65;f
 					return false;
 				}
 			}, [flash]);
+
+			// 主动搭话专用保存：把单字段补丁并进完整 proactive 镜像再全量发（防字段被浅合并冲掉）
+			const saveProactive = useCallback(async (patch, msg) => {
+				proactiveRef.current = Object.assign({}, proactiveRef.current, patch);
+				return save({ qq: { proactive: proactiveRef.current } }, msg);
+			}, [save]);
 
 			const genReport = useCallback(async () => {
 				setBusy("report");
@@ -613,19 +625,19 @@ textarea.fy-input{width:100%;min-height:136px;resize:vertical;line-height:1.65;f
 						h(Switch, {
 							on: draft.qqProactive,
 							label: "qqProactive",
-							onChange: (v) => { setDraft(Object.assign({}, draft, { qqProactive: v })); save({ qq: { proactive: { enabled: v } } }, v ? "主动搭话已开：安静久了她会主动找你" : "主动搭话已关"); },
+							onChange: (v) => { setDraft(Object.assign({}, draft, { qqProactive: v })); saveProactive({ enabled: v }, v ? "主动搭话已开：安静久了她会主动找你" : "主动搭话已关"); },
 						}),
 						h("input", {
 							className: "fy-input fy-w-xs", type: "number", min: 0, max: 20, value: draft.qqProactiveMax,
 							onChange: (e) => setDraft(Object.assign({}, draft, { qqProactiveMax: e.target.value })),
-							onBlur: () => save({ qq: { proactive: { dailyMax: Math.max(0, Number(draft.qqProactiveMax) || 0) } } }, "主动搭话日上限已保存（0 = 不限）"),
+							onBlur: () => saveProactive({ dailyMax: Math.max(0, Number(draft.qqProactiveMax) || 0) }, "主动搭话日上限已保存（0 = 不限）"),
 						}),
 						h("input", {
 							className: "fy-input fy-w-xs", type: "number", min: 10, max: 1440, value: draft.qqProactiveGap,
 							onChange: (e) => setDraft(Object.assign({}, draft, { qqProactiveGap: e.target.value })),
-							onBlur: () => save({ qq: { proactive: { minGapMin: Math.max(10, Number(draft.qqProactiveGap) || 150) } } }, "两次搭话最小间隔已保存（分钟）"),
+							onBlur: () => saveProactive({ minGapMin: Math.max(10, Number(draft.qqProactiveGap) || 150) }, "两次搭话最小间隔已保存（分钟）"),
 						}),
-						h("span", { className: "fy-hint", style: { marginTop: 0 } }, "条/天 · 间隔分钟（正聊不打扰、深夜不打扰）"))),
+						h("span", { className: "fy-hint", style: { marginTop: 0 } }, "条/天 · 间隔分钟（正聊不打扰；夜间限制已关，全天可搭话）"))),
 
 				// 微信（UI 自动化，节奏与合并窗口直接决定像不像人、回得快不快）
 				h(Card, {

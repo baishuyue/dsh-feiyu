@@ -62,7 +62,7 @@ export const DEFAULTS = {
     enabled: false,
     napcat_http: 'http://127.0.0.1:3000',   // NapCat HTTP 服务器地址（在 NapCat WebUI 配置）
     allow_groups: [],                        // 空 = 全部群
-    at_only: true,                           // 群里只被 @ 才回（铁律）
+    at_only: true,                           // 群里只被 @ 才回；设 false = 群里所有消息都回（像私聊一样）
     voice_enabled: false,                    // 语音条开关
     voice_chance: 0.15,                      // 回复用语音的概率
     sing: true,                              // 唱歌开关（"唱一首"触发：LLM 写词+她的音色逐句+鼓点混音）
@@ -74,7 +74,7 @@ export const DEFAULTS = {
       dailyMax: 3,          // 每天最多主动找主人几次（0 = 不限）
       minQuietMin: 90,      // 主人安静至少这么久才开口（最近在聊就别插话）
       minGapMin: 150,       // 两次主动之间的最小间隔
-      activeHours: [10, 23],// 活跃时段（10:00~23:00 之外不打扰）
+      activeHours: [10, 23],// 活跃时段（10:00~23:00 之外不打扰）；null = 不限时（10-25 用户拍板可关）
       chance: 0.12,         // 每 60s tick 命中概率（不定点闹钟，随机开口）
     },
   },

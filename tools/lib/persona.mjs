@@ -43,8 +43,9 @@ const PLATFORM_HINTS = {
 /** 每个平台愿意塞多少条原文对话（QQ/抖音私信 有滚动记忆兜底，所以敢多带）。 */
 const RECENT_N = { qq: 24, wechat: 12, 'douyin-dm': 24, bilibili: 8, douyin: 8 }
 
-/** 对方是不是主人 —— 决定她用"黏主人"还是"对网友"的语气，也是隐私红线。 */
-function ownerLine(cfg, platform, userId) {
+/** 对方是不是主人 —— 决定她用"黏主人"还是"对网友"的语气，也是隐私红线。
+ *  isGroup：群聊里对面是群友不是私聊网友，语气按朋友闲聊装配（用户 10-25 拍板：群里像私聊一样回）。 */
+function ownerLine(cfg, platform, userId, isGroup = false) {
   const owner = cfg.owner ?? {}
   const isOwner =
     (platform === 'qq' && owner.qq && String(userId) === String(owner.qq)) ||
@@ -61,6 +62,9 @@ function ownerLine(cfg, platform, userId) {
     return `【对方是你的主人】他就是你主人本人。${noNumber}`
       + `叫他${call}。亲近他：可以主动撒娇、汇报今天做了什么、惦记他吃饭没；不用客套，但别黏到烦人。`
   }
+  if (isGroup) {
+    return `【群聊】你在 QQ 群里，发言的是群友。像跟朋友唠嗑一样自然接话，轻松、有来有回，可以接梗开玩笑；但绝不透露主人的任何隐私（账号/路径/私聊内容）。`
+  }
   return `【对方不是主人】你在跟一个普通网友说话（账号 ${userId}）。礼貌但保持距离，绝不透露主人的任何隐私（账号/路径/私聊内容），也别装得跟他很熟。`
 }
 
@@ -68,7 +72,7 @@ function ownerLine(cfg, platform, userId) {
  * 装配完整 messages（system + 最近对话 + 本轮输入）。
  * @param {object} o platform / userText / chatId / userId / turnsToday
  */
-export function buildMessages({ platform = 'qq', userText, chatId, userId, turnsToday = 0 }) {
+export function buildMessages({ platform = 'qq', userText, chatId, userId, turnsToday = 0, isGroup = false }) {
   const cfg = config()
   const parts = []
 
@@ -78,8 +82,8 @@ export function buildMessages({ platform = 'qq', userText, chatId, userId, turns
   const idLine = identityLine(cfg)
   if (idLine) parts.push(idLine)
 
-  // 关系层：对方是不是主人（决定语气与隐私红线）
-  if (platform === 'qq' || platform === 'wechat' || platform === 'douyin-dm') parts.push(ownerLine(cfg, platform, userId))
+  // 关系层：对方是不是主人（决定语气与隐私红线）；群聊单独一条语境
+  if (platform === 'qq' || platform === 'wechat' || platform === 'douyin-dm') parts.push(ownerLine(cfg, platform, userId, isGroup))
 
   // 记忆层
   const facts = memory.facts(userId)
@@ -106,6 +110,11 @@ export function buildMessages({ platform = 'qq', userText, chatId, userId, turns
 
   const sys = { role: 'system', content: parts.join('\n\n') }
   const recent = memory.recent(chatId, RECENT_N[platform] ?? 10)
+  // 调用方（qq-server / douyin-dm-server）都是先 remember 本轮输入再装配 —— recent 尾部已含
+  // 同一条 user 消息，下面再 append 一次 = 每轮最后一问注入两遍。装配端去重：尾部与本轮输入
+  // 相同的 user 行不再重复带（只去尾部，历史里更早的相同发言是真实对话，保留）。
+  while (userText && recent.length && recent[recent.length - 1].role === 'user'
+    && recent[recent.length - 1].content === userText) recent.pop()
   return [sys, ...recent, { role: 'user', content: userText }]
 }
 

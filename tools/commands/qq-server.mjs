@@ -1,5 +1,6 @@
 // qq-server —— QQ 常驻聊天服务：接收 NapCat OneBot v11 上报 → 直连 LLM 秒回。
-// 群聊被 @ 才回（at_only 铁律），私聊都回；支持语音条（GPT-SoVITS + record 段，NapCat 自动转 silk）。
+// 群聊默认也像私聊一样回（at_only=false，10-25 用户拍板；true 则群里被 @ 才回），私聊都回；
+// 支持语音条（GPT-SoVITS + record 段，NapCat 自动转 silk）。
 // 无第三方依赖，node 内置 http 即可。
 //
 //   node feiyu.mjs qq-server [port]     # 默认 8080
@@ -123,8 +124,13 @@ export async function run(argv = []) {
         const ownerQQNow = String(config().owner?.qq || '')
         if (!isGroup && ownerQQNow && String(userId) === ownerQQNow) ownerLastMsgAt = Date.now()
       } catch {}
-      const userText = text.replace(new RegExp(`@?${selfId}\\s*`), '').trim()
-      if (!userText) return
+      const raw = text.replace(new RegExp(`@?${selfId}\\s*`), '').trim()
+      if (!raw) return
+      // 群聊像私聊一样回（at_only=false 时）：把说话人昵称带上，她才知道在跟谁说话，
+      // 记忆里也留着"谁说了什么"（号码绝不当称呼 —— ownerLine 踩过的坑）。
+      // labeled 是本轮的规范文本：remember 和 buildMessages 用同一份，装配端去重才对得上。
+      const display = isGroup ? String(evt.sender?.card || evt.sender?.nickname || '').trim() : ''
+      const userText = (isGroup && display) ? `${display}：${raw}` : raw
 
       // 🎵 唱歌分支：主人让她唱，就真的唱（LLM 写词 + 她的音色逐句合成 + 鼓点混音）
       if (QQ.voice_enabled !== false && QQ.sing !== false && !isGroup && /唱(一首|首歌|个|段|吧|$)|唱歌|来一首|哼(一首|段)/.test(userText)) {
@@ -149,7 +155,7 @@ export async function run(argv = []) {
 
       // 生成回复（三段式 prompt + 走神注入）
       const turns = memory.recent(chatId).length
-      const messages = buildMessages({ platform: 'qq', userText, chatId, userId, turnsToday: turns })
+      const messages = buildMessages({ platform: 'qq', userText, chatId, userId, turnsToday: turns, isGroup })
       messages[0].content += thinkingInstruction()
       const answer = await llm.chat(messages)
       const out = guard.clean(answer, config())
@@ -336,9 +342,12 @@ export async function run(argv = []) {
       const cfgNow = config()
       const pp = cfgNow.qq?.proactive ?? {}
       if (pp.enabled !== true) return
-      const hour = new Date().getHours()
-      const [a, b] = (Array.isArray(pp.activeHours) && pp.activeHours.length === 2) ? pp.activeHours : [10, 23]
-      if (hour < a || hour >= b) return
+      // 晚间限制（用户 10-25 拍板可关）：activeHours 配成 null / [] = 全天可主动搭话；[a,b] 才限时
+      const ah = pp.activeHours
+      if (Array.isArray(ah) && ah.length === 2) {
+        const hour = new Date().getHours()
+        if (hour < ah[0] || hour >= ah[1]) return
+      }
       let st = readProact()
       if (st.day !== dayKeyNow()) st = { day: dayKeyNow(), count: 0, lastAt: 0 }
       const dailyMax = Number(pp.dailyMax ?? 3)
