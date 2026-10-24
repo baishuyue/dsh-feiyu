@@ -221,6 +221,43 @@ export function makeHeaders(cred, extra = {}) {
   }
 }
 
+/** 把一次"看视频"记进账号的观看历史（web 播放器的 click + heartbeat 上报）。
+ *  B站历史只认播放器上报——纯 API 读元信息/字幕/热评永远不进历史，
+ *  手机端就表现为"她明明看了视频却没有浏览记录"。best-effort：失败不抛，别影响主流程。
+ *  @returns {Promise<{ok: boolean, why?: string}>}
+ */
+export async function reportWatch(aid, cid, bvid, cred, playedSec = 60) {
+  try {
+    const H = makeHeaders(cred, {
+      'content-type': 'application/x-www-form-urlencoded',
+      referer: `https://www.bilibili.com/video/${bvid}/`,
+    })
+    const csrf = cred?.bili_jct ?? ''
+    const startTs = Math.floor(Date.now() / 1000)
+    // ① click：播放器点开视频时的第一声上报
+    const click = new URLSearchParams({ aid: String(aid), cid: String(cid), bvid: String(bvid), csrf })
+    const c = await fetch('https://api.bilibili.com/x/click-interface/web/click', {
+      method: 'POST', headers: H, body: click.toString(), signal: AbortSignal.timeout(10000),
+    })
+    const cj = await c.json().catch(() => ({}))
+    // ② heartbeat：带进度的上报，played_time 超过阈值才真正落进历史
+    const hb = new URLSearchParams({
+      aid: String(aid), cid: String(cid), bvid: String(bvid), csrf,
+      played_time: String(playedSec), realtime: String(playedSec),
+      start_ts: String(startTs), type: '3', dt: String(playedSec), ts: String(startTs + playedSec),
+    })
+    const r = await fetch('https://api.bilibili.com/x/click-interface/web/heartbeat', {
+      method: 'POST', headers: H, body: hb.toString(), signal: AbortSignal.timeout(10000),
+    })
+    const hj = await r.json().catch(() => ({}))
+    const ok = Number(hj?.code) === 0
+    logReq(false, '/x/click-interface/web/heartbeat' + (ok ? '' : '?fail'))
+    return ok ? { ok: true } : { ok: false, why: `click=${cj?.code}/${cj?.message ?? ''} heartbeat=${hj?.code}/${hj?.message ?? ''}` }
+  } catch (e) {
+    return { ok: false, why: String(e?.message ?? e) }
+  }
+}
+
 /** 给「依赖体检 / 排障」用的现状。 */
 export function apiState() {
   const ban = readJson(BAN_FILE, {})

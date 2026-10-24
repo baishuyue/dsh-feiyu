@@ -48,6 +48,30 @@ function matchPrefs(v, cfg) {
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms))
 
+/** CDP Chrome(9222) 是否就绪。 */
+async function cdpReady(timeoutMs = 2500) {
+  try { const r = await fetch('http://127.0.0.1:9222/json/version', { signal: AbortSignal.timeout(timeoutMs) }); return r.ok } catch { return false }
+}
+
+/** 真发评论/有头分享前确保 CDP 真浏览器在跑；没开就自动拉起（detached，窗口会弹出来）。 */
+async function ensureCdp(cfg) {
+  if (await cdpReady()) return true
+  log('[watch] CDP Chrome(9222) 没开，自动拉起真浏览器（真发评论必须走它，风控低）…')
+  try {
+    // 注意：cdp-start 子命令不认 --cookie，直接裸调（走 runPy 会拼上 --cookie 被 argparse 拒）
+    execFileSync(pyPath(cfg), [scriptPath(cfg), 'cdp-start'], { encoding: 'utf8', timeout: 60000, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
+  } catch (e) {
+    log('[watch] cdp-start 失败：' + String(e.stderr || e.message).slice(-200))
+    return false
+  }
+  for (let i = 0; i < 10; i++) {
+    await sleep(3000)
+    if (await cdpReady(1500)) { log('[watch] CDP Chrome 已就绪'); return true }
+  }
+  log('[watch] ✗ CDP Chrome 30 秒没就绪 —— 首次使用要在弹出的 Chrome 窗口里扫码登录抖音一次')
+  return false
+}
+
 function douyinDry(cfg) { return cfg.douyin?.dryRun !== false }
 const SHARE_FILE = () => path.join(os.homedir(), '.feiyu-ai', 'douyin-share.json')
 function shareDay() { return new Date().toLocaleDateString('sv-SE') }
@@ -123,8 +147,10 @@ export async function run(argv = []) {
     try {
       const msgs = [
         { role: 'system', content: '你是"大肥鱼"，一条爱刷抖音的小鲸鱼，有自己口味。看一条视频后决定下一步。只输出 JSON：'
-          + '{"action":"继续|换片|停","reason":"不超过20字的原因","share":true或false(特别有意思、想给主人看的才 true),'
-          + '"comment":"15~40字的评论，只有你觉得值得评论时才写，否则省略"}' },
+          + '{"action":"继续|换片|停","reason":"不超过20字的原因","share":true或false,'
+          + '"comment":"15~40字的评论，只有你觉得值得评论时才写，否则省略"}\n'
+          + 'share 的标准放宽些：主人喜欢收到你的分享，只要这条让你嘴角上扬/学到东西/想安利给他，就 true；'
+          + '每天有分享额度，别吝啬，但也别无聊的也发。' },
         { role: 'user', content: `视频《${v.desc}》（作者 ${v.author}）\n热评：${hot.join(' / ') || '（无）'}\n下一步？` },
       ]
       const resp = await llm.chat(msgs, { temperature: 0.7 })
@@ -150,9 +176,15 @@ export async function run(argv = []) {
           ok = true   // 干跑不占真额度，但记录一下决策
         } else {
           if ((via === 'douyin' || via === 'both') && ownerSecUid) {
-            const dmArgs = ['dm-send', '--sec-uid', ownerSecUid, '--name', ownerName, '--message', text, '--go', '--cdp']
-            if (silent) dmArgs.push('--headless')
-            try { console.log(runPy(dmArgs, cfg)); ok = true } catch (e) { console.error('[watch] 抖音私信分享失败：' + e.message) }
+            // silent 自起无头浏览器即可发（别再硬走 --cdp：CDP Chrome 不一定开着，秒失败）；
+            // 有头模式才走 CDP 共享真浏览器（先确保它在跑）。
+            if (silent) {
+              const dmArgs = ['dm-send', '--sec-uid', ownerSecUid, '--name', ownerName, '--message', text, '--go', '--headless']
+              try { console.log(runPy(dmArgs, cfg)); ok = true } catch (e) { console.error('[watch] 抖音私信分享失败：' + e.message) }
+            } else if (await ensureCdp(cfg)) {
+              const dmArgs = ['dm-send', '--sec-uid', ownerSecUid, '--name', ownerName, '--message', text, '--go', '--cdp']
+              try { console.log(runPy(dmArgs, cfg)); ok = true } catch (e) { console.error('[watch] 抖音私信分享失败：' + e.message) }
+            }
           }
           if (via === 'qq' || (via === 'both' && !ok)) {
             ok = await sendOwnerQQ(`在抖音刷到个好玩的：${text}`)
@@ -167,11 +199,15 @@ export async function run(argv = []) {
 
     // ② 自主评论（自学习人格生成，受 douyin.dryRun 控制，默认只演练不真发）
     if (comment && cfg.douyin?.autoComment === true) {
-      const args = ['comment', '--vid', v.vid, '--message', comment]
-      if (douyinDry(cfg)) args.push('--cdp')   // 演练也走 CDP 路径，打印即可
-      else args.push('--go', '--cdp')
-      try { console.log(runPy(args, cfg)) } catch (e) { log('[watch] 评论失败：' + e.message) }
-      await sleep(60_000 + Math.random() * 60_000)   // 真发之间长间隔，防风控
+      if (douyinDry(cfg)) {
+        log(`  【干跑 ✓】评论：${comment}`)
+      } else if (await ensureCdp(cfg)) {
+        try { console.log(runPy(['comment', '--vid', v.vid, '--message', comment, '--go', '--cdp'], cfg)) }
+        catch (e) { log('[watch] 评论失败：' + e.message) }
+        await sleep(60_000 + Math.random() * 60_000)   // 真发之间长间隔，防风控
+      } else {
+        log('  ✗ 没有真浏览器可用，这条评论放弃（CDP Chrome 拉不起来）')
+      }
     }
 
     if (decision !== '换片' && decision !== '继续') {

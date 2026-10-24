@@ -126,4 +126,15 @@ export async function run(argv = []) {
   memory.remember('bilibili', chatId, cfg.identity?.name ?? 'feiyu', 'assistant', message)
   console.log(`✓ 已发送（rpid=${j?.data?.rpid ?? '?'}）${isShare ? ' · 分享额度已扣' : ''}`)
   console.log(`  ${title} → ${message.slice(0, 60)}`)
+
+  // 分享还要让主人真的"收到"：B站凭据是主人自己的账号（鱼没有独立小号），
+  // "@主人" 实际是自己的号 @ 自己 —— B站永远不给这种 @ 发通知。
+  // 所以真发成功后用 QQ 私信把链接推过去，这才是主人能收到的那条通知。
+  if (isShare) {
+    try {
+      const { sendOwnerQQ } = await import('../lib/notify.mjs')
+      const ok = await sendOwnerQQ(`【B站分享】《${title.slice(0, 40)}》\n${message.slice(0, 80)}\nhttps://www.bilibili.com/video/${bvid}`)
+      console.log(ok ? '  📨 已推送到主人 QQ（评论区 @ 自己账号不会弹通知）' : '  ⚠️ QQ 推送失败（NapCat 没起？主人可能注意不到这条分享）')
+    } catch {}
+  }
 }

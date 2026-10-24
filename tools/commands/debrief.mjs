@@ -3,8 +3,9 @@
 // 抽帧（ffmpeg）留给 v0.2 —— 没有直链时绝不伪装成"已看完" ✓
 //
 //   node feiyu.mjs debrief --bvid BV1xxxx [--json]
-import { apiGet, makeHeaders } from '../lib/bili-api.mjs'
+import { apiGet, makeHeaders, reportWatch } from '../lib/bili-api.mjs'
 import { loadCred } from '../lib/cred.mjs'
+import { config } from '../lib/config.mjs'
 
 function arg(argv, name) {
   const i = argv.indexOf(name)
@@ -66,6 +67,14 @@ export async function run(argv = []) {
       name: r.member?.uname ?? '', text: String(r.content?.message ?? '').slice(0, 120), like: r.like ?? 0, rpid: r.rpid ?? 0,
     }))
   } catch { /* 热评也是可选路 */ }
+
+  // ④ 看过就留痕：上报 click + heartbeat，这条视频才会出现在账号的观看历史里
+  //    （纯 API 读永远不进历史——手机端会以为她什么都没看。bilibili.reportHistory=false 可关）
+  if (config().bilibili?.reportHistory !== false) {
+    const played = Math.min(Math.max(30, Math.round((d.duration || 300) * 0.4)), 600)
+    const rep = await reportWatch(oid, d.cid, bvid, cred, played)
+    if (!rep.ok) console.log(json ? '' : `  （观看历史上报没成功：${(rep.why ?? '').slice(0, 80)} —— 不影响看懂）`)
+  }
 
   const pack = {
     ok: true,
