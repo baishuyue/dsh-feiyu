@@ -33,7 +33,7 @@ export const DEFAULTS = {
   },
   // 分享标尺（来自 bili-whale：评分不够 = 今天没有值得发的，是合法结果 ✓）
   share: { enabled: true, via: 'comment', minScore: 13 },   // via: comment | dm
-  // 额度（克制是活下来的前提）
+  // 额度（0 = 不限，随便玩；克制是活下来的前提，但这是你的鱼）
   quota: { shareDaily: 3, sameVideoDays: 7 },
   // 风控闸门（来自 dafeiyu 骨架 ops/guard.py 的设计）
   guard: {
@@ -89,10 +89,10 @@ export const DEFAULTS = {
     account: 'creator',                        // sau 账号别名
     // 评论不带 @（LockyBee 结论：公开评论含 @ 是抖音风控主因）；显式开才真 @
     atMention: false,
-    // 看到有意思的视频，直接分享给主人（替代评论 @）；每天最多 shareDaily 条
+    // 看到有意思的视频，直接分享给主人（替代评论 @）；每天最多 shareDaily 条（0 = 不限）
     shareToOwner: false,
     shareDaily: 5,
-    // 真发评论的每日上限（自由刷不限量跑通宵，评论必须设顶，防 shadowban）
+    // 真发评论的每日上限（自由刷不限量跑通宵，评论必须设顶，防 shadowban；0 = 不限）
     commentDaily: 8,
     shareVia: 'douyin',    // douyin=抖音私信发视频链接+评论 / qq=QQ私聊 / both=两边都发
     owner: { name: '' },   // 主人抖音昵称（私信分享目标）
@@ -113,7 +113,7 @@ export const DEFAULTS = {
     freeRoam: { enabled: false, unlimited: true, maxVideos: 0, maxMinutes: 0, restMin: 5 },
     // 观看历史上报（debrief 后记入历史）
     reportHistory: true,
-    // ── 活人感写通道（默认全关：养好号再开；每项独立开关 + 日额度 bili-actions.json）──
+    // ── 活人感写通道（默认全关：养好号再开；每项独立开关 + 日额度 bili-actions.json，0 = 不限）──
     danmaku: { enabled: false, dailyMax: 5 },                       // 看视频发弹幕（bili-watch 顺手 / act 命令）
     dynamic: { enabled: false, dailyMax: 2, times: ['09:30', '21:30'] }, // 潜水日志动态（早晚定时 + 复盘后同步）
     react: { like: false, coin: false, likeDaily: 10, coinDaily: 1 },// 点赞（debrief 顺手）/投币（评分≥17）

@@ -35,20 +35,22 @@ export function run(argv = []) {
     const target = arg(argv, '--target')
     const sharesToday = read().log.filter(x => x.share && dayOf(x.at) === dayOf()).length
     const limit = Number(cfg.quota?.shareDaily ?? 3)
-    if (sharesToday >= limit) {
+    if (limit > 0 && sharesToday >= limit) {   // 0 = 不限，随便玩
       console.log(`✗ 今天已分享 ${sharesToday}/${limit} 条 —— 额度用完，明天再来`)
       process.exit(1)
     }
     if (target) {
-      const days = Math.max(1, Number(cfg.quota?.sameVideoDays ?? 7))
-      const cutoff = Date.now() - days * 86400_000
-      const dup = read().log.find(x => x.target === target && Number(x.at) >= cutoff)
-      if (dup) {
-        console.log(`✗ 这条视频 ${dayOf(dup.at)} 已发过 —— ${days} 天内同一视频只发一次`)
-        process.exit(1)
+      const days = Number(cfg.quota?.sameVideoDays ?? 7)
+      if (days > 0) {   // 0 = 不查重
+        const cutoff = Date.now() - days * 86400_000
+        const dup = read().log.find(x => x.target === target && Number(x.at) >= cutoff)
+        if (dup) {
+          console.log(`✗ 这条视频 ${dayOf(dup.at)} 已发过 —— ${days} 天内同一视频只发一次`)
+          process.exit(1)
+        }
       }
     }
-    console.log(`✓ 可发（今天 ${sharesToday}/${limit}）`)
+    console.log(`✓ 可发（今天 ${sharesToday}/${limit > 0 ? limit : '∞'}）`)
     return
   }
 
@@ -69,7 +71,7 @@ export function run(argv = []) {
   const q = read()
   const today = q.log.filter(x => dayOf(x.at) === dayOf())
   const shares = today.filter(x => x.share).length
-  console.log(`今天：评论/记账 ${today.length} 条，其中分享 ${shares}/${cfg.quota?.shareDaily ?? 3} 条`)
+  console.log(`今天：评论/记账 ${today.length} 条，其中分享 ${shares}/${(cfg.quota?.shareDaily ?? 3) > 0 ? (cfg.quota?.shareDaily ?? 3) : '∞'} 条`)
   for (const x of today.slice(-10)) console.log(`  ${new Date(x.at).toLocaleTimeString('sv-SE')} ${x.share ? '[分享]' : '[回复]'} ${x.target || ''} ${x.note ?? ''}`)
   if (!today.length) console.log('  （今天还没发过 —— 安静是美德）')
 }

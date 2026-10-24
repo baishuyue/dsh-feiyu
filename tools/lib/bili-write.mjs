@@ -17,7 +17,8 @@ function actCount(kind) {
   const j = readActs()
   return j.day === dayKey() ? Number(j[kind] ?? 0) : 0
 }
-export function capOk(kind, max) { return actCount(kind) < max }
+/** 0 = 不限（随便玩），>0 = 当日上限。 */
+export function capOk(kind, max) { return !(Number(max) > 0) || actCount(kind) < max }
 export function capRecord(kind) {
   const j = readActs()
   const fresh = j.day !== dayKey()

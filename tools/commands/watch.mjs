@@ -77,28 +77,30 @@ async function ensureCdp(cfg) {
 function douyinDry(cfg) { return cfg.douyin?.dryRun !== false }
 const SHARE_FILE = () => path.join(os.homedir(), '.feiyu-ai', 'douyin-share.json')
 function shareDay() { return new Date().toLocaleDateString('sv-SE') }
-// 评论每日上限（自由刷不限量跑通宵，评论不设顶会被风控盯上 —— 宁可少发）
+// 评论每日上限（自由刷不限量跑通宵，评论不设顶会被风控盯上 —— 宁可少发；0 = 不限）
 const COMMENT_FILE = () => path.join(os.homedir(), '.feiyu-ai', 'douyin-comment.json')
 function commentQuotaOk(cfg) {
-  const max = Number(cfg.douyin?.commentDaily || 8)
+  const max = Number(cfg.douyin?.commentDaily ?? 8)
+  if (max <= 0) return true   // 0 = 不限，随便玩
   try { const j = JSON.parse(fs.readFileSync(COMMENT_FILE(), 'utf8')); return (j.day === shareDay() ? j.count : 0) < max } catch { return true }
 }
 function commentQuotaRecord(cfg) {
   try {
-    const max = Number(cfg.douyin?.commentDaily || 8)
+    const max = Number(cfg.douyin?.commentDaily ?? 8)
     const cur = (() => { try { const j = JSON.parse(fs.readFileSync(COMMENT_FILE(), 'utf8')); return j.day === shareDay() ? j.count : 0 } catch { return 0 } })()
-    fs.writeFileSync(COMMENT_FILE(), JSON.stringify({ day: shareDay(), count: Math.min(cur + 1, max) }))
+    fs.writeFileSync(COMMENT_FILE(), JSON.stringify({ day: shareDay(), count: max > 0 ? Math.min(cur + 1, max) : cur + 1 }))
   } catch {}
 }
 function shareQuotaOk(cfg) {
-  const max = Number(cfg.douyin?.shareDaily || 1)
+  const max = Number(cfg.douyin?.shareDaily ?? 5)
+  if (max <= 0) return true   // 0 = 不限，随便玩
   try { const j = JSON.parse(fs.readFileSync(SHARE_FILE(), 'utf8')); return (j.day === shareDay() ? j.count : 0) < max } catch { return true }
 }
 function shareQuotaRecord(cfg) {
   try {
-    const max = Number(cfg.douyin?.shareDaily || 1)
+    const max = Number(cfg.douyin?.shareDaily ?? 5)
     const cur = (() => { try { const j = JSON.parse(fs.readFileSync(SHARE_FILE(), 'utf8')); return j.day === shareDay() ? j.count : 0 } catch { return 0 } })()
-    fs.writeFileSync(SHARE_FILE(), JSON.stringify({ day: shareDay(), count: Math.min(cur + 1, max) }))
+    fs.writeFileSync(SHARE_FILE(), JSON.stringify({ day: shareDay(), count: max > 0 ? Math.min(cur + 1, max) : cur + 1 }))
   } catch {}
 }
 
