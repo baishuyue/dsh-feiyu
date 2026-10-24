@@ -207,6 +207,7 @@ textarea.fy-input{width:100%;min-height:136px;resize:vertical;line-height:1.65;f
 					ownerMid: (c.owner && c.owner.mid) || "",
 					ownerName: (c.owner && c.owner.name) || "",
 					ownerWechat: (c.owner && c.owner.wechat) || "",
+				douyinOwner: (c.douyin && c.douyin.owner && c.douyin.owner.name) || "",
 					nightStart: n.start || "20:00",
 					nightEnd: n.end || "24:00",
 					nightWakes: n.wakes || 1,
@@ -502,6 +503,12 @@ textarea.fy-input{width:100%;min-height:136px;resize:vertical;line-height:1.65;f
 							className: "fy-input fy-w-md", value: draft.ownerWechat, placeholder: "（可选）",
 							onChange: (e) => setDraft(Object.assign({}, draft, { ownerWechat: e.target.value })),
 							onBlur: () => save({ owner: { wechat: draft.ownerWechat.trim() } }, "已保存"),
+						})),
+					h(Row, { label: "抖音昵称" },
+						h("input", {
+							className: "fy-input fy-w-md", value: draft.douyinOwner, placeholder: "（分享给主人的私信目标）",
+							onChange: (e) => setDraft(Object.assign({}, draft, { douyinOwner: e.target.value })),
+							onBlur: () => save({ douyin: { owner: { name: draft.douyinOwner.trim() } } }, "主人抖音昵称已保存"),
 						}))),
 
 				// 音色
@@ -670,10 +677,10 @@ textarea.fy-input{width:100%;min-height:136px;resize:vertical;line-height:1.65;f
 							label: "douyinShare",
 							onChange: (v) => {
 								setDraft(Object.assign({}, draft, { douyinShare: v }));
-								save({ douyin: { shareToOwner: v } }, v ? "已开启：看到有意思的视频会发 QQ 给你" : "已关闭分享给主人");
+								save({ douyin: { shareToOwner: v } }, v ? "已开启：看到有意思的视频会抖音私信发你（附链接+评论）" : "已关闭分享给主人");
 							},
 						}),
-						h("span", { className: "fy-hint", style: { marginTop: 0 } }, "替代评论 @，附链接 + 她的吐槽，可接着聊")),
+						h("span", { className: "fy-hint", style: { marginTop: 0 } }, "抖音私信发你链接+她的评论，可接着聊；替代评论 @")),
 					h(Row, { label: "抖音 · 自主评论" },
 						h(Switch, {
 							on: draft.douyinAutoComment,

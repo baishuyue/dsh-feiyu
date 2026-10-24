@@ -99,14 +99,28 @@ export async function run(argv = []) {
     watched++
     console.log(`  → ${decision}${reason ? '（' + reason + '）' : ''}${share ? ' · 分享主人' : ''}${comment ? ' · 评论' : ''}`)
 
-    // ① 分享给主人（替代评论 @）：发 QQ + 视频链接 + 她的吐槽
+    // ① 分享给主人（在抖音里，替代评论 @）：抖音私信发 视频链接 + 她的评论，之后可在私信里继续聊
     if (share && cfg.douyin?.shareToOwner === true) {
       if (shareQuotaOk(cfg)) {
         const url = `https://www.douyin.com/video/${v.vid}`
         const line = comment || reason || '这个有意思，你看看'
-        const ok = await sendOwnerQQ(`在抖音刷到个好玩的：《${String(v.desc).slice(0, 40)}》 ${url}\n${line} 😆`)
-        if (ok) { shareQuotaRecord(cfg); memory.addLore('兴趣', `抖音《${String(v.desc).slice(0, 30)}》——分享给了主人`); console.log('  📨 已分享给主人') }
-        else console.log('  ✗ 分享主人失败（NapCat 没起？）')
+        const text = `《${String(v.desc).slice(0, 40)}》 ${url}\n${line} 😆`
+        const via = cfg.douyin?.shareVia || 'douyin'
+        const ownerName = String(cfg.douyin?.owner?.name || cfg.owner?.name || '').trim()
+        let ok = false
+        if (douyinDry(cfg)) {
+          console.log(`  【干跑 ✓】本要在抖音私信分享给「${ownerName || '主人'}」：${text.split('\n')[0]}…`)
+          ok = true   // 干跑不占真额度，但记录一下决策
+        } else {
+          if ((via === 'douyin' || via === 'both') && ownerName) {
+            try { console.log(runPy(['dm-send', '--to', ownerName, '--message', text, '--go', '--cdp'], cfg)); ok = true } catch (e) { console.error('[watch] 抖音私信分享失败：' + e.message) }
+          }
+          if (via === 'qq' || (via === 'both' && !ok)) {
+            ok = await sendOwnerQQ(`在抖音刷到个好玩的：${text}`)
+          }
+        }
+        if (ok) { shareQuotaRecord(cfg); memory.addLore('兴趣', `抖音《${String(v.desc).slice(0, 30)}》——分享给了主人`); console.log('  📨 已分享给主人（抖音私信）') }
+        else console.log('  ✗ 分享主人失败（没配 douyin.owner.name 或 NapCat 没起）')
       } else {
         console.log('  ⏭ 今日分享给主人的额度已用完')
       }
