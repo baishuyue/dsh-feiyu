@@ -94,6 +94,7 @@ export async function sendDanmaku(bvid, rawText, { go = false, atSec = 0 } = {})
         capRecord('danmaku'); return { ok: true, why: `弹幕已发（CDP 通道，第 ${at}s）：${text}` }
       }
       if (out.includes('NEED_LOGIN')) return { ok: false, why: '弹幕需要先在 CDP Chrome 里登录一次B站（扫码）' }
+      if (out.includes('NO_INPUT')) return { ok: false, why: '弹幕暂不可用：B站已把 dm 接口 protobuf 化且播放器弹幕框改版（待适配），这条跳过' }
       return { ok: false, why: '弹幕失败：' + out.slice(-120) }
     } catch (e2) { return { ok: false, why: 'CDP 弹幕失败：' + String(e2?.message ?? e2).slice(0, 120) } }
   }

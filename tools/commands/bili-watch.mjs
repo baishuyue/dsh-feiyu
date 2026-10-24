@@ -73,11 +73,11 @@ export async function run(argv = []) {
       if (free) { log('[bili-watch] feed 失败，歇 5 分钟再试（自由刷不退出）：' + e.message); await sleep(5 * 60_000); continue }
       log('[bili-watch] feed 失败：' + e.message); break
     }
-      if (!items.length) { if (free) { log('[bili-watch] 没刷到视频，歇会儿再试'); await sleep(restMs || 30_000); continue } break }
+      if (!items.length) { if (free) { log('[bili-watch] 没刷到视频，歇 10 分钟再试'); await sleep(10 * 60_000); continue } break }
     // 发过的直接跳过（查重在 comment 链路也会拦，这里提前滤掉免得每轮白撞一次）
     const posted = recentPostedBvids(Number(cfg.quota?.sameVideoDays ?? 7) || 7)
     items = items.filter(it => !posted.has(it.bvid))
-    if (!items.length) { if (free) { log('[bili-watch] 候选都发过了，歇会儿再刷'); await sleep(restMs || 30_000); continue } log('[bili-watch] 候选都发过（7天内），结束。'); break }
+    if (!items.length) { if (free) { log('[bili-watch] 候选都发过了，歇 15 分钟再刷（热门榜几小时才换一批）'); await sleep(15 * 60_000); continue } log('[bili-watch] 候选都发过（7天内），结束。'); break }
     for (const it of items) {
       if (done >= max) break
       const bvid = it.bvid

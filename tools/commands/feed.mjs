@@ -18,8 +18,9 @@ export async function run(argv = []) {
 
   const candidates = new Map()   // bvid -> item
 
-  // ① 热门榜（一页 20 条，不用 WBI）
-  const popular = await apiGet('https://api.bilibili.com/x/web-interface/popular?ps=20&pn=1', H)
+  // ① 热门榜（随机翻 1-3 页 —— 固定第一页会让候选很快发完陷入枯竭）
+  const pn = 1 + Math.floor(Math.random() * 3)
+  const popular = await apiGet(`https://api.bilibili.com/x/web-interface/popular?ps=20&pn=${pn}`, H)
   for (const v of popular?.data?.list ?? []) {
     if (v?.bvid) candidates.set(v.bvid, {
       bvid: v.bvid, aid: v.aid, title: v.title?.replace(/<[^>]+>/g, '') ?? '',
@@ -28,9 +29,12 @@ export async function run(argv = []) {
     })
   }
 
-  // ② 关键词搜索（有 keywords 才查；要 WBI 签名，bili-api 已处理）
+  // ② 关键词搜索（要 WBI 签名，bili-api 已处理）：
+  //    固定 keywords + 每轮随机抽 1-2 个偏好词（like 池轮换）—— 内容源源不断，候选不枯竭
   //    鱼圈社交：fishCircle 开了就把「大肥鱼」也当关键词搜 —— 同类鱼聚集地的视频进候选
-  const kws = [...(cfg.preferences?.keywords ?? []).slice(0, 2)]
+  const likePool = (cfg.preferences?.like ?? []).filter(Boolean)
+  const randLikes = [...likePool].sort(() => Math.random() - 0.5).slice(0, 2)
+  const kws = [...new Set([...(cfg.preferences?.keywords ?? []).slice(0, 2), ...randLikes])]
   if (cfg.bilibili?.fishCircle?.enabled === true) kws.push('大肥鱼')
   for (const kw of kws) {
     const u = new URL('https://api.bilibili.com/x/web-interface/search/type')
