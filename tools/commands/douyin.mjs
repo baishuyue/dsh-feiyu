@@ -13,6 +13,7 @@ import { execFileSync } from 'node:child_process'
 import os from 'node:os'
 import path from 'node:path'
 import { config } from '../lib/config.mjs'
+import * as memory from '../lib/memory.mjs'
 import { sanitizeFor } from '../lib/stickers.mjs'
 
 function arg(argv, name) {
@@ -151,6 +152,7 @@ async function runInteract(cfg) {
   const top = videos.slice(0, perRun)
   for (const v of top) {
     console.log(`\n[interact] ② 看视频《${v.desc.slice(0, 40)}》（${v.author}）`)
+    memory.remember('douyin', `douyin:${v.vid}`, v.author, 'event', v.desc.slice(0, 120))
     const commentsOut = runPy(['comments', '--vid', v.vid, '--headed'], cfg)
     let hot = []
     try {

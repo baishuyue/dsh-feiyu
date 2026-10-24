@@ -29,6 +29,7 @@ const COMMANDS = {
   'qq-server': 'QQ 常驻聊天服务（NapCat OneBot v11，实时秒回）',
   qzone: '发 QQ 空间说说（NapCat send_qzone_msg）',
   douyin: '抖音互动（login/feed/comments/comment/interact）',
+  report: '观看日报（B站/抖音 聚合 Markdown，不调模型）',
 }
 
 const cmd = process.argv[2]

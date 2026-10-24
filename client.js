@@ -116,6 +116,10 @@ textarea.fy-input{width:100%;min-height:136px;resize:vertical;line-height:1.65;f
 .fy-dot{display:inline-block;width:6px;height:6px;border-radius:50%;margin-right:6px;vertical-align:1px;background:#3fbf6f}
 .fy-dot.off{background:#c9564d}
 .fy-mem{max-height:232px;overflow:auto;margin-top:8px;font-size:12px;line-height:1.7}
+.fy-report{max-height:260px;overflow:auto;margin-top:8px;font-size:12px;line-height:1.7;
+  background:var(--dsw-alias-bg-l2,color-mix(in srgb,currentColor 6%,transparent));
+  border:1px solid var(--dsw-alias-border-l2,color-mix(in srgb,currentColor 14%,transparent));
+  border-radius:8px;padding:10px 12px;white-space:pre-wrap;word-break:break-word}
 .fy-mem-item{padding:4px 0;border-bottom:1px dashed var(--dsw-alias-border-l2,color-mix(in srgb,currentColor 10%,transparent));
   color:var(--dsw-alias-label-secondary,#8b95a5)}
 .fy-mem-item b{color:var(--dsw-alias-label-primary,inherit);font-weight:500;margin-right:6px}
@@ -187,6 +191,7 @@ textarea.fy-input{width:100%;min-height:136px;resize:vertical;line-height:1.65;f
 			const [busy, setBusy] = useState("");
 			const [error, setError] = useState("");
 			const [notice, setNotice] = useState(null);
+			const [report, setReport] = useState("");
 			const timer = useRef(0);
 
 			const flash = useCallback((msg, isErr) => {
@@ -205,8 +210,10 @@ textarea.fy-input{width:100%;min-height:136px;resize:vertical;line-height:1.65;f
 					nightStart: n.start || "20:00",
 					nightEnd: n.end || "24:00",
 					nightWakes: n.wakes || 1,
-					shareDaily: (c.quota && c.quota.shareDaily) || 3,
-					douyinCount: (c.douyin && c.douyin.maxPerRun) || 2,
+				shareDaily: (c.quota && c.quota.shareDaily) || 3,
+				shareOn: !!(c.share && c.share.enabled),
+				shareMinScore: (c.share && c.share.minScore) || 13,
+				douyinCount: (c.douyin && c.douyin.maxPerRun) || 2,
 					voiceChance: (c.qq && c.qq.voice_chance) || 0,
 					voicePath: (c.voice && c.voice.ref_audio_path) || "",
 					wxRhythm: (c.wechat && c.wechat.rhythm) || "fast",
@@ -254,6 +261,17 @@ textarea.fy-input{width:100%;min-height:136px;resize:vertical;line-height:1.65;f
 					flash("保存失败：" + ((e && e.message) || e), true);
 					return false;
 				}
+			}, [flash]);
+
+			const genReport = useCallback(async () => {
+				setBusy("report");
+				try {
+					const r = await api("/report", { method: "POST", body: JSON.stringify({ days: 1 }) });
+					if (r.ok) { setReport(r.markdown || ""); flash("日报已生成：" + (r.path || "")); }
+					else flash((r.errors || []).join("；") || "生成失败", true);
+				} catch (e) {
+					flash("生成日报失败：" + ((e && e.message) || e), true);
+				} finally { setBusy(""); }
 			}, [flash]);
 
 			const restartService = useCallback(async (target, action) => {
@@ -503,8 +521,9 @@ textarea.fy-input{width:100%;min-height:136px;resize:vertical;line-height:1.65;f
 								save({ wechat: { rhythm: v } }, "微信节奏已切到 " + v + "（重启微信服务生效）");
 							},
 						},
-							h("option", { value: "fast" }, "fast · 快（1.5 秒/条，推荐）"),
-							h("option", { value: "natural" }, "natural · 稳（4~7 秒/条）"),
+						h("option", { value: "fast" }, "fast · 快（1.5 秒/条，推荐）"),
+						h("option", { value: "off" }, "off · 秒回（最快，无节流，风控风险高）"),
+						h("option", { value: "natural" }, "natural · 稳（4~7 秒/条）"),
 							h("option", { value: "calm" }, "calm · 很慢（长时间挂机）"))),
 					h(Row, { label: "合并窗口" },
 						h("input", {
@@ -563,6 +582,27 @@ textarea.fy-input{width:100%;min-height:136px;resize:vertical;line-height:1.65;f
 							onBlur: () => save({ quota: { shareDaily: Number(draft.shareDaily) || 0 } }, "分享上限已保存"),
 						}),
 						h("span", { className: "fy-hint", style: { marginTop: 0 } }, "一天最多 @ 你几次")),
+					h(Row, { label: "分享（@ 你）" },
+						h(Switch, {
+							on: draft.shareOn,
+							label: "share",
+							onChange: (v) => {
+								setDraft(Object.assign({}, draft, { shareOn: v }));
+								save({ share: { enabled: v } }, v ? "分享已开启" : "分享已关闭");
+							},
+						}),
+						h("span", { className: "fy-hint", style: { marginTop: 0 } }, "最低 "),
+						h("input", {
+							className: "fy-input fy-w-sm", type: "number", min: 0, max: 20, value: draft.shareMinScore,
+							onChange: (e) => setDraft(Object.assign({}, draft, { shareMinScore: e.target.value })),
+							onBlur: () => save({ share: { minScore: Number(draft.shareMinScore) || 0 } }, "分享门槛已保存"),
+						}),
+						h("span", { className: "fy-hint", style: { marginTop: 0 } }, " 分才 @ 你")),
+					h(Row, { label: "观看日报" },
+						h("button", { className: "fy-btn", disabled: busy === "report", onClick: genReport },
+							busy === "report" ? "生成中…" : "生成今日日报"),
+						h("span", { className: "fy-hint", style: { marginTop: 0 } }, "聚合 B站/抖音 当天看过的，不调模型")),
+					report ? h("pre", { className: "fy-report" }, report) : null,
 					h(Row, { label: "抖音每次条数" },
 						h("input", {
 							className: "fy-input fy-w-sm", type: "number", min: 1, max: 5, value: draft.douyinCount,
