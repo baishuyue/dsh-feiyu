@@ -82,6 +82,16 @@ export const DEFAULTS = {
     proxy: 'http://127.0.0.1:7897',
   },
 
+  // 上网与进化（10-25）：给足自由度 —— 她在网上瞎溜达/玩/学习，甚至自我升级（备份+日志强制）。
+  web: {
+    roam: { enabled: false, restMin: 2 },       // 自由上网常驻（web roam --free）：每轮她自己决定干什么，轮间休息 N 分钟
+    selfUpgrade: { enabled: false },            // 允许她改自己的代码（铁律：改前 selfup backup，改完测试+日志）
+    proxy: 'http://127.0.0.1:7897',
+  },
+  personality: {
+    evolve: { enabled: false, days: 2 },        // 人格进化：每 N 天一次复盘 + 更新 persona 自我迭代区
+  },
+
   // LLM 直连（QQ/抖音的实时响应用；B站那套塞 DSH 会话零费，这里直连按 token 计费）
   llm: {
     base_url: 'https://api.deepseek.com/v1',   // 也可换硅基流动 / Ollama / OneAPI

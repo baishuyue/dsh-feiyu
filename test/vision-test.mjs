@@ -8,12 +8,16 @@ import { visionOn, visionCfg, dataUri, describeFrames } from '../tools/lib/visio
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'vision-test-'))
 try {
-  // ① 默认配置（provider=none）应视为未启用 —— watch 老流程不被挡
+  // ① 视觉启用状态与配置一致（用户 10-25 点亮后此断言走"已配置"分支）
   const v = visionCfg()
-  assert.strictEqual(visionOn(), false, '默认 provider=none 应未启用（用户还没视觉 key）')
-  assert.strictEqual(v.provider, 'none', 'provider 默认 none')
-  assert.strictEqual(await describeFrames([]), null, '未启用时 describeFrames 应返回 null，不上抛')
-  console.log('vision ✓ 默认未启用（静默跳过不挡路）')
+  assert.strictEqual(typeof visionOn(), 'boolean', 'visionOn 应返回布尔')
+  if (!visionOn()) {
+    assert.strictEqual(await describeFrames([]), null, '未启用时 describeFrames 应返回 null，不上抛')
+    console.log('vision ✓ 默认未启用（静默跳过不挡路）')
+  } else {
+    assert.ok(v.base_url && v.model && v.api_key, '已启用则四样必齐')
+    console.log('vision ✓ 已配置点亮（跳过离线空转断言）')
+  }
 
   // ② dataUri：JPEG/PNG 前缀正确、base64 可解
   const jpg = path.join(tmp, 'a.jpg')

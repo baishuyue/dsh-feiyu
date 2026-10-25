@@ -255,6 +255,11 @@ textarea.fy-input{width:100%;min-height:136px;resize:vertical;line-height:1.65;f
 				qqProactiveMax: (c.qq && c.qq.proactive && c.qq.proactive.dailyMax) || 3,
 				qqProactiveGap: (c.qq && c.qq.proactive && c.qq.proactive.minGapMin) || 150,
 				aiSticker: (c.imageGen && c.imageGen.enabled) !== false,
+				webRoam: !!(c.web && c.web.roam && c.web.roam.enabled),
+				webRestMin: (c.web && c.web.roam && c.web.roam.restMin) || 2,
+				webSelfUp: !!(c.web && c.web.selfUpgrade && c.web.selfUpgrade.enabled),
+				evoOn: !!(c.personality && c.personality.evolve && c.personality.evolve.enabled),
+				evoDays: (c.personality && c.personality.evolve && c.personality.evolve.days) || 2,
 					voicePath: (c.voice && c.voice.ref_audio_path) || "",
 					wxRhythm: (c.wechat && c.wechat.rhythm) || "fast",
 					wxMerge: (c.wechat && c.wechat.merge_window_sec) || 3,
@@ -1001,6 +1006,53 @@ textarea.fy-input{width:100%;min-height:136px;resize:vertical;line-height:1.65;f
 							onChange: (v) => { setDraft(Object.assign({}, draft, { dykFollow: v })); save({ bilibili: { follow: { enabled: v } } }, v ? "关注已开（好UP自己关注）" : "关注已关"); },
 						}),
 						h("span", { className: "fy-hint", style: { marginTop: 0 } }, "社交图谱自己长"))),
+
+// 上网与进化（给足自由度：她在网上瞎溜达/玩/学习/自我升级，全部有日志和备份）
+				h(Card, {
+					title: "🌐 上网与进化",
+					hint: "她可以全网瞎溜达（含内网）、玩、写小说写代码；自我升级强制走备份+测试+日志；人格进化每 N 天复盘更新她的人设。需要重启 DSH 生效。",
+				},
+					h(Row, { label: "自由上网" },
+						h(Switch, {
+							on: draft.webRoam,
+							label: "webRoam",
+							onChange: async (v) => {
+								setDraft(Object.assign({}, draft, { webRoam: v }));
+								const ok = await save({ web: { roam: { enabled: v } } }, v ? "自由上网已开" : "自由上网已关");
+								if (ok) {
+									try {
+										const r = await api("/services", { method: "POST", body: JSON.stringify({ target: "web-roam", action: v ? "start" : "stop" }) });
+										setSvc(r.services || null);
+										flash(v ? "她在网上了，去 web-log.md 看她在干嘛" : "自由上网已停");
+									} catch (e) { flash("自由上网服务操作失败：" + ((e && e.message) || e), true); }
+								}
+							},
+						}),
+						h("input", {
+							className: "fy-input fy-w-xs", type: "number", min: 1, max: 60, value: draft.webRestMin,
+							onChange: (e) => setDraft(Object.assign({}, draft, { webRestMin: e.target.value })),
+							onBlur: () => save({ web: { roam: { restMin: Math.max(1, Number(draft.webRestMin) || 2) } } }, "轮间休息已保存（分钟）"),
+						}),
+						h("span", { className: "fy-hint", style: { marginTop: 0 } }, "分钟/轮 · 她自己决定搜什么看什么玩什么，全记 web-log.md")),
+					h(Row, { label: "自我升级" },
+						h(Switch, {
+							on: draft.webSelfUp,
+							label: "webSelfUp",
+							onChange: (v) => { setDraft(Object.assign({}, draft, { webSelfUp: v })); save({ web: { selfUpgrade: { enabled: v } } }, v ? "自我升级已开：改代码前强制备份，改完强制测试+日志" : "自我升级已关（只看只学不改）"); },
+						}),
+						h("span", { className: "fy-hint", style: { marginTop: 0 } }, "允许她改自己的代码（备份在 ~/.feiyu-ai/selfup-backups/）")),
+					h(Row, { label: "人格进化" },
+						h(Switch, {
+							on: draft.evoOn,
+							label: "evoOn",
+							onChange: (v) => { setDraft(Object.assign({}, draft, { evoOn: v })); save({ personality: { evolve: { enabled: v } } }, v ? "人格进化已开：她定期复盘并更新自己的人设" : "人格进化已关"); },
+						}),
+						h("input", {
+							className: "fy-input fy-w-xs", type: "number", min: 1, max: 30, value: draft.evoDays,
+							onChange: (e) => setDraft(Object.assign({}, draft, { evoDays: e.target.value })),
+							onBlur: () => save({ personality: { evolve: { days: Math.max(1, Number(draft.evoDays) || 2) } } }, "进化间隔已保存（天）"),
+						}),
+						h("span", { className: "fy-hint", style: { marginTop: 0 } }, "天/次 · 更新 persona 自我迭代区"))),
 
 // 角色设定
 				h(Card, {

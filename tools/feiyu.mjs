@@ -39,6 +39,8 @@ const COMMANDS = {
   voice: '音色工坊：list/try/tryall/use/import + models（她的RVC音色）| train [--name] [--epochs]（训她自己的声音）| use-model --name',
   sing: '唱一首：["主题"] 原创（说唱/旋律）| cover "歌名" [--url 链接|--file 本地] 专业翻唱（换她的声音混伴奏）| songs 歌单',
   sticker: '表情包工坊：sticker gen "文案" [--tag 标签] [--send]（AI 画图入库，免费无 key）',
+  web: '上网工具：web search "关键词" | web fetch <url> | web log（她的全网冲浪手脚）',
+  selfup: '自我升级底座：selfup backup（改前备份）| selfup log "改了什么" | selfup status',
   vision: '视觉理解：status（看配置）| probe --image <图>（多模态描述，等视觉 key 点亮）',
 }
 
