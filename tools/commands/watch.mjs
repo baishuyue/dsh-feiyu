@@ -241,7 +241,13 @@ export async function run(argv = []) {
             ok = await sendOwnerQQ(`在抖音刷到个好玩的：${text}`)
           }
         }
-        if (ok) { shareQuotaRecord(cfg); memory.addLore('兴趣', `抖音《${String(v.desc).slice(0, 30)}》——分享给了主人`); log('  📨 已分享给主人（抖音私信）') }
+        if (ok) {
+          shareQuotaRecord(cfg)
+          memory.addLore('兴趣', `抖音《${String(v.desc).slice(0, 30)}》——分享给了主人`)
+          // 分享附言写进私信会话记忆（10-25 修"对话割裂"：主人回复分享时，上下文里必须有这条线）
+          try { memory.remember('douyin', 'douyin-dm:owner', String(cfg.douyin?.owner?.name || ''), 'assistant', `（分享了视频：《${String(v.desc).slice(0, 40)}》 ${url}）${line ? '\n我的评论：' + line : ''}`) } catch {}
+          log('  📨 已分享给主人（抖音私信）')
+        }
         else log('  ✗ 分享主人失败（没配 douyin.owner.name 或 NapCat 没起）')
       } else {
         log('  ⏭ 今日分享给主人的额度已用完')

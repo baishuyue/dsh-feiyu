@@ -131,6 +131,12 @@ export async function run(argv = []) {
 
       // 复用 QQ 那套：人格 + 记忆 + 清洗（douyin-dm 平台提示 = 私聊语气，不是评论区语气）
       const msgsOut = persona.buildMessages({ platform: 'douyin-dm', userText: text, chatId: CHAT_ID, userId: ownerKey, turnsToday: handled.length })
+      // 主人在回复她之前分享的视频卡片时（dm-read 对卡片只有 [分享视频] 占位）——
+      // 提示她去上文找自己发的附言，那才是内容本身；别再说"看不到内容"（10-25 实锤割裂 bug）
+      if (/\[分享(视频|作品)/.test(text) || /分享/.test(text)) {
+        const last = msgsOut[msgsOut.length - 1]
+        last.content += '\n\n（提示：主人这条很可能是在回复你之前分享的视频卡片。翻上面的对话——你发过的附言（「我的评论：…」或《…》链接）就是这个视频的内容，据此自然地接话。别再说"看不到内容"。）'
+      }
       const resp = await llm.chat(msgsOut, { temperature: 0.85 })
       const reply = guard.clean(String(resp?.content ?? resp ?? ''))
       if (!reply || reply.toUpperCase() === 'SKIP') {
