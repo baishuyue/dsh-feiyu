@@ -119,7 +119,12 @@ export async function run(argv = []) {
     `**台词稿**：`,
     ...plan.scenes.map((sc, i) => `${i + 1}. ${sc.line}`),
   ].join('\n'))
-  console.log(`📦 投稿包就绪：${dir}（成片+说明，等你点投稿）`)
+  // 让主人立刻看到：弹资源管理器（桌面有「她的投稿包」常驻入口）
+  try {
+    const { spawn } = await import('node:child_process')
+    spawn('powershell.exe', ['-NoProfile', '-Command', `Start-Process explorer.exe "${dir}"`], { detached: true, stdio: 'ignore', windowsHide: true }).unref()
+  } catch {}
+  console.log(`📦 投稿包就绪：${dir}（已弹窗；桌面「她的投稿包」常驻入口，等你点投稿）`)
 }
 
 if (process.argv[1] && process.argv[1].endsWith('produce.mjs')) {
