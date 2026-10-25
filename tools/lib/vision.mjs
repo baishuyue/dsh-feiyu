@@ -7,6 +7,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { config } from './config.mjs'
+import { dataPath } from './paths.mjs'
 
 export function visionCfg() {
   const v = config().vision ?? {}
@@ -16,6 +17,8 @@ export function visionCfg() {
     model: v.model || '',
     api_key: v.api_key || process.env.VISION_API_KEY || '',
     maxFrames: Number(v.maxFrames ?? 3),
+    // 备通道（10-26）：主通道 429/额度没了自动换一家，视觉链路不跟着一起哑
+    fallback: v.fallback ?? null,
   }
 }
 
@@ -32,8 +35,24 @@ export function dataUri(file) {
   return `data:${mime};base64,${buf.toString('base64')}`
 }
 
+/** 打一次视觉请求（内部用，失败抛错）。 */
+async function askOnce(cfg, content) {
+  const r = await fetch(String(cfg.base_url).replace(/\/+$/, '') + '/chat/completions', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${cfg.api_key}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model: cfg.model, messages: [{ role: 'user', content }], temperature: 0.4, max_tokens: 300 }),
+    signal: AbortSignal.timeout(60000),
+  })
+  if (!r.ok) throw new Error(`vision HTTP ${r.status}: ${(await r.text()).slice(0, 120)}`)
+  const j = await r.json()
+  const out = String(j.choices?.[0]?.message?.content ?? '').trim()
+  if (!out) throw new Error('vision 返回空内容')
+  return out
+}
+
 /**
  * 多帧 → 一段中文画面描述。没配/失败返回 null（调用方降级，不上抛）。
+ * 主通道失败会自动试 vision.fallback（别一家额度没了整个视觉链路就哑）。
  * @param {string[]} frames 帧图路径（同一条视频的连拍）
  * @param {{query?: string}} o 自定义提问
  */
@@ -48,14 +67,16 @@ export async function describeFrames(frames, o = {}) {
   }
   if (!attached) return null
   try {
-    const r = await fetch(v.base_url.replace(/\/+$/, '') + '/chat/completions', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${v.api_key}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: v.model, messages: [{ role: 'user', content }], temperature: 0.4, max_tokens: 300 }),
-      signal: AbortSignal.timeout(60000),
-    })
-    if (!r.ok) return null
-    const j = await r.json()
-    return String(j.choices?.[0]?.message?.content ?? '').trim() || null
-  } catch { return null }
+    return await askOnce(v, content)
+  } catch (e) {
+    const fb = v.fallback
+    if (fb && fb.base_url && fb.model && fb.api_key) {
+      try {
+        const out = await askOnce(fb, content)
+        try { fs.appendFileSync(dataPath('vision-fallback.log'), `${new Date().toISOString()} 视觉主通道失败(${String(e.message).slice(0, 70)}) → 已用备通道\n`) } catch {}
+        return out
+      } catch { /* 备通道也挂 → 下面统一返回 null */ }
+    }
+    return null
+  }
 }

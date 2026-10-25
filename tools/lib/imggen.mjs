@@ -136,6 +136,48 @@ export function capTagFiles(tag, cap = TAG_CAP, dir = STICKER_DIR) {
   } catch {}
 }
 
+// ── 千问AI平台（10-26）：OpenAI 兼容 /images/generations，也吃参考图（image= dataURI）
+//    实测：qwen-image-2.1-pro 带参考图 ≈16s（最快）；qwen-image-3.0-pro ≈38~116s。
+//    形象一样锁得住（同一张参考图），所以产物同样算 sf-（根本形象），可以进标签库。
+async function genQwenImage(prompt, tmpFile, q, cap = '') {
+  try {
+    const ref = refImageUrl(cap)
+    const body = {
+      model: q.model || 'qwen-image-2.1-pro',
+      prompt: cap
+        ? `参考图中的鲸鱼娘角色：保持她的发型、发色、五官、脸型、服装配色完全不变，${String(prompt).slice(0, 260)}。`
+          + `画面加一个手绘对话气泡，气泡里清楚地写着「${String(cap).slice(0, 12)}」这几个汉字（一字不差、清晰可读）。2D 动漫贴纸风格，全身，简洁浅色纯背景，高清。`
+        : String(prompt).slice(0, 800),
+      n: 1,
+      size: q.size || '1024x1024',
+    }
+    if (ref && fs.existsSync(ref.path)) body.image = `data:image/jpeg;base64,${fs.readFileSync(ref.path).toString('base64')}`
+    const r = await fetch(String(q.base_url).replace(/\/+$/, '') + '/images/generations', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${q.api_key}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(Number(q.timeoutMs ?? 240000)),
+    })
+    if (!r.ok) throw new Error(`HTTP ${r.status}: ${(await r.text()).slice(0, 150)}`)
+    const j = await r.json()
+    const url = String(j?.data?.[0]?.url || j?.images?.[0]?.url || '')
+    if (!url) throw new Error('响应里没有图片 URL：' + JSON.stringify(j).slice(0, 150))
+    // 阿里云 OSS 直连一般不用代理；失败再走代理
+    const exe = fs.existsSync('C:/Windows/System32/curl.exe') ? 'C:/Windows/System32/curl.exe' : 'curl'
+    try {
+      execFileSync(exe, ['-sS', '-m', '120', '-o', tmpFile, url], { encoding: 'utf8', timeout: 130000, windowsHide: true })
+    } catch {
+      execFileSync(exe, ['-sS', '-m', '120', '-x', q.proxy || 'http://127.0.0.1:7897', '-o', tmpFile, url], { encoding: 'utf8', timeout: 130000, windowsHide: true })
+    }
+    if (!isImageFile(tmpFile)) throw new Error('下载的不是有效图片')
+    return true
+  } catch (e) {
+    try { fs.rmSync(tmpFile, { force: true }) } catch {}
+    try { fs.appendFileSync(dataPath('imggen.log'), `${new Date().toISOString()} 千问生图失败：${String(e?.message ?? e).slice(0, 200)}\n`) } catch {}
+    return false
+  }
+}
+
 // ── 生成主流程 ──────────────────────────────────────────────────────────────
 const inflight = new Map()   // 同一文案/标签并发生成去重（qq-server 两条消息先后到时别画两张）
 
@@ -183,7 +225,7 @@ export async function generateStickerImage(caption, o = {}) {
       fs.mkdirSync(dir, { recursive: true })
       const tmp = out + '.part'
       const ig2 = config().imageGen ?? {}
-      // ── provider 分流：siliconflow(Qwen-Image-Edit 指令式编辑，形象锁死) > pollinations(免费兜底) ──
+      // ── provider 分流：siliconflow(Qwen-Image-Edit，形象锁死) > 千问平台(同款参考图,备用额度) > pollinations(免费兜底) ──
       if (String(ig2.provider || '') === 'siliconflow' && String(ig2.api_key || '').trim()) {
         const ok = await genSiliconflow(prompt, tmp, ig2, cap)
         if (ok) {
@@ -192,7 +234,18 @@ export async function generateStickerImage(caption, o = {}) {
           if (tag) capTagFiles(tag)
           return outSf
         }
-        // 硅基失败（额度/网络）→ 落回 pollinations 免费兜底，内容不丢
+        // 硅基失败（额度/网络）→ 落千问平台（配了的话），再不行才 pollinations
+      }
+      const qw = ig2.qwen ?? ig2.fallbackQwen ?? null
+      if (qw && qw.base_url && qw.model && qw.api_key) {
+        const ok2 = await genQwenImage(prompt, tmp, qw, cap)
+        if (ok2) {
+          fs.renameSync(tmp, outSf)
+          genQuotaRecord()
+          if (tag) capTagFiles(tag)
+          try { fs.appendFileSync(dataPath('imggen.log'), `${new Date().toISOString()} 硅基没出图 → 千问平台出图成功（${qw.model}）：${cap}\n`) } catch {}
+          return outSf
+        }
       }
       const ref = refImageUrl(cap)   // 图生图锚：按情绪挑参考图，形象才"像"
       const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}`
