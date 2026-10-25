@@ -108,19 +108,38 @@ export async function run(argv = []) {
       const data = jsonOf(out)
       const msgs = (data && data.messages) || []
       // 只看主人发来的、最新的
-      const inbound = msgs.filter(m => m.dir === 'in').map(m => String(m.text || '').trim()).filter(Boolean)
+      // 全类型（10-25 对齐 QQ）：文字消息 + 图片消息（img 字段，dm-read 带出 URL）
+      const inbound = msgs.filter(m => m.dir === 'in').map(m => ({ text: String(m.text || '').trim(), img: String(m.img || '') })).filter(m => m.text || m.img)
       if (!inbound.length) { failStreak = 0; return }
       // 首次运行：把现有消息全部记为基线（不回），从下一条新消息开始陪聊
       if (!seeded) {
         seeded = true
-        for (const t of inbound) { const k = norm(t); if (k && !handled.includes(k)) handled.push(k) }
+        for (const m of inbound) { const k = norm(m.text || m.img); if (k && !handled.includes(k)) handled.push(k) }
         writeJson(WM_FILE, { handled })
         log(`[douyin-dm] 首次运行：以现有 ${inbound.length} 条消息为基线，从下一条开始陪聊`)
         failStreak = 0
         return
       }
-      text = inbound[inbound.length - 1]
-      const key = norm(text)
+      const pick = inbound[inbound.length - 1]
+      let text = pick.text
+      // 图片消息 → Qwen3-VL 亲眼看（10-25 对齐 QQ 的全类型理解）
+      if (pick.img && !text) {
+        try {
+          const { visionOn, describeFrames } = await import('../lib/vision.mjs')
+          if (visionOn()) {
+            const dl = path.join(dataPath('douyin-img'), `dm-${Date.now()}.jpg`)
+            fs.mkdirSync(path.dirname(dl), { recursive: true })
+            const exe = fs.existsSync('C:/Windows/System32/curl.exe') ? 'C:/Windows/System32/curl.exe' : 'curl'
+            execFileSync(exe, ['-sS', '-L', '-m', '30', '-A', 'Mozilla/5.0', '-o', dl, pick.img], { timeout: 35000, windowsHide: true })
+            if (fs.existsSync(dl) && fs.statSync(dl).size > 2000) {
+              const desc = await describeFrames([dl], { query: '这是抖音私信里对方发来的图片。一两句话说明：图里是什么/谁、什么状态、如果是梗图说出梗。' })
+              text = desc ? `【图片：${desc.slice(0, 120)}】` : '【发来一张图片，我没看清】'
+            } else text = '【发来一张图片，下载失败】'
+            try { fs.rmSync(dl, { force: true }) } catch {}
+          } else text = '【发来一张图片】'
+        } catch { text = '【发来一张图片】' }
+      }
+      const key = norm(text || pick.img)
       if (!key || handled.includes(key)) { failStreak = 0; return }
 
       log(`[douyin-dm] 主人：${text.slice(0, 50)}`)
