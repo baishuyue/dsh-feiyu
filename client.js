@@ -246,6 +246,7 @@ textarea.fy-input{width:100%;min-height:136px;resize:vertical;line-height:1.65;f
 				qqProactive: !!(c.qq && c.qq.proactive && c.qq.proactive.enabled),
 				qqProactiveMax: (c.qq && c.qq.proactive && c.qq.proactive.dailyMax) || 3,
 				qqProactiveGap: (c.qq && c.qq.proactive && c.qq.proactive.minGapMin) || 150,
+				aiSticker: (c.imageGen && c.imageGen.enabled) !== false,
 					voicePath: (c.voice && c.voice.ref_audio_path) || "",
 					wxRhythm: (c.wechat && c.wechat.rhythm) || "fast",
 					wxMerge: (c.wechat && c.wechat.merge_window_sec) || 3,
@@ -637,7 +638,18 @@ textarea.fy-input{width:100%;min-height:136px;resize:vertical;line-height:1.65;f
 							onChange: (e) => setDraft(Object.assign({}, draft, { qqProactiveGap: e.target.value })),
 							onBlur: () => saveProactive({ minGapMin: Math.max(10, Number(draft.qqProactiveGap) || 150) }, "两次搭话最小间隔已保存（分钟）"),
 						}),
-						h("span", { className: "fy-hint", style: { marginTop: 0 } }, "条/天 · 间隔分钟（正聊不打扰；夜间限制已关，全天可搭话）"))),
+						h("span", { className: "fy-hint", style: { marginTop: 0 } }, "条/天 · 间隔分钟（正聊不打扰；夜间限制已关，全天可搭话）")),
+					h(Row, { label: "AI表情包" },
+						h(Switch, {
+							on: draft.aiSticker,
+							label: "aiSticker",
+							onChange: (v) => {
+								setDraft(Object.assign({}, draft, { aiSticker: v }));
+								save({ imageGen: Object.assign({ enabled: true, dailyMax: 30 }, cfg && cfg.imageGen, { enabled: v }) },
+									v ? "AI表情包已开：图库里没有的她会自己画一张入库补发" : "AI表情包已关（自制表情退回文字贴纸）");
+							},
+						}),
+						h("span", { className: "fy-hint", style: { marginTop: 0 } }, "图库没有的情绪 / 自制表情 → AI 画一张入库补发（QQ + B站图片评论共用，每天最多 30 张，走本机代理出网）"))),
 
 				// 微信（UI 自动化，节奏与合并窗口直接决定像不像人、回得快不快）
 				h(Card, {

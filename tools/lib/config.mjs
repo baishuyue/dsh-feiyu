@@ -45,6 +45,15 @@ export const DEFAULTS = {
   // 日记（写日记不可关；push 留给将来的通知渠道）
   diary: { push: false },
 
+  // AI 表情包自动生成（10-25 新增）：Pollinations flux 免费无 key，直连被墙走本机 Clash。
+  // QQ 回复里图库没有的标签 / 自制表情 → 异步生成入库补发；B站图片评论同源。
+  imageGen: {
+    enabled: true,
+    model: 'flux',
+    dailyMax: 30,                      // 每天最多生成几张（0 = 不限），防免费档被刷限流
+    proxy: 'http://127.0.0.1:7897',    // 空串 = 直连（机器能出墙时可清掉）
+  },
+
   // LLM 直连（QQ/抖音的实时响应用；B站那套塞 DSH 会话零费，这里直连按 token 计费）
   llm: {
     base_url: 'https://api.deepseek.com/v1',   // 也可换硅基流动 / Ollama / OneAPI

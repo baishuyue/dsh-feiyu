@@ -8,6 +8,7 @@
 //   上报格式 messagePostFormat 选 array
 import http from 'node:http'
 import fs from 'node:fs'
+import path from 'node:path'
 import { dataPath } from '../lib/paths.mjs'
 import { config } from '../lib/config.mjs'
 import * as guard from '../lib/guard.mjs'
@@ -19,6 +20,7 @@ import { splitSticker, pickSticker, FACE_FALLBACK, ensureSelfSticker } from '../
 import { synth } from '../lib/tts.mjs'
 import { sing } from '../lib/sing.mjs'
 import { tickMood } from '../lib/mood.mjs'
+import { generateStickerImage } from '../lib/imggen.mjs'
 
 const LOG_FILE = dataPath('qq-server.log')
 
@@ -102,6 +104,30 @@ export async function run(argv = []) {
     } catch (e) { logErr(`[qq] 回发异常 ${action}: ${e.message}`); return false }
   }
 
+  // ── AI 表情包补发（10-25）：图库没有的标签 / 自制表情 → Pollinations 生成入库再补发 ──
+  // 异步跑（生成约 10~40s），不阻塞回复主线；同文案有缓存不重画；AI 失败退 PIL 文字贴纸。
+  const aiInflight = new Set()
+  async function aiStickerFollowup({ tag, caption, isGroup, groupId, userId }) {
+    const key = `${tag || ''}|${caption || ''}`
+    if (aiInflight.has(key)) return
+    aiInflight.add(key)
+    try {
+      let file = null
+      let desc = ''
+      if (tag && !pickSticker(tag)) { desc = `标签「${tag}」`; file = await generateStickerImage(tag, { tag }) }
+      if (!file && caption) { if (!desc) desc = `「${caption}」`; file = await generateStickerImage(caption) }
+      if (!file && caption) file = ensureSelfSticker(caption, config())   // AI 失败 → PIL 文字贴纸兜底
+      if (!file) { log(`[qq] AI 表情包没生成出来：${desc}（额度/代理/图床），这次不补发`); return }
+      const target = isGroup
+        ? { api: 'send_group_msg', key: 'group_id', id: Number(groupId) }
+        : { api: 'send_private_msg', key: 'user_id', id: Number(userId) }
+      await new Promise(r => setTimeout(r, 1000 + Math.random() * 2000))   // 像人翻表情包的工夫
+      const ok = await send(target.api, { [target.key]: target.id, message: [{ type: 'image', data: { file: 'file:///' + file.replace(/\\/g, '/') } }] })
+      if (ok) log(`[qq] 🎨 AI 表情包已入库补发：${desc} → ${path.basename(file)}`)
+    } catch (e) { log('[qq] AI 表情包补发异常：' + (e?.message ?? e)) }
+    finally { aiInflight.delete(key) }
+  }
+
   const handle = async (evt) => {
     try {
       // 每次处理消息都重读最新配置：热改 voice_enabled / voice_chance / minGapSec 立即生效，
@@ -163,14 +189,17 @@ export async function run(argv = []) {
 
       // 表情：文字和 [表情:标签] 拆开发（NapCat 图片段）
       const { text: body, tag, caption } = splitSticker(out)
+      const aiOn = config().imageGen?.enabled !== false
       let stickerFile = tag ? pickSticker(tag) : null
-      if (!stickerFile && caption) stickerFile = ensureSelfSticker(caption, config())  // 没有贴切的标签 → 当场画一张
+      if (!stickerFile && caption && !aiOn) stickerFile = ensureSelfSticker(caption, config())  // AI 关着才当场画文字贴纸
       const plain = body || (stickerFile ? '' : (FACE_FALLBACK[tag] || ''))
-      if (!plain && !stickerFile) return
+      // AI 表情包：图库没有这个标签 / 有自制表情文案 → 待异步生成（不卡回复主线）
+      const aiWanted = aiOn && ((tag && !pickSticker(tag)) || (caption && !stickerFile))
+      if (!plain && !stickerFile && !aiWanted) return
 
       // 干跑：只打印不真发（dafeiyu 铁律：第一周先观察）
       if (config().guard?.dryRun) {
-        log(`[qq][干跑] ${isGroup ? '群' + groupId : '私聊' + userId} → ${plain}${stickerFile ? ' [表情图]' : ''}`)
+        log(`[qq][干跑] ${isGroup ? '群' + groupId : '私聊' + userId} → ${plain}${stickerFile ? ' [表情图]' : ''}${aiWanted ? ` +AI表情「${tag || caption}」` : ''}`)
         memory.remember('qq', chatId, userId, 'assistant', plain || out)
 
       // 长期记忆：跟主人私聊时，每 6 条回复把这段对话压成摘要 + 更新主人画像（不阻塞回复）
@@ -229,6 +258,8 @@ export async function run(argv = []) {
         }
         if (bubbles.length > 1) log(`[qq] 分 ${bubbles.length} 条发`)
       }
+      // AI 表情包：生成入库 + 补发（异步，不占回复主线；干跑分支已在上面 return，走不到这）
+      if (aiWanted) void aiStickerFollowup({ tag, caption, isGroup, groupId, userId })
       memory.remember('qq', chatId, userId, 'assistant', plain || out)
 
       // 长期记忆：跟主人私聊时，每 6 条回复把这段对话压成摘要 + 更新主人画像（不阻塞回复）

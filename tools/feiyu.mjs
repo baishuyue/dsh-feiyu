@@ -38,6 +38,7 @@ const COMMANDS = {
   replies: 'B站社交：扫描别人对我评论的回复并回应（默认干跑）',
   voice: '音色工坊：list | try | tryall | use | import（她自己学新声音）',
   sing: '唱一首（LLM写词+她的音色逐句+鼓点混音，发主人QQ）',
+  sticker: '表情包工坊：sticker gen "文案" [--tag 标签] [--send]（AI 画图入库，免费无 key）',
 }
 
 const cmd = process.argv[2]

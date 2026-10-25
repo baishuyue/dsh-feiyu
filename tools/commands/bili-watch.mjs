@@ -148,10 +148,17 @@ export async function run(argv = []) {
           if (r.ok) log('  ➕ 已关注 UP：' + (it.owner || ''))
         } catch {}
       }
-      // 图片评论（表情贴纸）：LLM 给了贴纸文案就画一张发出去（imageComment 显式开 + 日额度）
+      // 图片评论（表情贴纸）：LLM 给了贴纸文案 → 先试 AI 画一张真表情包（10-25 新增），
+      // AI 关着/失败/额度用完再退 PIL 文字贴纸（imageComment 显式开 + 日额度在 bili-write 把关）
       if (sticker && hc.imageComment?.enabled === true && dry === false) {
         try {
-          const pic = ensureSelfSticker(sticker, cfg)
+          let pic = null
+          if (cfg.imageGen?.enabled !== false) {
+            const { generateStickerImage } = await import('../lib/imggen.mjs')
+            pic = await generateStickerImage(sticker)
+            if (pic) log('  🎨 AI 表情包已生成：' + pic.split(/[\\/]/).pop())
+          }
+          if (!pic) pic = ensureSelfSticker(sticker, cfg)
           if (pic) {
             log(runFeiyu(['act', 'pic', '--bvid', bvid, '--message', comment.slice(0, 60), '--image', pic, '--go']))
           }
