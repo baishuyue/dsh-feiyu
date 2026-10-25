@@ -28,7 +28,7 @@ const COMMANDS = {
   mem: '三层记忆（remember/fact/lore/recall/old/stats）',
   'qq-server': 'QQ 常驻聊天服务（NapCat OneBot v11，实时秒回）',
   qzone: '发 QQ 空间说说（NapCat send_qzone_msg）',
-  douyin: '抖音互动（login/feed/comments/comment/interact）',
+  douyin: '抖音互动 + 运营：login/feed/comments/comment/interact/engage（评论区按需回复）/produce（短视频生产）',
   report: '观看日报（B站/抖音 聚合 Markdown，不调模型）',
   watch: '抖音自主观看（feed→决策→兴趣记忆，时长限制）',
   review: '复盘学习日记（B站/抖音 提炼，写进私人日记）',
@@ -41,6 +41,7 @@ const COMMANDS = {
   sticker: '表情包工坊：sticker gen "文案" [--tag 标签] [--send]（AI 画图入库，免费无 key）',
   web: '上网工具：web search "关键词" | web fetch <url> | web log（她的全网冲浪手脚）',
   selfup: '自我升级底座：selfup backup（改前备份）| selfup log "改了什么" | selfup status',
+  produce: '短视频生产：produce ["主题"]（她策划→配图→她的声音旁白→成片投稿包，投稿点击归主人）',
   vision: '视觉理解：status（看配置）| probe --image <图>（多模态描述，等视觉 key 点亮）',
 }
 

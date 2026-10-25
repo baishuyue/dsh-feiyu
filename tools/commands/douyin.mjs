@@ -10,6 +10,7 @@
 //
 // 风控铁律：评论默认 DRY（只打印不真发），interact 全程 DRY；确认选题准了再手动 --go。
 import { execFileSync } from 'node:child_process'
+import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { config } from '../lib/config.mjs'
@@ -69,6 +70,73 @@ function matchPrefs(v, cfg) {
 export function run(argv = []) {
   const cmd = argv[0] || 'help'
   const cfg = config()
+
+  // ── 运营模式（10-25）：扫自己视频的新评论 → 她自己判断回谁、回什么 → comment-reply 真发 ──
+  if (cmd === 'engage') {
+    const eg = cfg.douyin?.engage ?? {}
+    if (eg.enabled === false) { console.log('douyin.engage.enabled 是关的'); return }
+    const dry = douyinDry(cfg)
+    const secUid = String(cfg.douyin?.owner?.sec_uid || '')
+    if (!secUid) { console.error('✗ 缺 douyin.owner.sec_uid（扫自己的投稿要用）'); return }
+    // ① 自己的投稿列表
+    const vidsJson = parseFeedJson(runPy(['my-videos', '--sec-uid', secUid], cfg))
+    const videos = (vidsJson.videos || []).slice(0, 3)
+    if (!videos.length) { console.log('没扫到投稿（登录态/主页结构变了？）'); return }
+    console.log(`自己的投稿 ${videos.length} 个：${videos.map((v) => v.desc.slice(0, 12)).join(' / ')}`)
+    // ② 各视频的新评论（水位：已见 cid）
+    const WM = path.join(os.homedir(), '.feiyu-ai', 'douyin-engage.json')
+    let wm = { seen: [] }
+    try { wm = JSON.parse(fs.readFileSync(WM, 'utf8')) } catch {}
+    const news = []
+    for (const v of videos) {
+      const cj = parseFeedJson(runPy(['comments', '--vid', v.vid], cfg))
+      for (const c of (cj.comments || [])) {
+        const key = v.vid + ':' + String(c.user || '') + ':' + String(c.text || '').slice(0, 24)
+        if (wm.seen.includes(key)) continue
+        news.push({ vid: v.vid, vdesc: v.desc, user: c.user, text: c.text })
+        wm.seen.push(key)
+      }
+    }
+    wm.seen = wm.seen.slice(-300)
+    fs.mkdirSync(path.dirname(WM), { recursive: true })
+    fs.writeFileSync(WM, JSON.stringify(wm))
+    if (!news.length) { console.log('评论区没有新评论。'); return }
+    console.log(`新评论 ${news.length} 条（最多回 ${Number(eg.dailyMax ?? 3)} 条）：`)
+    for (const n of news) console.log('  ·', n.user, '：', n.text.slice(0, 40))
+    // ③④ LLM 判断 + 执行（异步段）
+    ;(async () => {
+      const { chat } = await import('../lib/llm.mjs')
+      const { buildMessages } = await import('../lib/persona.mjs')
+      const built = buildMessages({ platform: 'douyin', userText: '', chatId: 'douyin:engage-self', userId: 'self' })
+      const list = news.slice(0, 10).map((n, i) => `${i + 1}. [${n.vdesc.slice(0, 12)}] ${n.user}：${n.text.slice(0, 50)}`).join('\n')
+      const msgs = [
+        built[0],
+        { role: 'user', content: '【运营】这是你自己抖音作品评论区的新评论。你自己判断：哪几条值得回（提问/夸奖/有意思的接梗；杠精和广告不理）；回复要像作者本人：短、自然、有点自己的态度，别客服腔。'
+          + `最多回 ${Number(eg.dailyMax ?? 3)} 条。只输出 JSON：{"replies":[{"index":序号,"text":"回复内容"}]}，都不想回就 {"replies":[]}\n${list}` },
+      ]
+      let plan = { replies: [] }
+      try {
+        const resp = await chat(msgs, { temperature: 0.9, max_tokens: 400 })
+        const m2 = String(resp).match(/\{[\s\S]*\}/)
+        if (m2) plan = JSON.parse(m2[0])
+      } catch (e) { console.log('LLM 决策失败：' + e.message) }
+      let done = 0
+      for (const r of (plan.replies || []).slice(0, Number(eg.dailyMax ?? 3))) {
+        const n = news[Number(r.index) - 1]
+        if (!n || !String(r.text || '').trim()) continue
+        console.log(`  ↩ 回 ${n.user}：${String(r.text).slice(0, 50)}`)
+        if (dry) { console.log('  【干跑 ✓】'); continue }
+        try {
+          console.log(runPy(['comment-reply', '--vid', n.vid, '--match', String(n.text).slice(0, 20), '--text', String(r.text).slice(0, 60), '--go'], cfg))
+          memory.remember('douyin', `douyin:${n.vid}`, n.user, 'assistant', `（回复了 ${n.user} 的评论「${String(n.text).slice(0, 30)}」：${String(r.text).slice(0, 60)}）`)
+          done++
+          await new Promise((r2) => setTimeout(r2, 60000 + Math.random() * 60000))   // 回复间隔 1~2 分钟防风控
+        } catch (e) { console.log('  ✗ 回复失败：' + String(e.message).slice(0, 80)) }
+      }
+      console.log(`回复了 ${done} 条。`)
+    })()
+    return
+  }
 
   if (cmd === 'login') {
     console.log('打开抖音网页版扫码登录（会弹 Chrome 窗口，扫码后点「确认登录」）...')

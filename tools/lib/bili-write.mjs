@@ -236,7 +236,7 @@ export async function scanReplies({ sinceMs } = {}) {
   const cred = loadCred()
   const H = makeHeaders(cred)
   const out = []
-  for (const c of mine.slice(-12)) {
+  for (const c of mine.slice(-30)) {
     try {
       const d = await apiGet(`https://api.bilibili.com/x/v2/reply?type=1&oid=${c.aid}&root=${c.rpid}&ps=20`, H, { noCache: true })
       for (const r of d?.data?.replies ?? []) {

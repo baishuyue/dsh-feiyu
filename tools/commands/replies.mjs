@@ -82,14 +82,22 @@ export async function run(argv = []) {
   const maxOnce = Math.min(5, Number(arg(argv, '--max', 3)) || 3)
   const state = readJson(STATE, { lastTs: 0 })
 
-  // ① 被动：有人回我的评论 → 接话
+  // ① 被动：有人回我的评论 → 接话。排序：主人的回复永远最优先，疑似同类 agent 其次（10-25 用户拍板）
   const items = await scanReplies({ sinceMs: state.lastTs })
   let done = 0
   let left = maxOnce
   if (items.length) {
-    console.log(`发现 ${items.length} 条别人对我评论的新回复，处理最多 ${left} 条：`)
+    const myMid = String(config().owner?.mid || '')
+    const isFishy = (u) => /鱼|鲸|鲲|fish/i.test(String(u || ''))
+    items.sort((a, b) => {
+      const rank = (x) => (String(x.reply.uname) && x.reply.uname === config().owner?.name ? 0 : isFishy(x.reply.uname) ? 1 : 2)
+      return rank(a) - rank(b)
+    })
+    console.log(`发现 ${items.length} 条别人对我评论的新回复（主人优先），处理最多 ${left} 条：`)
     for (const it of items.slice(0, left)) {
-      if (go && !capOk('reply', dailyMax)) { console.log('  ⏭ 今日回评额度已用完'); break }
+      const ownerReply = String(it.reply.uname) === String(config().owner?.name || '')
+      if (go && !ownerReply && !capOk('reply', dailyMax)) { console.log('  ⏭ 今日回评额度已用完（主人的回复不受限）'); break }
+      if (ownerReply) console.log('  👑 主人的回复——优先处理、免额度')
       console.log(`  「${it.reply.uname}」：${it.reply.text.slice(0, 60)}`)
       let replyText = ''
       try {

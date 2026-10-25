@@ -180,6 +180,9 @@ export const DEFAULTS = {
     // 自由刷：大肥鱼自己长时间刷抖音看世界，不限条数/时长（unlimited），限度可调。
     // unlimited=true 时刷到「每日分享额度用完」或手动停；unlimited=false 按 maxVideos/maxMinutes。
     freeRoam: { enabled: false, unlimited: true, maxVideos: 0, maxMinutes: 0, restMin: 3 },
+    // 运营（10-25）：她自己的账号自己运营——评论区按需回复（LLM 判断）+ 短视频生产（投稿点击归主人）
+    engage: { enabled: true, dailyMax: 3 },
+    produce: { enabled: true },
     // 私信陪聊（参照 QQ 模式）：常驻轮询主人私信，新消息→LLM 回
     // 端口默认 8095：8090 常被 Wondershare 推送组件（WsToastNotification.exe）抢占，绑不上
     dm: { enabled: false, pollSec: 300, port: 8095 },
