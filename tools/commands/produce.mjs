@@ -51,7 +51,7 @@ async function text2img(prompt, out) {
   return fs.existsSync(out) && fs.statSync(out).size > 5000 ? out : null
 }
 
-async function plan(topic) {
+async function makePlan(topic) {
   const { personaText } = await import('../lib/persona.mjs')
   const persona = personaText()
   const interests = memory.loreInterests(4)
@@ -80,7 +80,7 @@ export async function run(argv = []) {
   if (cfg.douyin?.produce?.enabled === false) { console.log('douyin.produce.enabled 是关的'); return }
 
   console.log('🎬 策划中（选题/分镜/台词来自她的真实兴趣）…')
-  const plan = await plan(topic)
+  const plan = await makePlan(topic)
   const slug = String(plan.title || 'untitled').replace(/[\\/:*?"<>|\s]+/g, '').slice(0, 16) || String(Date.now())
   const dir = dataPath('douyin-posts', `${new Date().toLocaleDateString('sv-SE')}-${slug}`)
   fs.mkdirSync(dir, { recursive: true })
