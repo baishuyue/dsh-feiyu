@@ -16,11 +16,44 @@ import { config } from './config.mjs'
 import { STICKER_DIR } from './stickers.mjs'
 
 const GEN_FILE = () => dataPath('imggen.json')
+const REF_CACHE = () => dataPath('imggen-ref.json')
 const dayKey = () => new Date().toLocaleDateString('sv-SE')
 /** 固定形象基底：鲸鱼娘（2D 动漫贴纸风，蓝发鱼尾少女 —— 参考主人给的形象），成品才像"她的"表情包。
  *  情绪/动作/服装由每条文案的 LLM 翻译自由发挥 —— 基底不变，风格她自己探索。 */
 const STYLE = 'flat 2D anime chibi sticker illustration, cute whale-girl, long wavy navy-blue hair with light blue gradient, whale tail and small fin ears, big sparkling blue eyes, soft blush, kawaii, bold clean lineart, flat cel shading, simple pale background, high quality'
 const TAG_CAP = 12   // 每个标签目录最多留几张 ai- 生成图（老的删掉，只删自己生成的）
+
+// ── 图生图参考图（10-25）：形象锚定用主人给的参考图，img2img 才"像" ─────────
+// Pollinations 的 &image= 参数要一个公网可达的图片 URL —— 参考图是本地文件，
+// 自动传 tmpfiles.org（60 分钟过期）并缓存 URL，过期自动重传。
+const REF_UPLOAD_PROXY = () => config().imageGen?.proxy || 'http://127.0.0.1:7897'
+function refUrlCached() {
+  try { const j = JSON.parse(fs.readFileSync(REF_CACHE(), 'utf8')); if (j.url && Date.now() - Number(j.at) < 50 * 60_000) return j.url } catch {}
+  return ''
+}
+function uploadRef(localPath) {
+  const exe = fs.existsSync('C:/Windows/System32/curl.exe') ? 'C:/Windows/System32/curl.exe' : 'curl'
+  const r = execFileSync(exe, ['-sS', '-m', '90', '-x', REF_UPLOAD_PROXY(), '-F', `file=@${String(localPath).replace(/\//g, path.sep)}`, 'https://tmpfiles.org/api/v1/upload'],
+    { encoding: 'utf8', timeout: 100000, windowsHide: true })
+  const j = JSON.parse(r)
+  const page = String(j?.data?.url || '')
+  if (!page) throw new Error('tmpfiles 上传失败：' + r.slice(0, 120))
+  const url = page.replace('tmpfiles.org/', 'tmpfiles.org/dl/')   // 页面链 → 直链
+  try { fs.writeFileSync(REF_CACHE(), JSON.stringify({ url, at: Date.now() })) } catch {}
+  return url
+}
+/** 参考图公网直链：配置了 imageGen.refImage（本地路径或 http 链接）才启用图生图；拿不到返回 ''。 */
+function refImageUrl() {
+  const ref = String(config().imageGen?.refImage || '').trim()
+  if (!ref) return ''
+  if (/^https?:\/\//.test(ref)) return ref
+  try {
+    if (!fs.existsSync(ref)) return ''
+    const cached = refUrlCached()
+    if (cached) return cached
+    return uploadRef(ref)
+  } catch { return '' }
+}
 
 // ── 日额度 ────────────────────────────────────────────────────────────────
 export function genQuotaOk(max, file = GEN_FILE()) {
@@ -115,11 +148,24 @@ export async function generateStickerImage(caption, o = {}) {
     try {
       const chat = o.llmChat ?? (await import('./llm.mjs')).chat
       const prompt = await buildImagePrompt(cap, chat)
+      const ref = refImageUrl()   // 图生图锚：有参考图就带上，形象才"像"
       const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}`
         + `?width=512&height=512&nologo=true&model=${encodeURIComponent(ig.model || 'flux')}&seed=${Math.floor(Math.random() * 1e6)}`
+        + (ref ? `&image=${encodeURIComponent(ref)}` : '')
       fs.mkdirSync(dir, { recursive: true })
       const tmp = out + '.part'
-      const code = await curlTo(url, tmp, o.timeoutMs ?? 120000, ig.proxy ?? 'http://127.0.0.1:7897')
+      // 免费档 1 张/45s + 服务偶发 503：402/503 退避 55s 重试，最多 3 次
+      let code = ''
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        code = await curlTo(url, tmp, o.timeoutMs ?? 120000, ig.proxy ?? 'http://127.0.0.1:7897')
+        if (code === '200') break
+        try { fs.rmSync(tmp, { force: true }) } catch {}
+        if (attempt < 3 && (code === '402' || code === '503')) {
+          await new Promise((r) => setTimeout(r, 55000))
+          continue
+        }
+        return null
+      }
       if (code !== '200' || !isImageFile(tmp)) { try { fs.rmSync(tmp, { force: true }) } catch {}; return null }
       fs.renameSync(tmp, out)
       genQuotaRecord()

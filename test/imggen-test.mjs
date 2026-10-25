@@ -6,7 +6,7 @@ import path from 'node:path'
 import assert from 'node:assert'
 import { buildImagePrompt, isImageFile, genQuotaOk, genQuotaRecord, capTagFiles } from '../tools/lib/imggen.mjs'
 
-const STYLE = 'cute chibi anime whale-girl mascot'
+const STYLE = 'flat 2D anime chibi sticker illustration'
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'imggen-test-'))
 try {
   // ① buildImagePrompt：没 LLM → 模板兜底；LLM 正常 → STYLE + 翻译；LLM 抛错 → 兜底

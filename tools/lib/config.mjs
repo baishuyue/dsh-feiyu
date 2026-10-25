@@ -52,6 +52,7 @@ export const DEFAULTS = {
     model: 'flux',
     dailyMax: 30,                      // 每天最多生成几张（0 = 不限），防免费档被刷限流
     proxy: 'http://127.0.0.1:7897',    // 空串 = 直连（机器能出墙时可清掉）
+    refImage: '',                      // 图生图参考图（本地路径或 http 链接）——形象锚定，形象才"像"
   },
 
   // 视觉理解（10-25 框架就位，等视觉模型 key 点亮）：watch 自主观看截 N 帧 → 多模态描述 → 注入决策。
@@ -119,6 +120,14 @@ export const DEFAULTS = {
       dailyMax: 6,          // 每个群每天最多插话几次（0 = 不限）
       chance: 0.1,          // 每 60s tick 命中概率
       recentN: 14,          // 决策时喂最近几条群聊
+    },
+    // 自主写说说（10-25）：她自己的见闻+心情 → 攒着劲发 QQ 空间说说（可文配图，图生图鲸鱼娘）。
+    qzoneAuto: {
+      enabled: true,
+      dailyMax: 2,          // 每天最多发几条（0 = 不限）
+      minGapMin: 240,       // 两条说说最小间隔（分钟）
+      chance: 0.15,         // 每 30 分钟 tick 命中概率
+      imageChance: 0.5,     // 配图概率
     },
   },
 

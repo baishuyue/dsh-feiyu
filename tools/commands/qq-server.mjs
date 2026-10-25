@@ -419,8 +419,10 @@ export async function run(argv = []) {
       const msgs = [
         built[0],
         { role: 'user', content: `【主动搭话】主人有一阵子没说话了${quietH < 99 ? `（约 ${quietH} 小时）` : ''}。${quietHint}\n`
-          + '现在你主动给他发一条 QQ 消息。像真人主动发微信那样：一条，一两句话，自然、有具体由头（刚看到的视频、饭点饿了、想起他之前说过的话、B站有人回了你评论）；'
-          + '也可以顺手安利一条你刚刷到的好玩视频（贴上 https://www.bilibili.com/video/BV 号或抖音链接），像随手转发给好朋友。\n'
+          + '现在你主动给他发一条 QQ 消息。**自己挑一个当下最想说的类型**：'
+          + '①日常——刚才刷到/干了什么；②思考——最近琢磨出的一个小想法；③疑惑——想问他的一个问题；'
+          + '④心情——现在的情绪；⑤安利——顺手转发一条刚看到的好玩视频（贴 BV 号或抖音链接）。'
+          + '像真人发微信那样：一条，一两句话，自然、有具体内容。\n'
           + '禁止"在吗/你好"式开场，不要长篇，不要一次发多条，只输出消息正文。' },
       ]
       const resp = await llm.chat(msgs, { temperature: 0.95, max_tokens: 120 })
@@ -441,9 +443,10 @@ export async function run(argv = []) {
   // 开口前 LLM 看最近群聊自己判断适不适合说话 —— 没话找话宁可不说。
   const GC_FILE = dataPath('qq-groupchat.json')
   const groupLastMsgAt = {}   // gid -> 最近一条群消息时间（内存，重启归零无妨）
-  let groupSpeak = readJsonSafe(GC_FILE, {})  // gid -> {day, count, lastAt}
   function readJsonSafe(f, d) { try { return JSON.parse(fs.readFileSync(f, 'utf8')) } catch { return d } }
-  function writeGC() { try { fs.mkdirSync(path.dirname(GC_FILE), { recursive: true }); fs.writeFileSync(GC_FILE, JSON.stringify(groupSpeak)) } catch {} }
+  function writeJsonSafe(f, v) { try { fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, JSON.stringify(v)) } catch {} }
+  let groupSpeak = readJsonSafe(GC_FILE, {})  // gid -> {day, count, lastAt}
+  const writeGC = () => writeJsonSafe(GC_FILE, groupSpeak)
 
   async function tryGroupChat() {
     try {
@@ -491,4 +494,62 @@ export async function run(argv = []) {
     } catch (e) { logErr('[qq] 群聊插话失败：' + (e?.message ?? e)) }
   }
   setInterval(tryGroupChat, 60_000)
+
+  // ── 自主写说说引擎（10-25）：她自己的见闻+心情 → 攒着劲发一条 QQ 空间说说（可文配图）──
+  // 内容从她的世界来（人设+世界块+情绪），图是她的鲸鱼娘图生图 —— 说说像她，不像模板。
+  const QZ_FILE = dataPath('qq-qzone.json')
+  async function tryQzone() {
+    try {
+      const QQ = config().qq ?? {}
+      const auto = QQ.qzoneAuto ?? {}
+      if (QQ.qzone_enabled === false || auto.enabled !== true) return
+      const now = Date.now()
+      const day = new Date().toLocaleDateString('sv-SE')
+      const st = readJsonSafe(QZ_FILE, { day: '', count: 0, lastAt: 0 })
+      if (st.day !== day) { st.day = day; st.count = 0 }
+      const dailyMax = Number(auto.dailyMax ?? 2)
+      if (dailyMax > 0 && Number(st.count) >= dailyMax) return
+      if (now - Number(st.lastAt ?? 0) < Number(auto.minGapMin ?? 240) * 60_000) return
+      if (Math.random() > Number(auto.chance ?? 0.15)) return
+      tickMood()
+      const built = buildMessages({ platform: 'qq', userText: '', chatId: 'qq:qzone-self', userId: String(config().owner?.qq || ''), turnsToday: Number(st.count) })
+      const msgs = [
+        built[0],
+        { role: 'user', content: '【发说说】现在以你的名义发一条 QQ 空间说说。基于你最近在外面看到的/今天的心情/最近琢磨的小念头，随手一条：'
+          + '60~120 字，口语、真实、像发朋友圈，不要话题标签不要 @ 不要称呼主人。可以就是一句碎碎念，也可以带一点小情绪。只输出说说正文。' },
+      ]
+      const resp = await llm.chat(msgs, { temperature: 0.95, max_tokens: 300 })
+      const text = guard.clean(String(resp ?? ''), config())
+      if (!text || text.length < 8) return
+      // 配图：按概率画一张贴题的鲸鱼娘表情包（图生图）
+      let images = null
+      try {
+        if (Math.random() < Number(auto.imageChance ?? 0.5)) {
+          const caption = String(text).replace(/[，。！？…~～\s]+/g, ' ').trim().split(' ').filter(Boolean).slice(0, 2).join(' ').slice(0, 12) || '今天的心情'
+          const { generateStickerImage } = await import('../lib/imggen.mjs')
+          const img = await generateStickerImage(caption, {})
+          if (img) images = ['file:///' + String(img).replace(/\\/g, '/')]
+        }
+      } catch {}
+      const NAPCAT = (QQ.napcat_http || 'http://127.0.0.1:3000').replace(/\/+$/, '')
+      const post = async (body) => fetch(`${NAPCAT}/send_qzone_msg`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body), signal: AbortSignal.timeout(60000),
+      })
+      let r = await post(images ? { content: text, images, ugc_right: 1 } : { content: text, ugc_right: 1 })
+      let j = null; try { j = await r.json() } catch {}
+      if ((!r.ok || j?.status === 'failed') && images) {
+        log(`[qzone] 配图说说没成（${JSON.stringify(j ?? r.status).slice(0, 80)}），退回纯文字`)
+        r = await post({ content: text, ugc_right: 1 })
+        j = null; try { j = await r.json() } catch {}
+        images = null
+      }
+      if (!r.ok || j?.status === 'failed') { log(`[qzone] 说说失败：${JSON.stringify(j ?? r.status).slice(0, 120)}`); return }
+      st.count = Number(st.count) + 1; st.lastAt = now
+      writeJsonSafe(QZ_FILE, st)
+      memory.remember('qq', 'qq:qzone-self', config().identity?.name ?? 'feiyu', 'assistant', `（发了说说：${String(text).slice(0, 60)}${images ? ' [配图]' : ''}）`)
+      log(`[qzone] ✍️ 说说已发布${images ? '（配图）' : ''}：${String(text).slice(0, 40)}`)
+    } catch (e) { logErr('[qzone] 自主说说失败：' + (e?.message ?? e)) }
+  }
+  setInterval(tryQzone, 30 * 60_000)
 }

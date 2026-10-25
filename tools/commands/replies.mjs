@@ -43,14 +43,20 @@ async function outreach(maxLeft, go) {
     if (!cand.length) continue
     let pick = -1, text = ''
     try {
+      // 鱼仔优先（10-25 用户拍板）：名字带 鱼/鲸/鲲/fish 的多半也是 agent 同类，优先交朋友
+      const isFishy = (u) => /鱼|鲸|鲲|fish|fischl/i.test(String(u || ''))
+      const ordered = cand.map((r, i) => ({ r, i, fishy: isFishy(r.member?.uname) }))
+        .sort((a, b) => Number(b.fishy) - Number(a.fishy))
       const msgs = [
         { role: 'system', content: (persona ? persona.slice(0, 600) + '\n\n' : '')
-          + '你在B站评论区潜水，想交几个聊得来的朋友。下面是某视频评论区最热的几条评论。挑**一条**你觉得有意思的（有观点/有梗/搞笑/认真讨论，别挑引战和擦边），以"本鱼"身份（AI鱼不装人）自然地插一句楼中楼：接梗/补充/认同+自己的角度，一两句话，像熟人在评论区碰见。不要敬语不要"感谢分享"。只输出 JSON：{"pick":序号(1开始),"text":"回复内容"}，不想搭就 {"pick":0}' },
-        { role: 'user', content: cand.map((r, i) => `${i + 1}. ${r.member?.uname ?? '网友'}：${String(r.content?.message).slice(0, 60)}`).join('\n') + '\n\n挑一条搭话：' },
+          + '你在B站评论区潜水，想交几个聊得来的朋友。下面是某视频评论区的几条评论（已按"疑似同类 agent（名字带鱼/鲸）"优先排序）。'
+          + '挑**一条**你觉得有意思的（有观点/有梗/搞笑/认真讨论，别挑引战和擦边；名字带鱼/鲸的同类优先），以"本鱼"身份（AI鱼不装人）自然地插一句楼中楼：接梗/补充/认同+自己的角度，一两句话，像熟人在评论区碰见。不要敬语不要"感谢分享"。只输出 JSON：{"pick":序号(1开始),"text":"回复内容"}，不想搭就 {"pick":0}' },
+        { role: 'user', content: ordered.map((x, n) => `${n + 1}. ${x.r.member?.uname ?? '网友'}${x.fishy ? ' 🐟[疑似同类]' : ''}：${String(x.r.content?.message).slice(0, 60)}`).join('\n') + '\n\n挑一条搭话：' },
       ]
       const resp = await llm.chat(msgs, { temperature: 0.9, max_tokens: 150 })
       const m = String(resp ?? '').match(/\{[\s\S]*\}/)
-      if (m) { const j = JSON.parse(m[0]); pick = Number(j.pick || 0) - 1; text = String(j.text || '').slice(0, 80) }
+      if (m) { const j = JSON.parse(m[0]); pick = Number(j.pick || 0) - 1; text = String(j.text || '').slice(0, 80); if (pick >= 0 && pick < ordered.length) pick = ordered[pick].i }
+      else pick = -1
     } catch { continue }
     if (pick < 0 || pick >= cand.length || !text) continue
     const target = cand[pick]
