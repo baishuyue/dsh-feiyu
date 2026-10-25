@@ -163,6 +163,27 @@ export async function run(argv = []) {
         try {
           log(`[qq] 🎵 唱歌请求：${userText.slice(0, 30)}`)
           const theme = userText.replace(/.*(唱|来)一?(首|个|段)?/, '').replace(/首歌?吧?|[吗呢？?。~～]/g, '').trim()
+          // ── 专业翻唱优先（10-25）：歌单点唱 → 没学会先应一声再现场学（搜源歌→分离→换她的声音→混伴奏）
+          // ── 学不会/没配好回落原创说唱（sing()），内容不丢
+          let covered = false
+          try {
+            const { coverSong, findSong, searchQuotaOk } = await import('../lib/cover.mjs')
+            const hit = findSong(theme)
+            const canSearch = !hit && theme && config().sing?.search !== false && searchQuotaOk()
+            if (hit || canSearch) {
+              const title = hit ? hit.title : theme
+              await send('send_private_msg', { user_id: Number(userId), message: [{ type: 'text', data: { text: hit ? `《${title}》我会唱！马上来～` : `《${title}》我还没学过，给我几分钟学一下哈～` } }] })
+              const song = await coverSong({ source: hit ? hit.source : `ytsearch1:${theme}`, title, log: (l) => log(`[qq] 🎤 ${l}`) })
+              const sent2 = await send('send_private_msg', { user_id: Number(userId), message: [{ type: 'record', data: { file: song.file } }] })
+              if (sent2) {
+                covered = true
+                await send('send_private_msg', { user_id: Number(userId), message: [{ type: 'text', data: { text: `🎵 给你唱《${song.title}》——用我自己的声音哦${song.cache === 'hit' ? '' : '（刚学会的）'}～` } }] })
+                memory.remember('qq', chatId, userId, 'assistant', `（翻唱了《${song.title}》，用她自己的音色）`)
+                log(`[qq] 🎤 翻唱已发：《${song.title}》`)
+              }
+            }
+          } catch (e) { logErr('[qq] 专业翻唱没成，回落原创说唱：' + String(e.message).slice(0, 120)) }
+          if (covered) return
           const song = await sing(theme)
           const sent2 = await send('send_private_msg', { user_id: Number(userId), message: [{ type: 'record', data: { file: song.file } }] })
           if (sent2) {

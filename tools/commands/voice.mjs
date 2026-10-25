@@ -53,6 +53,50 @@ export async function run(argv = []) {
   const sub = argv[0] || 'list'
   const voices = listVoices()
 
+  if (sub === 'models') {
+    const rvc = await import('../lib/rvc.mjs')
+    const { current, models } = rvc.listVoiceModels()
+    const names = Object.keys(models)
+    console.log(`RVC 音色模型（她自己的声音，唱歌/换声用）共 ${names.length} 个：`)
+    for (const n of names) console.log(`  ${n}${n === current ? ' ←当前' : ''} · ${models[n].pth.split(/[\\/]/).pop()}`)
+    if (!names.length) console.log('  （还没有 —— voice train 训一个，10 分钟语音约 30-60 分钟）')
+    return
+  }
+
+  if (sub === 'train') {
+    const rvc = await import('../lib/rvc.mjs')
+    const name = arg(argv, '--name', 'feiyu-sunshine')
+    const epochs = Number(arg(argv, '--epochs', 150)) || 150
+    if (!rvc.rvcReady()) {
+      console.error('✗ RVC 环境不齐：D:/rvc/venv 要有 torch+依赖，D:/rvc/RVC/assets 要有 48k 底模（见 rvc.mjs 头注释）')
+      process.exit(1)
+    }
+    console.log(`🎤 数据集生成（LLM 写稿 → 她的音色逐句合成，约 60 句 / 10 分钟语音）…`)
+    const cfg = config()
+    const ds = await rvc.genDataset({
+      name,
+      refAudio: arg(argv, '--ref') || cfg.voice?.ref_audio_path || '',
+      promptText: arg(argv, '--prompt') || cfg.voice?.prompt_text || '',
+      log: (l) => console.log(l),
+    })
+    console.log(`✓ 数据集就绪：${ds.count} 句 / 约 ${ds.approxMinutes} 分钟 —— ${ds.dir}`)
+    console.log(`🏋️ 开始训练 ${epochs} 轮（全程日志 ~/.feiyu-ai/rvc/train-${name}.log，挂后台别关机）…`)
+    const t0 = Date.now()
+    const out = await rvc.trainVoice({ name, datasetDir: ds.dir, epochs, log: (l) => console.log('  ' + String(l).slice(0, 110)) })
+    console.log(`✅ 训练完成（${Math.round((Date.now() - t0) / 60000)} 分钟）`)
+    console.log(`  模型：${out.pth}`)
+    console.log(`  索引：${out.index || '(无，index-rate 自动 0)'}`)
+    console.log(`已设为当前音色。试唱：sing "白饭" --cover <人声音频路径或链接>`)
+    return
+  }
+
+  if (sub === 'use-model') {
+    const rvc = await import('../lib/rvc.mjs')
+    rvc.setCurrentVoice(arg(argv, '--name'))
+    console.log(`✓ 唱歌音色已切到「${arg(argv, '--name')}」`)
+    return
+  }
+
   if (sub === 'list') {
     console.log(`音色库（${MODELS_DIR}）共 ${voices.length} 个：`)
     const cur = config().voice?.ref_audio_path || ''

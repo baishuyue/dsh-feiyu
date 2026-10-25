@@ -64,6 +64,19 @@ export const DEFAULTS = {
     maxFrames: 3,            // 每条视频最多喂几帧
   },
 
+  // 专业唱歌（10-25）：RVC 翻唱——真歌干声换她的音色再混伴奏（AI 孙燕姿同款管线）。
+  // 依赖 D:/rvc（RVC 仓库+venv，见 rvc.mjs）；她的歌单在 ~/.feiyu-ai/songs/。
+  rvc: {
+    root: 'D:/rvc/RVC',
+    python: 'D:/rvc/venv/Scripts/python.exe',
+    ffmpeg: 'D:/GPT-SoVITS/runtime/ffmpeg.exe',
+  },
+  sing: {
+    search: true,            // QQ 点唱没学会的歌时，自动搜源歌学（yt-dlp 走代理）
+    searchDaily: 3,          // 每天最多搜几首新的（0 = 不限），防跑飞
+    proxy: 'http://127.0.0.1:7897',
+  },
+
   // LLM 直连（QQ/抖音的实时响应用；B站那套塞 DSH 会话零费，这里直连按 token 计费）
   llm: {
     base_url: 'https://api.deepseek.com/v1',   // 也可换硅基流动 / Ollama / OneAPI
