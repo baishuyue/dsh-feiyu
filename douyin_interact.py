@@ -399,7 +399,11 @@ async def cmd_reply(cookie_file: str, vid: str, cid: str, message: str, dry: boo
             except Exception:
                 pass
 
+        # ⚠️ 监听必须在 goto **之前**挂上（10-25 修）：以前挂在 goto+sleep(5) 之后，
+        # 评论接口早就在页面加载时回完了 → cids 永远空 → 每次都报"cid 不在当前列表"，一次都发不出去。
         page.on('response', on_resp)
+        await page.goto(f"https://www.douyin.com/video/{vid}", wait_until="domcontentloaded", timeout=60000)
+        await asyncio.sleep(5)
         for i in range(5):
             await page.mouse.wheel(0, 2000)
             await asyncio.sleep(1.5)
@@ -412,15 +416,25 @@ async def cmd_reply(cookie_file: str, vid: str, cid: str, message: str, dry: boo
             return 1
         idx = cids.index(cid)
         log(f"[reply] 目标评论是第 {idx + 1} 条")
-        # 点第 idx 个「回复」按钮
+        # 点第 idx 个「回复」按钮（优先在该评论条目内部找）
+        clicked = False
         try:
-            await page.locator('text=回复').nth(idx).click(timeout=5000)
-            log(f"[reply] 已点第 {idx + 1} 个回复按钮")
-        except Exception as e:
-            log(f"[reply] ✗ 点回复按钮失败：{str(e)[:100]}")
-            if not use_cdp:
-                await browser.close()
-            return 1
+            items = page.locator('div[data-e2e="comment-item"]')
+            if await items.count() > idx:
+                await items.nth(idx).locator('text=回复').first.click(timeout=5000)
+                clicked = True
+        except Exception:
+            clicked = False
+        if not clicked:
+            try:
+                await page.locator('text=回复').nth(idx).click(timeout=5000)
+                clicked = True
+            except Exception as e:
+                log(f"[reply] ✗ 点回复按钮失败：{str(e)[:100]}")
+                if not use_cdp:
+                    await browser.close()
+                return 1
+        log(f"[reply] 已点第 {idx + 1} 个回复按钮")
         await asyncio.sleep(1.5)
         # 输入框
         box = page.locator('.public-DraftEditor-content[contenteditable="true"]').first
@@ -445,26 +459,97 @@ async def cmd_reply(cookie_file: str, vid: str, cid: str, message: str, dry: boo
         else:
             await _human_type(box, message)
         await asyncio.sleep(1)
-        # 发送
-        send = page.locator('.commentInput-right-ct span:has(svg)').last
+        # 发送：回车优先（抖音评论框 Enter 直接发），不行再点右侧「发送」按钮
+        sent = False
         try:
-            await send.click(timeout=8000)
+            await page.keyboard.press('Enter')
+            await asyncio.sleep(3)
         except Exception:
-            send = page.locator('text="发布"').last
-            await send.click(timeout=8000)
-        await asyncio.sleep(3)
-        # 回读验证
+            pass
         try:
-            after = await page.locator('.public-DraftEditor-content[contenteditable="true"]').first.inner_text()
-            if (after or '').strip():
-                log(f"[reply] ⚠️ 发送后输入框未清空（回复可能没发出去）：{after!r}")
-            else:
-                log(f"[reply] ✅ 已回复 cid={cid}：{'@' + at_user + ' ' if at_user else ''}{message}")
+            left = (await page.locator('.public-DraftEditor-content[contenteditable="true"]').first.inner_text() or '').strip()
         except Exception:
-            log(f"[reply] ✅ 已回复 cid={cid}（输入框已收起）")
+            left = ''
+        if left:
+            for sel in ['.commentInput-right-ct span:has(svg)', 'span:has-text("发送")', 'text="评论"']:
+                try:
+                    await page.locator(sel).last.click(timeout=5000)
+                    await asyncio.sleep(3)
+                    break
+                except Exception:
+                    continue
+        # 回读验证：页面上要真的能搜到这句话（10-25：以前只看"输入框空了"就报成功，
+        # 实际一条都没发出去，白白以为测通了）
+        ok = False
+        try:
+            key = message.strip()[:12]
+            ok = await page.get_by_text(key, exact=False).count() > 0
+        except Exception:
+            ok = False
+        if ok:
+            log(f"[reply] ✅ 已回复 cid={cid}：{'@' + at_user + ' ' if at_user else ''}{message}")
+        else:
+            shot = str(Path.home() / 'AppData/Local/Temp' / f"reply-fail-{cid}.png")
+            try:
+                await page.screenshot(path=shot)
+            except Exception:
+                shot = '(截图失败)'
+            log(f"[reply] ✗ 回复没出现在页面上（可能被风控/输入框不是这条评论的）：截图 {shot}")
+            if not use_cdp:
+                await browser.close()
+            return 1
         if not use_cdp:
             await browser.close()
     return 0
+
+
+async def cmd_self_info(cookie_file: str, out_file: str = "-") -> int:
+    """读当前登录账号自己的资料（昵称 + sec_uid + uid）。
+
+    为什么要：cookie 登录的是"她"的号（顾思苡），而 douyin.owner 是主人（朴昌范）。
+    运营/回复自己的作品评论区，扫的必须是**自己**的投稿 —— 以前 engage 用 owner.sec_uid
+    扫成了主人的旅行视频（10-25 主人当场纠正）。
+    """
+    prof = {}
+
+    async def on_resp(resp):
+        try:
+            if "user/profile" in resp.url and "json" in (resp.headers.get("content-type") or ""):
+                d = json.loads(await resp.text())
+                u = d.get("user") or {}
+                if u.get("nickname"):
+                    prof.update({
+                        "nickname": u.get("nickname"),
+                        "sec_uid": u.get("sec_uid"),
+                        "uid": str(u.get("uid") or ""),
+                        "unique_id": str(u.get("unique_id") or ""),
+                        "signature": u.get("signature") or "",
+                    })
+        except Exception:
+            pass
+
+    async with async_playwright() as pw:
+        browser, context = await _launch(pw, headless=True)
+        if Path(cookie_file).exists():
+            await context.add_cookies(json.loads(Path(cookie_file).read_text(encoding="utf-8")))
+        page = await context.new_page()
+        page.on("response", on_resp)
+        await page.goto("https://www.douyin.com/user/self", wait_until="domcontentloaded", timeout=60000)
+        await asyncio.sleep(9)
+        if not prof.get("sec_uid"):
+            try:
+                prof["nickname"] = (await page.locator("h1").first.inner_text(timeout=4000) or "").strip()
+            except Exception:
+                pass
+        await browser.close()
+    log(f"[self-info] {prof.get('nickname') or '?'} · {prof.get('sec_uid') or '(没读到 sec_uid)'}")
+    result = {"ok": bool(prof.get("sec_uid")), **prof}
+    if out_file == "-":
+        print(json.dumps(result, ensure_ascii=False))
+    else:
+        Path(out_file).parent.mkdir(parents=True, exist_ok=True)
+        Path(out_file).write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+    return 0 if prof.get("sec_uid") else 1
 
 
 async def cmd_comments(cookie_file: str, vid: str, out_file: str, headed: bool) -> int:
@@ -480,10 +565,17 @@ async def cmd_comments(cookie_file: str, vid: str, out_file: str, headed: bool) 
         for c in (data.get("comments") or []):
             try:
                 u = c.get("user") or {}
+                # cid 必须带上（10-25）：否则 `reply --vid --cid` 无从下手 —— 读评论拿到文本却没有 id，
+                # 只靠文本前缀定位（comment-reply --match）在纯表情评论上会歧义。
                 comments.append({
+                    "cid": str(c.get("cid") or ""),
                     "text": (c.get("text") or "").strip(),
                     "user": u.get("nickname", ""),
+                    "user_sec_uid": u.get("sec_uid", ""),
                     "digg_count": c.get("digg_count", 0),
+                    "reply_total": c.get("reply_comment_total", 0),
+                    "create_time": c.get("create_time", 0),
+                    "aweme_id": str(c.get("aweme_id") or vid),
                 })
             except Exception:
                 continue
@@ -507,6 +599,15 @@ async def cmd_comments(cookie_file: str, vid: str, out_file: str, headed: bool) 
             await page.mouse.wheel(0, 2000)
             await asyncio.sleep(1.5)
         await browser.close()
+    # 接口会分页多次回调，同一个 cid 可能来两遍 —— 按 cid 去重（没有 cid 的按文本+作者去重）
+    uniq, seen = [], set()
+    for c in comments:
+        k = c.get("cid") or (c.get("user", "") + "|" + c.get("text", "")[:40])
+        if k in seen:
+            continue
+        seen.add(k)
+        uniq.append(c)
+    comments = uniq
     log(f"[comments] 读到 {len(comments)} 条评论")
     result = {"vid": vid, "count": len(comments), "comments": comments}
     if out_file == "-":
@@ -595,12 +696,18 @@ async def _read_dm_messages(page):
         await page.mouse.wheel(0, -1500)
         await asyncio.sleep(1)
     second = await _extract()
+    fresh_keys = {m["text"][:50] for m in first}
     merged, seen = [], set()
     for m in second + first:
         k = m["text"][:50]
         if k in seen:
             continue
         seen.add(k)
+        m = dict(m)
+        # 默认视图（没滚动前那一屏）里出现过的 → 说明是最近的消息。
+        # 合并顺序是"旧的在前"，但虚拟列表偶尔会打乱，调用方不能靠位置判断新旧（10-25 实锤：
+        # 末尾常常是早就回过的旧消息，导致新消息永远轮不到）。
+        m["fresh"] = k in fresh_keys
         merged.append(m)
     return merged[-40:]
 
@@ -1001,6 +1108,10 @@ def main():
     p_creply.add_argument("--go", dest="dry", action="store_false")
     p_creply.add_argument("--headed", action="store_true")
 
+    p_self = sub.add_parser("self-info", help="读当前登录账号自己的资料（昵称/sec_uid）")
+    p_self.add_argument("--cookie", default=DEFAULT_COOKIE)
+    p_self.add_argument("--out", default="-")
+
     p_frames = sub.add_parser("frames", help="截视频画面 N 帧（视觉理解采样）")
     p_frames.add_argument("--cookie", default=DEFAULT_COOKIE)
     p_frames.add_argument("--vid", required=True)
@@ -1047,6 +1158,8 @@ def main():
         sys.exit(asyncio.run(cmd_my_videos(args.cookie, args.sec_uid, args.out, args.headed)))
     elif args.cmd == "comment-reply":
         sys.exit(asyncio.run(cmd_comment_reply(args.cookie, args.vid, args.match, args.text, args.dry, args.headed)))
+    elif args.cmd == "self-info":
+        sys.exit(asyncio.run(cmd_self_info(args.cookie, args.out)))
     elif args.cmd == "frames":
         sys.exit(asyncio.run(cmd_frames(args.cookie, args.vid, args.out, args.n, args.headed)))
 

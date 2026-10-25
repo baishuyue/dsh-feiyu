@@ -43,6 +43,7 @@ const COMMANDS = {
   selfup: '自我升级底座：selfup backup（改前备份）| selfup log "改了什么" | selfup status',
   produce: '短视频生产：produce ["主题"]（她策划→配图→她的声音旁白→成片投稿包，投稿点击归主人）',
   vision: '视觉理解：status（看配置）| probe --image <图>（多模态描述，等视觉 key 点亮）',
+  selfwake: '她自己定下次几点醒：selfwake 23:40 [--note "…"]｜--show｜--clear',
 }
 
 const cmd = process.argv[2]

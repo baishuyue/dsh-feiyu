@@ -93,10 +93,19 @@ export function availableTags() {
   return have.length ? have : DEFAULT_TAGS
 }
 
-/** 取某个标签的一张图；没有就返回 null。 */
+/** 取某个标签的一张图；没有就返回 null。
+ *  只认「根本形象」的图（10-25 主人要求）：sf-/ai- 前缀（硅基参考图锁形象）或无前缀的老图（人工挑的）；
+ *  px-*（Pollinations 免费兜底，形象不保证）**永远不发**。 */
 export function pickSticker(tag, random = Math.random) {
-  const files = listStickers()[tag]
-  if (!files || !files.length) return null
+  const all = listStickers()[tag]
+  if (!all || !all.length) return null
+  const persona = all.filter(p => {
+    const f = path.basename(p)
+    if (/^px-/i.test(f)) return false          // 免费兜底的普通形象
+    return true
+  })
+  const files = persona.length ? persona : []
+  if (!files.length) return null
   return files[Math.floor(random() * files.length) % files.length]
 }
 
@@ -180,4 +189,32 @@ export function stickerPrompt(platform = 'qq') {
 export const FACE_FALLBACK = {
   开心: '(๑˃̵ᴗ˂̵)و', 无语: '(・_・;)', 委屈: '(｡•́︿•̀｡)',
   生气: '(╯°□°）╯', 困: '(－_－) zzZ', 比心: '(♡˙︶˙♡)',
+}
+
+// 情绪线索 → 标签。顺序有讲究：先认具体情绪，"开心"放最后当兜底。
+// 注意别用颜文字当线索 —— 她几乎每条都挂 (・_・;)，那会让所有回复都判成"无语"。
+const TAG_HINTS = [
+  ['委屈', /委屈|可怜|难过|伤心|眼泪|欺负我|呜呜|嘤/],
+  ['生气', /生气|讨厌|过分|气死|烦人/],
+  ['困', /困死|好困|我困|困了|想睡|睡觉|熬夜|哈欠/],
+  ['无语', /无语|服了|离谱|尴尬|我晕|算了|没眼看/],
+  ['比心', /比心|爱你|最喜欢|谢谢|抱抱|亲亲|喜欢主人/],
+  ['开心', /好吃|好香|馋|哈哈|嘿嘿|开心|太好了|值了|香死|下饭|真香/],
+]
+
+/**
+ * 按她自己那句话的情绪挑一个标签 —— 摇中了要发图、但她没写标记时的兜底。
+ * 10-25 实验记录：stickerChance=0.5、17:01 之后七八条回复一张图都没发出去，
+ * 因为"必须带标记"只靠模型自觉；这里改成代码兜底，摇中就一定有机会落到图上。
+ */
+export function autoTag(text, random = Math.random) {
+  // 去掉颜文字/括号/方括号里的装饰，只看正文的情绪词
+  const t = String(text || '').replace(/\([^()]{0,14}\)|（[^（）]{0,14}）|\[[^\]]{0,20}\]|【[^】]{0,20}】/g, ' ')
+  const tags = availableTags()
+  if (!tags.length) return null
+  for (const [tag, re] of TAG_HINTS) if (tags.includes(tag) && re.test(t)) return tag
+  // 认不出情绪时**别乱发"生气/委屈"**（10-25：她一句"越看越饿，你饭到底吃了没"配了张生气图，很怪）
+  const pref = ['开心', '无语', '比心'].filter(t2 => tags.includes(t2))
+  const pool = pref.length ? pref : tags
+  return pool[Math.floor(random() * pool.length) % pool.length]
 }

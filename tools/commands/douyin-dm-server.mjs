@@ -11,7 +11,8 @@ import http from 'node:http'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { execFileSync } from 'node:child_process'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import { config } from '../lib/config.mjs'
 import * as persona from '../lib/persona.mjs'
 import * as llm from '../lib/llm.mjs'
@@ -19,17 +20,23 @@ import * as guard from '../lib/guard.mjs'
 import * as memory from '../lib/memory.mjs'
 import * as qqMemory from '../lib/qq-memory.mjs'
 import { dataPath } from '../lib/paths.mjs'
+import { gapText, mentionsDays, sanitizeDayClaims } from '../lib/timefix.mjs'
+import { looksBlind, askInstead, noBlindHint } from '../lib/speechfix.mjs'
 
 const WM_FILE = dataPath('douyin-dm-watermark.json')
 const CHAT_ID = 'douyin-dm:owner'
 
 function arg(argv, name, d) { const i = argv.indexOf(name); return i >= 0 ? (argv[i + 1] ?? d) : d }
 
-function runPy(args, cfg) {
+// 必须异步：execFileSync 会把事件循环钉住 40~180 秒 —— 期间 /health 不通、
+// 主人点"停止"也没反应，而且慢轮次会和下一轮 setInterval 叠在一起（重复回复的隐患）。
+const execFileAsync = promisify(execFile)
+async function runPy(args, cfg) {
   const cmd = [cfg.douyin?.script || 'D:/social-auto-upload/douyin_interact.py', ...args,
     '--cookie', cfg.douyin?.cookie || dataPath('douyin-cookies.json')]
-  return execFileSync(cfg.douyin?.python || 'D:/social-auto-upload/.venv/Scripts/python.exe', cmd,
-    { encoding: 'utf8', timeout: 180000, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
+  const { stdout } = await execFileAsync(cfg.douyin?.python || 'D:/social-auto-upload/.venv/Scripts/python.exe', cmd,
+    { encoding: 'utf8', timeout: 180000, windowsHide: true, maxBuffer: 8 * 1024 * 1024 })
+  return stdout
 }
 function jsonOf(out) { const m = String(out).match(/\{[\s\S]*\}/); if (!m) return null; try { return JSON.parse(m[0]) } catch { return null } }
 
@@ -41,6 +48,18 @@ const log = (...a) => { const m = a.map(x => typeof x === 'string' ? x : JSON.st
 const writeJson = (f, v) => { try { fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, JSON.stringify(v)) } catch {} }
 
 const norm = (s) => String(s || '').replace(/\s+/g, '').slice(0, 60)
+
+// 主人最后一条抖音私信的时间（从记忆尾部读）——"多久没说话"的唯一可信来源
+function lastOwnerMsgTsDouyin() {
+  try {
+    const rows = fs.readFileSync(dataPath('episodes.jsonl'), 'utf8').trim().split('\n')
+    for (let i = rows.length - 1; i >= 0; i--) {
+      const r = JSON.parse(rows[i])
+      if (r && r.platform === 'douyin' && r.role === 'user') return Number(r.ts) || 0
+    }
+  } catch {}
+  return 0
+}
 
 /** 报错取真因：python 的 log() 打到 stdout；stderr 开头是 patchright 驱动的 Node 弃用警告（几百字），
  *  真正的 Traceback 在尾部 —— 只看 stderr 会把真错全切掉（"Command failed"下面一片空白就是这么来的）。 */
@@ -90,7 +109,7 @@ export async function run(argv = []) {
   const server = http.createServer((req, res) => {
     res.setHeader('Content-Type', 'application/json')
     if (req.url === '/health') {
-      res.end(JSON.stringify({ ok: true, owner: ownerName, dry, pollSec, handled: handled.length, failStreak }))
+      res.end(JSON.stringify({ ok: true, owner: ownerName, dry, pollSec, handled: handled.length, failStreak, ticking, lastTickAt }))
       return
     }
     res.end(JSON.stringify({ ok: true }))
@@ -104,18 +123,25 @@ export async function run(argv = []) {
   })
   server.listen(port, '127.0.0.1', () => log(`[douyin-dm] 监听 http://127.0.0.1:${port}/health · 每 ${pollSec}s 轮询主人私信 · dry=${dry} · silent=${silent}`))
 
+  // 单轮互斥：一轮（读 40~60s + 生成 + 发 20~40s）可能超过 pollSec，
+  // 不设闸的话 setInterval 会在旧轮没跑完时再起一轮 → 两轮读同一条消息 → 回两遍
+  let ticking = false
+  let lastTickAt = 0
   async function tick() {
+    if (ticking) { log('[douyin-dm] 上一轮还没跑完，这轮跳过（不叠轮，避免重复回复）'); return }
+    ticking = true
+    lastTickAt = Date.now()
     // ⚠️ 变量别叫 text：下面 try 块里有 let text = pick.text，会把它遮蔽 → catch 拼错误串永远是空
     let inboundText = ''
     try {
       const readArgs = ['dm-read', '--sec-uid', secUid, '--name', ownerName, '--n', '20']
       if (silent) readArgs.push('--headless')
-      const out = runPy(readArgs, cfg)
+      const out = await runPy(readArgs, cfg)
       const data = jsonOf(out)
       const msgs = (data && data.messages) || []
       // 只看主人发来的、最新的
       // 全类型（10-25 对齐 QQ）：文字消息 + 图片消息（img 字段，dm-read 带出 URL）
-      const inbound = msgs.filter(m => m.dir === 'in').map(m => ({ text: String(m.text || '').trim(), img: String(m.img || '') })).filter(m => m.text || m.img)
+      const inbound = msgs.filter(m => m.dir === 'in').map(m => ({ text: String(m.text || '').trim(), img: String(m.img || ''), fresh: m.fresh === true })).filter(m => m.text || m.img)
       if (!inbound.length) { failStreak = 0; return }
       // 首次运行：把现有消息全部记为基线（不回），从下一条新消息开始陪聊
       if (!seeded) {
@@ -126,7 +152,15 @@ export async function run(argv = []) {
         failStreak = 0
         return
       }
-      const pick = inbound[inbound.length - 1]
+      // 选哪一条回：dm-read 返回的是**最新在前**（用记忆里的时间戳核对过：20:19 那屏在最前，
+      // 17:0x 那屏在最后）。以前取 inbound[inbound.length-1] = 最旧的一条 —— 而最旧那条早就回过、
+      // 在水位里了，于是每轮都停在"已处理 → return"上死循环：20:53~21:05 主人连发三条
+      //（你在看滑肉视频吗 / 你还在吗 / 太好笑了）一条都没回。
+      // 现在：取最新一屏里最新的一条未处理消息（数组头），没有再退到全量数组头。
+      const pendOf = (arr) => arr.filter(m => { const k = norm(m.text || m.img); return k && !handled.includes(k) })
+      const freshPend = pendOf(inbound.filter(m => m.fresh))
+      const pick = freshPend.length ? freshPend[0] : (pendOf(inbound)[0] || null)
+      if (!pick) { failStreak = 0; return }
       let text = pick.text
       // 图片消息 → Qwen3-VL 亲眼看（10-25 对齐 QQ 的全类型理解）
       if (pick.img && !text) {
@@ -171,7 +205,33 @@ export async function run(argv = []) {
         last.content += '\n\n（提示：主人提到"分享"，去上文找他刚发来的那条内容，据此接话。）'
       }
       const resp = await llm.chat(msgsOut, { temperature: 0.85 })
-      const reply = guard.clean(String(resp?.content ?? resp ?? ''))
+      let reply = guard.clean(String(resp?.content ?? resp ?? ''))
+      // 嘴瓢兜底（10-25 21:09 实锤第二回）：她回了「啥滑肉？我这边只看到"顾思苡：分享视频"，内容是空的呀」
+      // —— 记忆里还留着她 17:18 说过的那句"看不到内容"，于是又照着念了一遍。
+      // 先让她重说一次，还说不改就剥掉那半句换成问标题。
+      if (reply && looksBlind(reply)) {
+        log(`[douyin-dm] 回复里又喊"看不到内容"：「${reply.slice(0, 30)}」→ 让她重说`)
+        try {
+          const retryMsgs = msgsOut.slice()
+          const li = retryMsgs.length - 1
+          retryMsgs[li] = { role: 'user', content: String(retryMsgs[li].content) + '\n\n【重说】' + noBlindHint() }
+          const r2 = await llm.chat(retryMsgs, { temperature: 0.85 })
+          const t2 = guard.clean(String(r2?.content ?? r2 ?? ''))
+          if (t2 && !looksBlind(t2)) reply = t2
+        } catch (e) { log('[douyin-dm] 重说失败：' + errTail(e).slice(0, 120)) }
+        if (looksBlind(reply)) {
+          const fixed = askInstead(reply)
+          if (fixed !== reply) log(`[douyin-dm] 已剥掉"看不到"那半句：「${reply.slice(0, 30)}」→「${fixed.slice(0, 30)}」`)
+          reply = fixed
+        }
+      }
+      // 天数护栏（同 QQ）：真实间隔不到一天，就别提"你消失N天"
+      if (reply && mentionsDays(reply)) {
+        const gapMs = Math.max(0, Date.now() - lastOwnerMsgTsDouyin())
+        const fixed = sanitizeDayClaims(reply, gapMs)
+        if (fixed !== reply) log(`[douyin-dm] 天数已掰正：「${reply.slice(0, 30)}」→「${fixed.slice(0, 30)}」`)
+        reply = fixed
+      }
       if (!reply || reply.toUpperCase() === 'SKIP') {
         log('[douyin-dm] 不接话，跳过')
         memory.remember('douyin', CHAT_ID, ownerKey, 'assistant', '（这次没接话）')
@@ -186,7 +246,7 @@ export async function run(argv = []) {
         // 非 silent 走 CDP 共享那个带界面的 Chrome。
         const sendArgs = ['dm-send', '--sec-uid', secUid, '--name', ownerName, '--message', reply, '--go']
         sendArgs.push(...(silent ? ['--headless'] : ['--cdp']))
-        runPy(sendArgs, cfg)   // 失败会抛 → 进 catch → 不进水位 → 下一轮重试
+        await runPy(sendArgs, cfg)   // 失败会抛 → 进 catch → 不进水位 → 下一轮重试
         log(`[douyin-dm] ✅ 已回复：${reply.slice(0, 50)}`)
       }
       memory.remember('douyin', CHAT_ID, ownerKey, 'assistant', reply)
@@ -196,6 +256,8 @@ export async function run(argv = []) {
     } catch (e) {
       failStreak += 1
       log(`[douyin-dm] tick 失败（连续 ${failStreak} 次，未标记已处理、下轮重试）：${inboundText ? `回复「${inboundText.slice(0, 20)}」时 ` : ''}${errTail(e)}`)
+    } finally {
+      ticking = false
     }
   }
 

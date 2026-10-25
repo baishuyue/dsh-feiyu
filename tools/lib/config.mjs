@@ -98,6 +98,7 @@ export const DEFAULTS = {
   },
   personality: {
     evolve: { enabled: false, days: 2 },        // 人格进化：每 N 天一次复盘 + 更新 persona 自我迭代区
+    nightly: { enabled: true, at: '23:00' },    // 每日回顾：日记 + 更新"我是谁"（改前自动存快照）+ 记账
   },
 
   // LLM 直连（QQ/抖音的实时响应用；B站那套塞 DSH 会话零费，这里直连按 token 计费）

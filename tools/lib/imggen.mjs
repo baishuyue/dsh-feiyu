@@ -166,8 +166,12 @@ export async function generateStickerImage(caption, o = {}) {
   const tag = o.tag ? String(o.tag).replace(/[\\/:*?"<>|]/g, '').slice(0, 10) : ''
   const dir = path.join(STICKER_DIR, tag || '自制')
   const hash = crypto.createHash('md5').update((tag ? `t:${tag}:` : '') + cap).digest('hex').slice(0, 12)
-  const out = path.join(dir, `${tag ? 'ai-' : ''}${hash}.jpg`)
-  if (isImageFile(out)) return out          // 缓存命中：同文案不重画、不占额度
+  // 文件命名带"谁画的"（10-25）：sf- = 硅基 Qwen-Image-Edit 参考图锁形象（鲸鱼娘本体）；
+  // px- = Pollinations 免费文生图兜底（形象不保证，可能出来普通卡通）。
+  // 主人明确要求：图库里只放根本形象的表情包 —— px- 图一律不进标签库（见下游落盘逻辑）。
+  const outSf = path.join(dir, `${tag ? 'sf-' : ''}${hash}.jpg`)
+  const out = outSf
+  if (isImageFile(outSf)) return outSf   // 缓存命中：同文案不重画、不占额度
   const key = `${tag}|${cap}`
   if (inflight.has(key)) return inflight.get(key)
 
@@ -183,10 +187,10 @@ export async function generateStickerImage(caption, o = {}) {
       if (String(ig2.provider || '') === 'siliconflow' && String(ig2.api_key || '').trim()) {
         const ok = await genSiliconflow(prompt, tmp, ig2, cap)
         if (ok) {
-          fs.renameSync(tmp, out)
+          fs.renameSync(tmp, outSf)
           genQuotaRecord()
           if (tag) capTagFiles(tag)
-          return out
+          return outSf
         }
         // 硅基失败（额度/网络）→ 落回 pollinations 免费兜底，内容不丢
       }
@@ -207,10 +211,17 @@ export async function generateStickerImage(caption, o = {}) {
         return null
       }
       if (code !== '200' || !isImageFile(tmp)) { try { fs.rmSync(tmp, { force: true }) } catch {}; return null }
-      fs.renameSync(tmp, out)
       genQuotaRecord()
-      if (tag) capTagFiles(tag)
-      return out
+      // ⚠️ 兜底图不进标签库（10-25 主人要求：图库里只能有根本形象的表情包）。
+      // 标签模式给个临时图让这条消息照样能发；自制模式才落盘到 自制/。
+      if (tag) {
+        const temp = path.join(STICKER_DIR, '自制', `px-${hash}.jpg`)
+        try { fs.mkdirSync(path.dirname(temp), { recursive: true }); fs.renameSync(tmp, temp) } catch { try { fs.rmSync(tmp, { force: true }) } catch {} }
+        try { fs.appendFileSync(dataPath('imggen.log'), `${new Date().toISOString()} 硅基没出图，标签「${tag}」用 pollinations 兜底（不入库）：${cap}\n`) } catch {}
+        return isImageFile(temp) ? temp : null
+      }
+      fs.renameSync(tmp, path.join(dir, `px-${hash}.jpg`))
+      return path.join(dir, `px-${hash}.jpg`)
     } catch { return null }
     finally { inflight.delete(key) }
   })()

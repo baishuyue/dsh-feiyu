@@ -36,8 +36,42 @@ export function run(argv = []) {
     console.log(old.length ? `· ${old[0]}` : '（还没有 7 天以上的旧事）')
     return
   }
+  // grep —— 翻旧账（灵感来自 dsh-world：不做向量库，靠"原文全留 + 按原话找"）
+  if (cmd === 'grep') {
+    // 位置参数拼成关键词；带值的开关要跳过它的值（以前会把 `--days 2` 的 2 拼进关键词，永远搜不到）
+    const FLAGS = new Set(['--days', '--limit', '--role', '--q', '--query'])
+    const parts = []
+    for (let i = 1; i < argv.length; i++) {
+      const a = String(argv[i])
+      if (a.startsWith('--')) { if (FLAGS.has(a)) i++; continue }
+      parts.push(a)
+    }
+    const pattern = arg(argv, '--q') || arg(argv, '--query') || parts.join(' ')
+    if (!pattern) { console.error('用法：node feiyu.mjs mem grep "关键词" [--days 7] [--limit 30] [--role user|assistant]'); process.exit(2) }
+    const hits = memory.grepEpisodes(pattern, {
+      days: Number(arg(argv, '--days') || 0) || 0,
+      limit: Number(arg(argv, '--limit') || 30) || 30,
+      role: arg(argv, '--role') || '',
+    })
+    if (!hits.length) { console.log('（没找到）'); return }
+    for (const h of hits) {
+      const d = new Date(Number(h.ts))
+      const ts = `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+      console.log(`${ts} [${h.platform}] ${h.role}：${h.text.slice(0, 200)}`)
+    }
+    console.log(`\n共 ${hits.length} 条`)
+    return
+  }
   if (cmd === 'facts') {
     for (const f of memory.facts(arg(argv, '--user') || 'owner')) console.log(`· ${f}`)
+    return
+  }
+  // recallall —— 看"她现在脑子里装的那块记忆"长什么样（排查用）
+  if (cmd === 'recallall') {
+    const chatId = arg(argv, '--chat') || 'qq:0'
+    const r = memory.recallAll(chatId, { hours: Number(arg(argv, '--hours') || 12), max: Number(arg(argv, '--max') || 12) })
+    if (!r.lines.length) { console.log('（这块是空的）'); return }
+    for (const l of r.lines) console.log('· ' + l)
     return
   }
   // stats

@@ -1,7 +1,7 @@
 {
   "name": "dsh-feiyu",
-  "version": "0.3.0",
-  "description": "大肥鱼·私享版：dafeiyu 骨架的 brain（情绪状态机/三层记忆/风控）× dsh-bili-whale 的通道实现方式，做成一只专属于你的 DSH 插件。四平台（B站/QQ/微信/抖音）各有开关，设置面板直接长在 DSH 里。",
+  "version": "0.4.0",
+  "description": "大肥鱼·私享版：一只养在本机的陪伴角色 —— B站自主刷视频写日记、QQ 秒回（语音/表情/主动搭话）、微信替主人回消息、抖音自主观看+评论区经营+私信陪聊。四平台共用同一套人格/情绪/记忆（统一时序回忆、时间常驻、占位符归一、我是谁快照、原文可检索），完全自由+自定唤醒+每日回顾让她自己过日子。所有外发默认关闭，每一项都有独立开关与额度。",
   "keywords": [
     "dsh",
     "dsh-plugin",
@@ -11,7 +11,12 @@
     "douyin",
     "dafeiyu",
     "agent",
-    "diary"
+    "diary",
+    "memory",
+    "persona",
+    "tts",
+    "napcat",
+    "sticker"
   ],
   "type": "module",
   "main": "lib/index.js",

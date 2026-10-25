@@ -43,8 +43,10 @@ function runPy(argv, cfg) {
   try {
     return execFileSync(pyPath(cfg), cmd, { encoding: 'utf8', timeout: 300000, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
   } catch (e) {
-    const err = String(e.stderr ?? e.message).slice(0, 500)
-    console.error(`✗ 抖音脚本失败：${err}`)
+    // 失败时 python 的日志全在 stdout（[reply] ✗ … ），以前只打印 stderr → 空报错，白跑一次
+    const out = String(e.stdout ?? '').trim().split('\n').filter(Boolean).slice(-6).join('\n')
+    const err = String(e.stderr ?? '').trim().slice(-400)
+    console.error(`✗ 抖音脚本失败（exit ${e.status ?? '?'}）${out ? '\n' + out : ''}${err ? '\n' + err : ''}`)
     process.exit(1)
   }
 }
@@ -68,17 +70,50 @@ function matchPrefs(v, cfg) {
   return !like.length
 }
 
+// 自己账号（cookie 登录的那个 = 顾思苡）的 sec_uid。
+// ⚠️ 10-25 主人纠正：douyin.owner 是主人自己（朴昌范），**她的作品在顾思苡号上** ——
+// 运营"自己作品评论区"必须扫 self，不是 owner（以前扫错号，跑到主人的旅行视频下回复了）。
+function selfSecUid(cfg, { refresh = false } = {}) {
+  const CACHE = dataPath('douyin-self.json')
+  if (!refresh) {
+    try {
+      const j = JSON.parse(fs.readFileSync(CACHE, 'utf8'))
+      if (j && j.sec_uid) return String(j.sec_uid)
+    } catch {}
+  }
+  try {
+    const out = runPy(['self-info'], cfg)
+    const m = out.match(/\{[\s\S]*\}/)
+    if (m) {
+      const j = JSON.parse(m[0])
+      if (j && j.sec_uid) {
+        try { fs.writeFileSync(CACHE, JSON.stringify(j)) } catch {}
+        return String(j.sec_uid)
+      }
+    }
+  } catch {}
+  return String(cfg.douyin?.self?.sec_uid || '')
+}
+
 export function run(argv = []) {
   const cmd = argv[0] || 'help'
   const cfg = config()
+
+  if (cmd === 'self' || cmd === 'self-info') {
+    console.log(runPy(['self-info'], cfg))
+    return
+  }
 
   // ── 运营模式（10-25）：扫自己视频的新评论 → 她自己判断回谁、回什么 → comment-reply 真发 ──
   if (cmd === 'engage') {
     const eg = cfg.douyin?.engage ?? {}
     if (eg.enabled === false) { console.log('douyin.engage.enabled 是关的'); return }
-    const dry = douyinDry(cfg)
-    const secUid = String(cfg.douyin?.owner?.sec_uid || '')
-    if (!secUid) { console.error('✗ 缺 douyin.owner.sec_uid（扫自己的投稿要用）'); return }
+    // --dry：只跑到"她打算回谁、回什么"就停，绝不发 —— 测试整条链路又不动真账号
+    const dry = douyinDry(cfg) || argv.includes('--dry')
+    const secUid = argv.includes('--owner')
+      ? String(cfg.douyin?.owner?.sec_uid || '')
+      : selfSecUid(cfg)
+    if (!secUid) { console.error('✗ 读不到自己账号 sec_uid：先跑 node feiyu.mjs douyin self'); return }
     // ① 自己的投稿列表
     const vidsJson = parseFeedJson(runPy(['my-videos', '--sec-uid', secUid], cfg))
     const videos = (vidsJson.videos || []).slice(0, 3)
@@ -94,15 +129,20 @@ export function run(argv = []) {
       for (const c of (cj.comments || [])) {
         const key = v.vid + ':' + String(c.user || '') + ':' + String(c.text || '').slice(0, 24)
         if (wm.seen.includes(key)) continue
-        news.push({ vid: v.vid, vdesc: v.desc, user: c.user, text: c.text })
+        news.push({ vid: v.vid, vdesc: v.desc, user: c.user, text: c.text, cid: c.cid || '', key })
         wm.seen.push(key)
       }
     }
     wm.seen = wm.seen.slice(-300)
     fs.mkdirSync(path.dirname(WM), { recursive: true })
-    fs.writeFileSync(WM, JSON.stringify(wm))
+    // ⚠️ 干跑不写水位（10-25 测试发现的坑）：以前一跑 --dry 就把这些评论标成"已见"，
+    // 等真跑时它们全被跳过 —— 测试等于把待办清零。
+    if (!dry) fs.writeFileSync(WM, JSON.stringify(wm))
     if (!news.length) { console.log('评论区没有新评论。'); return }
-    console.log(`新评论 ${news.length} 条（最多回 ${Number(eg.dailyMax ?? 3)} 条）：`)
+    // dailyMax=0 = 不限（以前会被 slice(0,0) 直接清空 —— 配置成 0 就永远回不了）
+    const capRaw = Number(eg.dailyMax ?? 3)
+    const cap = capRaw > 0 ? capRaw : Infinity
+    console.log(`新评论 ${news.length} 条（最多回 ${cap === Infinity ? '不限' : cap} 条）：`)
     for (const n of news) console.log('  ·', n.user, '：', n.text.slice(0, 40))
     // ③④ LLM 判断 + 执行（异步段）
     ;(async () => {
@@ -113,7 +153,7 @@ export function run(argv = []) {
       const msgs = [
         built[0],
         { role: 'user', content: '【运营】这是你自己抖音作品评论区的新评论。你自己判断：哪几条值得回（提问/夸奖/有意思的接梗；杠精和广告不理）；回复要像作者本人：短、自然、有点自己的态度，别客服腔。'
-          + `最多回 ${Number(eg.dailyMax ?? 3)} 条。只输出 JSON：{"replies":[{"index":序号,"text":"回复内容"}]}，都不想回就 {"replies":[]}\n${list}` },
+          + `最多回 ${cap === Infinity ? '不限（但别硬凑，能接的才回）' : cap} 条。只输出 JSON：{"replies":[{"index":序号,"text":"回复内容"}]}，都不想回就 {"replies":[]}\n${list}` },
       ]
       let plan = { replies: [] }
       try {
@@ -122,14 +162,20 @@ export function run(argv = []) {
         if (m2) plan = JSON.parse(m2[0])
       } catch (e) { console.log('LLM 决策失败：' + e.message) }
       let done = 0
-      for (const r of (plan.replies || []).slice(0, Number(eg.dailyMax ?? 3))) {
+      for (const r of (plan.replies || []).slice(0, cap === Infinity ? undefined : cap)) {
         const n = news[Number(r.index) - 1]
         if (!n || !String(r.text || '').trim()) continue
-        console.log(`  ↩ 回 ${n.user}：${String(r.text).slice(0, 50)}`)
+        const replyText = String(r.text).replace(/\[[^\]]{1,8}\]/g, '').trim().slice(0, 60)   // 抖音评论只认 emoji
+        if (!replyText) continue
+        console.log(`  ↩ 回 ${n.user}：${replyText}`)
         if (dry) { console.log('  【干跑 ✓】'); continue }
         try {
-          console.log(runPy(['comment-reply', '--vid', n.vid, '--match', String(n.text).slice(0, 20), '--text', String(r.text).slice(0, 60), '--go'], cfg))
-          memory.remember('douyin', `douyin:${n.vid}`, n.user, 'assistant', `（回复了 ${n.user} 的评论「${String(n.text).slice(0, 30)}」：${String(r.text).slice(0, 60)}）`)
+          // 有 cid 就走 cid 精确回复；没有才退回文本前缀定位（纯表情评论靠文本会撞）
+          const out = n.cid
+            ? runPy(['reply', '--vid', n.vid, '--cid', n.cid, '--message', replyText, '--go'], cfg)
+            : runPy(['comment-reply', '--vid', n.vid, '--match', String(n.text).slice(0, 20), '--text', replyText, '--go'], cfg)
+          console.log(out)
+          memory.remember('douyin', `douyin:${n.vid}`, n.user, 'assistant', `（回复了 ${n.user} 的评论「${String(n.text).slice(0, 30)}」：${replyText}）`)
           done++
           await new Promise((r2) => setTimeout(r2, 60000 + Math.random() * 60000))   // 回复间隔 1~2 分钟防风控
         } catch (e) { console.log('  ✗ 回复失败：' + String(e.message).slice(0, 80)) }
@@ -154,10 +200,21 @@ export function run(argv = []) {
     }
     return
   }
+  if (cmd === 'my-videos') {
+    // 默认扫**自己**（顾思苡）的投稿；要扫主人的号就加 --owner
+    const secUid = arg(argv, '--sec-uid')
+      || (argv.includes('--owner') ? String(cfg.douyin?.owner?.sec_uid || '') : selfSecUid(cfg))
+    if (!secUid) { console.error('✗ 读不到 sec_uid：node feiyu.mjs douyin self 刷一下'); process.exit(2) }
+    const headed = argv.includes('--headed') ? ['--headed'] : []
+    console.log(runPy(['my-videos', '--sec-uid', secUid, ...headed], cfg))
+    return
+  }
   if (cmd === 'comments') {
     const vid = arg(argv, '--vid')
-    if (!vid) { console.error('用法：node feiyu.mjs douyin comments --vid <视频id>'); process.exit(2) }
-    console.log(runPy(['comments', '--vid', vid, '--headed'], cfg))
+    if (!vid) { console.error('用法：node feiyu.mjs douyin comments --vid <视频id> [--headed]'); process.exit(2) }
+    // 默认无头（快）；要肉眼看就加 --headed
+    const headed = argv.includes('--headed') ? ['--headed'] : []
+    console.log(runPy(['comments', '--vid', vid, ...headed], cfg))
     return
   }
   if (cmd === 'cdp-start') {
@@ -189,7 +246,8 @@ export function run(argv = []) {
     if (!vid || !cid || !message) { console.error('用法：node feiyu.mjs douyin reply --vid <id> --cid <评论cid> --message "…" [--go] [--cdp]'); process.exit(2) }
     const go = argv.includes('--go')
     const cdp = argv.includes('--cdp')
-    const atUser = cfg.douyin?.atMention === true ? (cfg.douyin?.owner?.name || '') : ''
+    // 回复某条评论时 @ 的应该是**评论者**，不是主人自己（以前照搬 comment 的逻辑会 @ 主人，很怪）
+    const atUser = cfg.douyin?.atMention === true ? arg(argv, '--at') : ''
     const dry = douyinDry(cfg) || !go
     if (dry) {
       console.log(`【干跑 ✓】不真回复 cid=${cid} → ${atUser ? '@' + atUser + ' ' : ''}${message}`)
@@ -223,30 +281,33 @@ export function run(argv = []) {
     return
   }
   if (cmd === 'interact') {
-    return runInteract(cfg)
+    return runInteract(cfg, { dry: argv.includes('--dry') })
   }
   console.log('用法：login | cdp-start | feed [--headed] | comments --vid | comment --vid --message [--go --cdp] | reply --vid --cid --message [--go --cdp] | dm --sec-uid --message [--go --cdp] | dm-read --sec-uid | interact')
 }
 
 // 全流程：feed → 口味过滤 → 读热评 → LLM 生成评论 → 干跑发评论
-async function runInteract(cfg) {
+async function runInteract(cfg, { dry: forceDry = false } = {}) {
   const { chat } = await import('../lib/llm.mjs')
   const persona = await import('../lib/persona.mjs')
 
   console.log('[interact] ① 刷 feed 采集视频...')
-  const feedOut = runPy(['feed', '--scrolls', '8', '--headed'], cfg)
+  const feedOut = runPy(['feed', '--scrolls', '8', ...(forceDry ? [] : ['--headed'])], cfg)
   const feed = parseFeedJson(feedOut)
   let videos = (feed.videos || []).filter(v => v.desc && v.author).filter(v => matchPrefs(v, cfg))
   if (!videos.length) videos = (feed.videos || []).filter(v => v.desc && v.author)
   const rawPerRun = Number(cfg.douyin?.maxPerRun ?? 2)
-  const perRun = rawPerRun === 0 ? Infinity : Math.max(1, Math.min(5, rawPerRun || 2))   // 0 = 不限
-  console.log(`[interact] 口味过滤后剩 ${videos.length} 个候选，取前 ${perRun === Infinity ? '全部' : perRun} 个（抖音风控严，控量）`)
+  // 0 = 不限，但**硬上限 10**（10-25 实测：配 0 时一口气跑了 39 个视频 → 39 次浏览器 + 39 次 LLM，
+  // 7 分钟跑完还全是 422 报错）。刷太多也是风控信号。
+  const HARD_CAP = 10
+  let perRun = rawPerRun === 0 ? HARD_CAP : Math.max(1, Math.min(HARD_CAP, rawPerRun || 2))
+  console.log(`[interact] 口味过滤后剩 ${videos.length} 个候选，取前 ${perRun} 个（硬上限 ${HARD_CAP}，抖音风控严）`)
 
   const top = videos.slice(0, perRun)
   for (const v of top) {
     console.log(`\n[interact] ② 看视频《${v.desc.slice(0, 40)}》（${v.author}）`)
     memory.remember('douyin', `douyin:${v.vid}`, v.author, 'event', v.desc.slice(0, 120))
-    const commentsOut = runPy(['comments', '--vid', v.vid, '--headed'], cfg)
+    const commentsOut = runPy(['comments', '--vid', v.vid, ...(forceDry ? [] : ['--headed'])], cfg)
     let hot = []
     try {
       const m = commentsOut.match(/\{[\s\S]*\}/)
@@ -273,7 +334,7 @@ async function runInteract(cfg) {
     comment = sanitizeFor('douyin', comment)   // 抖音只认 emoji，剥掉 [xx] 与 [表情:x]
     if (!comment) { console.log('  ✗ 评论只剩表情标记，跳过'); continue }
     const atUser = cfg.douyin?.atMention === true ? (cfg.douyin?.owner?.name || '') : ''   // 真 @ 目标
-    const dry = douyinDry(cfg)
+    const dry = forceDry || douyinDry(cfg)
     if (dry) {
       console.log(`  【干跑 ✓】${v.vid} → ${atUser ? '@' + atUser + ' ' : ''}${comment}`)
     } else {

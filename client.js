@@ -272,10 +272,9 @@ textarea.fy-input{width:100%;min-height:136px;resize:vertical;line-height:1.65;f
 				};
 			};
 
-			// proactive 完整镜像：面板每个控件只改一个字段，但后端 /api/config 按节浅合并 ——
-			// 只发 {proactive:{enabled:v}} 会把 activeHours/minQuietMin/chance 整个冲掉（10-25 实测发生过）。
-			// 每次保存都从这个镜像全量发，字段就不丢了。
-			const proactiveRef = useRef({ enabled: false, dailyMax: 3, minGapMin: 150, chance: 0.12, activeHours: null });
+			// proactive 保存：宿主侧 /api/config 是**深合并**（lib/index.js deepMerge），
+			// 只发自己那一个字段就够了。以前这里维护"完整 proactive 镜像"全量发，
+			// 结果面板开着旧值时会把别处刚改的值冲回去（10-25 20:37 实测：minGapMin 25 被改回 10）。
 
 			const load = useCallback(async () => {
 				setLoading(true);
@@ -285,7 +284,6 @@ textarea.fy-input{width:100%;min-height:136px;resize:vertical;line-height:1.65;f
 					const c = j.config || {};
 					setCfg(c);
 					setDraft(toDraft(c));
-					proactiveRef.current = Object.assign({ enabled: false, dailyMax: 3, minGapMin: 150, chance: 0.12, activeHours: null }, (c.qq && c.qq.proactive) || {});
 					setVoices(j.voices || []);
 					setCfgPath(j.configPath || "");
 				} catch (e) {
@@ -294,10 +292,20 @@ textarea.fy-input{width:100%;min-height:136px;resize:vertical;line-height:1.65;f
 					return;
 				}
 				setLoading(false);
-				api("/persona").then((r) => setPersona(r.text || "")).catch(() => {});
-				api("/memory").then(setMem).catch(() => {});
-				api("/status").then(setStatus).catch(() => {});
-				api("/services").then((r) => setSvc(r.services || null)).catch(() => {});
+				// 记忆库/状态/服务是"软数据"：读失败不该挡住面板，但也不能静默 ——
+				// 以前是 .catch(() => {})，宿主刚重启时这一下读失败，记忆库就永远显示"还没读到"，
+				// 主人只能猜她到底在干嘛（10-25 实锤）。现在失败重试一次，还失败就亮出来。
+				const soft = (path, set, label) => {
+					const once = (left) => api(path).then(set).catch((e) => {
+						if (left > 0) { setTimeout(() => once(left - 1), 1500); return; }
+						flash(label + "读取失败：" + ((e && e.message) || e) + "（点「刷新」重试）", true);
+					});
+					once(1);
+				};
+				soft("/persona", (r) => setPersona(r.text || ""), "角色设定");
+				soft("/memory", setMem, "记忆库");
+				soft("/status", setStatus, "运行状态");
+				soft("/services", (r) => setSvc(r.services || null), "服务");
 			}, []);
 
 			useEffect(() => { load(); }, [load]);
@@ -319,10 +327,7 @@ textarea.fy-input{width:100%;min-height:136px;resize:vertical;line-height:1.65;f
 			}, [flash]);
 
 			// 主动搭话专用保存：把单字段补丁并进完整 proactive 镜像再全量发（防字段被浅合并冲掉）
-			const saveProactive = useCallback(async (patch, msg) => {
-				proactiveRef.current = Object.assign({}, proactiveRef.current, patch);
-				return save({ qq: { proactive: proactiveRef.current } }, msg);
-			}, [save]);
+			const saveProactive = useCallback(async (patch, msg) => save({ qq: { proactive: patch } }, msg), [save]);
 
 			const genReport = useCallback(async () => {
 				setBusy("report");
@@ -677,9 +682,9 @@ textarea.fy-input{width:100%;min-height:136px;resize:vertical;line-height:1.65;f
 							onBlur: () => saveProactive({ dailyMax: Math.max(0, Number(draft.qqProactiveMax) || 0) }, "主动搭话日上限已保存（0 = 不限）"),
 						}),
 						h("input", {
-							className: "fy-input fy-w-xs", type: "number", min: 10, max: 1440, value: draft.qqProactiveGap,
+							className: "fy-input fy-w-xs", type: "number", min: 1, max: 1440, value: draft.qqProactiveGap,
 							onChange: (e) => setDraft(Object.assign({}, draft, { qqProactiveGap: e.target.value })),
-							onBlur: () => saveProactive({ minGapMin: Math.max(10, Number(draft.qqProactiveGap) || 150) }, "两次搭话最小间隔已保存（分钟）"),
+							onBlur: () => saveProactive({ minGapMin: Math.max(1, Number(draft.qqProactiveGap) || 150) }, "两次搭话最小间隔已保存（分钟，最小 1）"),
 						}),
 						h("span", { className: "fy-hint", style: { marginTop: 0 } }, "条/天 · 间隔分钟（正聊不打扰；夜间限制已关，全天可搭话）")),
 					h(Row, { label: "AI表情包" },

@@ -16,7 +16,8 @@ import * as memory from '../lib/memory.mjs'
 import * as qqMemory from '../lib/qq-memory.mjs'
 import * as llm from '../lib/llm.mjs'
 import { buildMessages, thinkingInstruction } from '../lib/persona.mjs'
-import { splitSticker, pickSticker, FACE_FALLBACK, ensureSelfSticker } from '../lib/stickers.mjs'
+import { gapText, mentionsDays, sanitizeDayClaims } from '../lib/timefix.mjs'
+import { splitSticker, pickSticker, FACE_FALLBACK, ensureSelfSticker, autoTag } from '../lib/stickers.mjs'
 import { synth } from '../lib/tts.mjs'
 import { sing } from '../lib/sing.mjs'
 import { tickMood } from '../lib/mood.mjs'
@@ -256,22 +257,58 @@ export async function run(argv = []) {
       const turns = memory.recent(chatId).length
       const messages = buildMessages({ platform: 'qq', userText, chatId, userId, turnsToday: turns, isGroup })
       messages[0].content += thinkingInstruction()
+      // 时间锚点已经搬进 persona 的「【现在】」常驻层（10-25 重构，照 dsh-world 的 timeContext）：
+      // 贴在最后一条消息上的临时提示一重写就丢，现在每轮都在 system 里。
+      // 这里只保留事后兜底要用的真实间隔（sanitizeDayClaims 的口径）。
+      const ownerGapMs = Math.max(0, Date.now() - lastOwnerMsgTs())
+      const gapTxt = gapText(ownerGapMs)
       // 表情包概率旋钮（10-25）：摇中就强制她带一个图 —— 不再靠她"想起来"写标记。
       // 图生图管够，每个都是新的；用户可在面板调 qq.stickerChance。
       const stickerChance = Number(QQ.stickerChance ?? 0.5)
-      if (Math.random() < stickerChance) {
+      const diceWon = Math.random() < stickerChance
+      if (diceWon) {
         messages[0].content += '\n\n【这条回复必须带一个图片表情】在正文句尾追加一个标记，二选一：'
           + `[表情:标签]（可用标签：${availableTags().join('/')}）或 [自制表情:八个字以内的短句]（会现场画一张新的）。只带一个，别解释。`
       }
       const answer = await llm.chat(messages)
-      const out = guard.clean(answer, config())
+      let out = guard.clean(answer, config())
+      // 兜底：真间隔不到一天，话里还冒出"消失四天/好几天没影" → 先让她重写一次，再不行就地掰正
+      if (out && ownerGapMs < 24 * 3600_000 && mentionsDays(out)) {
+        log(`[qq] 回复里编了天数（真实间隔 ${gapTxt}）：「${out.slice(0, 30)}」→ 让她重写`)
+        try {
+          const retry = messages.slice()
+          retry[retry.length - 1] = {
+            role: 'user',
+            content: messages[messages.length - 1].content
+              + `\n\n【重写】你刚才那句「${out.slice(0, 40)}」里的天数是编的。真实是「${gapTxt}」。重写这一条，一个字都别出现"天"。`,
+          }
+          const answer2 = await llm.chat(retry, { temperature: 0.8 })
+          const out2 = guard.clean(answer2, config())
+          if (out2 && !mentionsDays(out2)) out = out2
+        } catch (e) { logErr('[qq] 重写失败：' + e.message) }
+        if (mentionsDays(out)) {
+          const fixed = sanitizeDayClaims(out, ownerGapMs)
+          if (fixed !== out) log(`[qq] 天数已掰正：「${out.slice(0, 34)}」→「${fixed.slice(0, 34)}」`)
+          out = fixed
+        }
+      }
       if (!out) return
 
       // 表情：文字和 [表情:标签] 拆开发（NapCat 图片段）
-      const { text: body, tag, caption } = splitSticker(out)
+      let { text: body, tag, caption } = splitSticker(out)
+      // 摇中了要发图、但她没写标记 → 按她自己那句话的情绪自动挑一个（10-25：光靠模型自觉，
+      // 17:01 之后七八条回复一张图都没发出去，这个功能等于废了）。
+      if (diceWon && !tag && !caption) {
+        const auto = autoTag(out)
+        if (auto) {
+          tag = auto
+          log(`[qq] 🎲 摇中表情但她没写标记 → 按内容自动补「${auto}」`)
+        }
+      }
       const aiOn = config().imageGen?.enabled !== false
       let stickerFile = tag ? pickSticker(tag) : null
       if (!stickerFile && caption && !aiOn) stickerFile = ensureSelfSticker(caption, config())  // AI 关着才当场画文字贴纸
+      if (diceWon) log(`[qq] 表情结果：${stickerFile ? '图库「' + tag + '」→' + path.basename(stickerFile) : caption ? 'AI「' + caption + '」待生成' : '没发出去'}`)
       const plain = body || (stickerFile ? '' : (FACE_FALLBACK[tag] || ''))
       // AI 表情包：图库没有这个标签 / 有自制表情文案 → 待异步生成（不卡回复主线）
       const aiWanted = aiOn && ((tag && !pickSticker(tag)) || (caption && !stickerFile))
@@ -471,6 +508,20 @@ export async function run(argv = []) {
   }
   seedOwnerLastMsgAt()
 
+  // 主人最后一条消息的时间（从 QQ 记忆尾部读）—— "多久没说话"的唯一可信来源。
+  // 内存里的 ownerLastMsgAt 只在收到消息时更新过，重启就归零，不能当事实用。
+  function lastOwnerMsgTs() {
+    const ownerQQ = String(config().owner?.qq || '')
+    try {
+      const line = fs.readFileSync(dataPath('qq', 'episodes.jsonl'), 'utf8').trim().split('\n')
+      for (let i = line.length - 1; i >= 0; i--) {
+        const r = JSON.parse(line[i])
+        if (r && r.role === 'user' && (!ownerQQ || String(r.userId || '') === ownerQQ)) return Number(r.ts) || 0
+      }
+    } catch {}
+    return 0
+  }
+
   async function tryProactive() {
     try {
       const cfgNow = config()
@@ -543,6 +594,12 @@ export async function run(argv = []) {
         } else out = guard.clean(String(resp ?? ''), cfgNow)
       } catch { out = guard.clean(String(resp ?? ''), cfgNow) }
       if (!out) return
+      // 主动搭话本来就是"主人多久没理我"最容易编出天数的场景，再加一道兜底
+      if (mentionsDays(out)) {
+        const fixed = sanitizeDayClaims(out, Date.now() - ownerLastMsgAt)
+        if (fixed !== out) log(`[qq] 主动搭话的天数已掰正：「${out.slice(0, 30)}」→「${fixed.slice(0, 30)}」`)
+        out = fixed
+      }
       // 跨重启/跨措辞去重（10-25 用户抓的 bug）：状态里只记类型不记原文，于是
       // "你消失四天 / 整整四天 / 快四天" 三条同义句能连发。这里按 3-gram 相似度 + 同类冷却卡住。
       const hist = (Array.isArray(st.recent) ? st.recent : []).filter((x) => x && Date.now() - Number(x.at || 0) < 6 * 3600_000)
@@ -563,6 +620,18 @@ export async function run(argv = []) {
       if (cfgNow.guard?.dryRun) { log(`[qq][干跑] 本要主动搭话：${out.slice(0, 50)}`); return }
       const ok = await send('send_private_msg', { user_id: Number(ownerQQ), message: [{ type: 'text', data: { text: out } }] })
       if (!ok) return
+      // 主动搭话也带图（10-25）：这条路径以前**完全不发图**，主人那边"好久没见表情包"一半是这原因。
+      if (Math.random() < Number(cfgNow.qq?.stickerChance ?? 0.5)) {
+        const ptag = autoTag(out)
+        const pfile = ptag ? pickSticker(ptag) : null
+        if (pfile) {
+          await new Promise(r => setTimeout(r, 400 + Math.random() * 700))
+          try {
+            const okImg = await send('send_private_msg', { user_id: Number(ownerQQ), message: [{ type: 'image', data: { file: 'file:///' + pfile.replace(/\\/g, '/') } }] })
+            if (okImg) log(`[qq] 🐟 主动搭话带图：${ptag} → ${path.basename(pfile)}`)
+          } catch (e) { logErr('[qq] 主动搭话补图失败：' + (e?.message ?? e)) }
+        }
+      }
       memory.remember('qq', `qq:${ownerQQ}`, ownerQQ, 'assistant', out)   // 推送即记忆：她自己"说过"这句
       const st2 = readProact()
       const rec = (Array.isArray(st2.recent) ? st2.recent : []).slice(-7)

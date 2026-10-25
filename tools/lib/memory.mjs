@@ -8,6 +8,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { dataPath } from './paths.mjs'
+import { normalizeMemoryText } from './normalize.mjs'
 
 const EP_FILE = dataPath('episodes.jsonl')
 const FACT_FILE = dataPath('facts.json')
@@ -60,10 +61,11 @@ export function episodeFile(platform) {
 }
 
 /** 记一条事件。role: user|assistant|event。summary 取前 120 字。
- *  platform 缺省时按 chatId 前缀推断（曾出过 54 条无平台标记的脏数据）。 */
+ *  platform 缺省时按 chatId 前缀推断（曾出过 54 条无平台标记的脏数据）。
+ *  写入前做占位符归一（normalize.mjs）：裸的 `[分享视频]` 会让模型以为"内容丢了"。 */
 export function remember(platform, chatId, userId, role, text) {
   const p = String(platform || platformOf(chatId) || 'misc')
-  const t = String(text ?? '')
+  const t = normalizeMemoryText(String(text ?? ''))
   const rec = {
     ts: Date.now(), platform: p, chatId, userId, role,
     text: t, summary: t.slice(0, 120),
@@ -71,6 +73,55 @@ export function remember(platform, chatId, userId, role, text) {
   const file = episodeFile(p)
   fs.mkdirSync(path.dirname(file), { recursive: true })
   fs.appendFileSync(file, JSON.stringify(rec) + '\n')
+  rotateIfBig(file)
+}
+
+// 单文件太大时按月份分片（照 dsh-world「按天归档 + 原文全留」的思路，只是粒度用月）。
+// 分片命名 episodes-YYYY-MM.jsonl，放在同一目录；读取端会把它们一起读（见 shardsOf）。
+const ROTATE_BYTES = 6 * 1024 * 1024
+
+function shardName(base, stamp) {
+  const d = new Date(stamp)
+  const ym = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+  return path.join(path.dirname(base), `episodes-${ym}.jsonl`)
+}
+
+/** 把 base 里"不是本月"的行搬到按月分片，只留本月在主文件。失败就原样不动。 */
+function rotateIfBig(base) {
+  try {
+    if (!fs.existsSync(base) || fs.statSync(base).size < ROTATE_BYTES) return
+    const lines = fs.readFileSync(base, 'utf8').split('\n').filter(Boolean)
+    const now = new Date(), ymNow = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
+    const keep = [], move = new Map()
+    for (const line of lines) {
+      let r = null
+      try { r = JSON.parse(line) } catch {}
+      const ts = Number(r?.ts) || 0
+      const d = new Date(ts || Date.now())
+      const ym = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+      if (!ts || ym === ymNow) { keep.push(line); continue }
+      if (!move.has(ym)) move.set(ym, [])
+      move.get(ym).push(line)
+    }
+    for (const [ym, rows] of move) {
+      const target = path.join(path.dirname(base), `episodes-${ym}.jsonl`)
+      fs.appendFileSync(target, rows.join('\n') + '\n')
+    }
+    // 先写分片再截断主文件：中途崩溃最多重复，不会丢
+    fs.writeFileSync(base, keep.join('\n') + (keep.length ? '\n' : ''))
+  } catch {}
+}
+
+/** 主文件 + 它的所有按月分片。 */
+export function shardsOf(base) {
+  const dir = path.dirname(base)
+  const out = [base]
+  try {
+    for (const f of fs.readdirSync(dir)) {
+      if (/^episodes-\d{4}-\d{2}\.jsonl$/.test(f)) out.push(path.join(dir, f))
+    }
+  } catch {}
+  return out
 }
 
 /**
@@ -79,9 +130,11 @@ export function remember(platform, chatId, userId, role, text) {
  * @param {{includeWechat?: boolean}} opts 全量读取时是否带上微信（默认不带）
  */
 function readRows(chatId, opts = {}) {
-  const files = chatId
+  const bases = chatId
     ? [...new Set([EP_FILE, episodeFile(platformOf(chatId))])]
     : [EP_FILE, QQ_EP_FILE, ...(opts.includeWechat ? [WECHAT_EP_FILE] : [])]
+  const files = []
+  for (const b of bases) files.push(...shardsOf(b))
   const rows = []
   for (const file of files) {
     let lines = []
@@ -98,9 +151,100 @@ function readRows(chatId, opts = {}) {
   return rows
 }
 
-/** 最近 n 条对话（按 chatId 过滤，时间正序返回）。返回 {role, content} 格式，供 LLM 直接使用。 */
+/** 最近 n 条对话（按 chatId 过滤，时间正序返回）。返回 {role, content} 格式，供 LLM 直接使用。
+ *  ⚠️ 只放 user/assistant（10-25 修的 bug）：抖音那边会把"刷到某条视频"记成 role=event 的流水，
+ *  混进 messages 里会被模型接口直接拒掉（HTTP 422 unknown variant `event`）——
+ *  抖音 interact 因此整条链路一条评论都生成不出来。 */
 export function recent(chatId, n = 8) {
-  return readRows(chatId).slice(-n).map(r => ({ role: r.role, content: r.text }))
+  return readRows(chatId)
+    .filter(r => r.role === 'user' || r.role === 'assistant')
+    .slice(-n)
+    .map(r => ({ role: r.role, content: r.text }))
+}
+
+
+/** 该会话里「主人最后一次说话」「她最后一次说话」的时间戳（给时间常驻层用）。 */
+export function lastByRole(chatId) {
+  const rows = readRows(chatId)
+  let lastUser = 0, lastAssistant = 0
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const r = rows[i]
+    if (!lastUser && r.role === 'user') lastUser = Number(r.ts) || 0
+    if (!lastAssistant && r.role === 'assistant') lastAssistant = Number(r.ts) || 0
+    if (lastUser && lastAssistant) break
+  }
+  return { lastUser, lastAssistant }
+}
+
+/**
+ * 统一时序回忆 —— 把**不是本通道**的全部真实记录按时间拼成一份（照 dsh-world 的
+ * src/history.ts renderHistory：一行一条、带本地时间、带会话标记、从新到旧）。
+ *
+ * 为什么合并：以前这里是两个补丁块（crossChannel 管"别的平台的对话"、ownRecent 管"她自己做的事"），
+ * 各自过滤、各自取前几条，互相挤名额，还是盖不全 —— 10-25 连栽两次：
+ *   ① QQ 说"在抖音看滑肉视频" → 抖音问滑肉她说"不知道"；
+ *   ② 上网写了三段小说 → QQ 问起她说"写小说？没有呀"。
+ * 病根是"按通道切碎的存储"，补丁只能在展示层兜。这里改成一次性全量、按时间排序、统一渲染。
+ *
+ * @param {string} chatId 当前通道的 chatId（这些行由 recent() 单独给，这里排除掉避免重复）
+ * @param {{hours?: number, max?: number, perRow?: number, now?: number}} opts
+ */
+export function recallAll(chatId, opts = {}) {
+  const { hours = 12, max = 12, perRow = 90, now = Date.now() } = opts
+  const cutoff = now - hours * 3600_000
+  const rows = readRows('').filter(r =>
+    r.chatId !== chatId
+    && r.platform !== 'wechat'                       // 微信是替主人干活的工作记录，不进人格记忆
+    && (r.role === 'user' || r.role === 'assistant')
+    && Number(r.ts) >= cutoff
+    && String(r.text || '').trim())
+  if (!rows.length) return { lines: [], count: 0, newest: 0 }
+  // 去重（同一句被多通道记过）+ 挨个通道限流（一个话痨通道不能吃掉全部名额）
+  const seen = new Set()
+  const byChat = new Map()
+  for (const r of rows) {
+    const k = String(r.text).replace(/\s+/g, '').slice(0, 30)
+    if (seen.has(k)) continue
+    seen.add(k)
+    const c = String(r.chatId || r.platform)
+    if (!byChat.has(c)) byChat.set(c, [])
+    byChat.get(c).push(r)
+  }
+  const per = Math.max(2, Math.ceil(max / byChat.size))
+  const picked = []
+  for (const arr of byChat.values()) picked.push(...arr.slice(-per))
+  // 按时间正序，最后的 max 条 → 渲染时再翻成"从新到旧"（跟她读记忆的习惯一致）
+  picked.sort((a, b) => Number(a.ts) - Number(b.ts))
+  const finalRows = picked.slice(-max)
+  const where = (p) => (p === 'qq' ? 'QQ' : p === 'douyin' ? '抖音' : p === 'bilibili' ? 'B站'
+    : p === 'web' ? '上网' : p === 'wechat' ? '微信' : String(p || '别处'))
+  const hhmm = (ts) => {
+    const d = new Date(Number(ts))
+    return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0')
+  }
+  const lines = finalRows.slice().reverse().map(r => {
+    const text = String(r.text).replace(/\s+/g, ' ').replace(/^[（(]|[）)]$/g, '').slice(0, perRow)
+    return `${hhmm(r.ts)} [${where(r.platform)}] ${r.role === 'user' ? '主人' : '我'}：${text}`
+  })
+  return { lines, count: lines.length, newest: Number(finalRows.at(-1)?.ts || 0) }
+}
+
+/**
+ * 全文检索她自己的一生（`feiyu mem grep 关键词`）。
+ * 照 dsh-world 的思路：不做向量库，靠"原文全留 + 按原话找"。
+ */
+export function grepEpisodes(pattern, { days = 0, limit = 30, role = '' } = {}) {
+  const re = pattern instanceof RegExp ? pattern : new RegExp(String(pattern || ''), 'i')
+  const cutoff = days > 0 ? Date.now() - days * 86400_000 : 0
+  const rows = readRows('').filter(r =>
+    r.platform !== 'wechat'
+    && Number(r.ts) >= cutoff
+    && (!role || r.role === role)
+    && (re.test(String(r.text || '')) || re.test(String(r.summary || ''))))
+  return rows.slice(-limit).map(r => ({
+    ts: r.ts, platform: r.platform, chatId: r.chatId, role: r.role,
+    text: String(r.text || '').replace(/\s+/g, ' ').slice(0, 300),
+  }))
 }
 
 /** 关键词回忆：命中 >7 天前的旧事（用来「主动想起」）。 */
