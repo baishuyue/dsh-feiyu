@@ -253,7 +253,7 @@ textarea.fy-input{width:100%;min-height:136px;resize:vertical;line-height:1.65;f
 					voiceChance: (c.qq && c.qq.voice_chance) || 0,
 				stickerChance: (c.qq && c.qq.stickerChance != null) ? c.qq.stickerChance : 0.5,
 				qqProactive: !!(c.qq && c.qq.proactive && c.qq.proactive.enabled),
-				qqProactiveMax: (c.qq && c.qq.proactive && c.qq.proactive.dailyMax) || 3,
+				qqProactiveMax: (c.qq && c.qq.proactive && c.qq.proactive.dailyMax != null) ? c.qq.proactive.dailyMax : 3,
 				qqProactiveGap: (c.qq && c.qq.proactive && c.qq.proactive.minGapMin) || 150,
 				aiSticker: (c.imageGen && c.imageGen.enabled) !== false,
 				webRoam: !!(c.web && c.web.roam && c.web.roam.enabled),

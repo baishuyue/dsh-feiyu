@@ -107,6 +107,7 @@ async function roamLoop() {
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
   console.log('🌐 自由上网模式启动：她自己决定逛什么、玩什么、学什么（Ctrl/面板关停）')
   let round = 0
+  let lastResults = []   // 上轮搜到的链接 → 下一轮"读网页"的素材
   while (true) {
     const cfg = config()
     const roam = cfg.web?.roam ?? {}
@@ -135,6 +136,7 @@ async function roamLoop() {
           + '\n手上的素材（自然地用）：\n- 兴趣：' + loreInterests(3).join('；').slice(0, 120)
           + '\n- 最近在忙：' + (recent('qq:web-roam-self', 3).map((m) => String(m.content).slice(0, 30)).join('；') || '刚上线')
           + '\n- 刚才在网上：' + (lastDo || '还没开始')
+          + (lastResults.length ? '\n- 上轮搜到的链接（读网页可选这些）：\n' + lastResults.slice(0, 4).map((r) => '  · ' + r.title.slice(0, 30) + ' ' + r.url).join('\n') : '')
           + '\n只输出 JSON：{"action":"搜索|读网页|写小说|学习|自我升级","query":"…","url":"…","text":"…","why":"一句话原因"}' },
       ]
       const resp = await llm.chat(msgs, { temperature: 0.95, max_tokens: 500 })
@@ -147,6 +149,7 @@ async function roamLoop() {
       if (act === '搜索' && String(plan.query || '').trim()) {
         const rs = searchWeb(String(plan.query).trim())
         for (const r of rs.slice(0, 5)) console.log('  ·', r.title, '—', r.url)
+        lastResults = rs
         if (rs.length) logWeb('搜索', `「${plan.query}」${plan.why ? '（' + plan.why + '）' : ''} → 首选：${rs[0].url}`)
       } else if (act === '读网页' && String(plan.url || '').trim()) {
         const text = fetchWeb(String(plan.url).trim())
