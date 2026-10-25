@@ -54,6 +54,16 @@ export const DEFAULTS = {
     proxy: 'http://127.0.0.1:7897',    // 空串 = 直连（机器能出墙时可清掉）
   },
 
+  // 视觉理解（10-25 框架就位，等视觉模型 key 点亮）：watch 自主观看截 N 帧 → 多模态描述 → 注入决策。
+  // DeepSeek 的 key 不支持视觉；provider 四样全配齐才启用（provider/base_url/model/api_key），没配=静默跳过。
+  vision: {
+    provider: 'none',        // none=关 | openai=OpenAI 兼容 chat/completions（智谱/硅基流动/OpenAI 都走这个）
+    base_url: '',            // 如 https://open.bigmodel.cn/api/paas/v4 或 https://api.siliconflow.cn/v1
+    model: '',               // 如 glm-4v-plus / Qwen/Qwen2.5-VL-72B-Instruct / gpt-4o-mini
+    api_key: '',             // 也可用环境变量 VISION_API_KEY
+    maxFrames: 3,            // 每条视频最多喂几帧
+  },
+
   // LLM 直连（QQ/抖音的实时响应用；B站那套塞 DSH 会话零费，这里直连按 token 计费）
   llm: {
     base_url: 'https://api.deepseek.com/v1',   // 也可换硅基流动 / Ollama / OneAPI

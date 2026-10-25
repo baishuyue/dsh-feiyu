@@ -166,6 +166,21 @@ export async function run(argv = []) {
     let hot = []
     try { const c = jsonOf(runPy(silent ? ['comments', '--vid', v.vid] : ['comments', '--vid', v.vid, '--headed'], cfg)); hot = (c.comments || []).filter(x => x.text).slice(0, 4).map(x => x.text) } catch {}
 
+    // 画面采样 + 视觉理解（10-25 框架）：vision 配齐才启用；没配静默跳过，老流程不受影响
+    let visual = ''
+    try {
+      const { visionOn, describeFrames } = await import('../lib/vision.mjs')
+      if (visionOn()) {
+        const framesDir = path.join(os.homedir(), '.feiyu-ai', 'frames', String(v.vid).replace(/[^\w-]/g, '').slice(0, 40))
+        const out = jsonOf(runPy(['frames', '--vid', v.vid, '--out', framesDir, '--n', '3'], cfg))
+        const frames = (out.frames || []).filter((f) => fs.existsSync(f))
+        const desc = frames.length ? await describeFrames(frames) : null
+        if (desc) { visual = `\n画面（她亲眼看到的）：${desc}`; log(`  👁 画面：${desc.slice(0, 60)}`) }
+        else log('  👁 视觉描述没出来（key/网络/模型），这条靠文字信息决策')
+        try { fs.rmSync(framesDir, { recursive: true, force: true }) } catch {}   // 帧图不囤，描述完就删
+      }
+    } catch (e) { log('  👁 视觉采样异常：' + String(e.message).slice(0, 80)) }
+
     // 决策：继续 / 换片 / 停；顺带判断 值不值得分享给主人 / 值不值得评论
     let decision = '继续', reason = '', share = false, comment = ''
     try {
@@ -175,7 +190,7 @@ export async function run(argv = []) {
           + '"comment":"15~40字的评论，只有你觉得值得评论时才写，否则省略"}\n'
           + 'share 的标准放宽些：主人喜欢收到你的分享，只要这条让你嘴角上扬/学到东西/想安利给他，就 true；'
           + '每天有分享额度，别吝啬，但也别无聊的也发。' },
-        { role: 'user', content: `视频《${v.desc}》（作者 ${v.author}）\n热评：${hot.join(' / ') || '（无）'}\n下一步？` },
+        { role: 'user', content: `视频《${v.desc}》（作者 ${v.author}）${visual}\n热评：${hot.join(' / ') || '（无）'}\n下一步？` },
       ]
       const resp = await llm.chat(msgs, { temperature: 0.7 })
       const m = String(resp?.content ?? resp ?? '').match(/\{[\s\S]*\}/)

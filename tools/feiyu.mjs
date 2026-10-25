@@ -39,6 +39,7 @@ const COMMANDS = {
   voice: '音色工坊：list | try | tryall | use | import（她自己学新声音）',
   sing: '唱一首（LLM写词+她的音色逐句+鼓点混音，发主人QQ）',
   sticker: '表情包工坊：sticker gen "文案" [--tag 标签] [--send]（AI 画图入库，免费无 key）',
+  vision: '视觉理解：status（看配置）| probe --image <图>（多模态描述，等视觉 key 点亮）',
 }
 
 const cmd = process.argv[2]
