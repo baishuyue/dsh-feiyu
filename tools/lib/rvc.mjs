@@ -63,7 +63,7 @@ function runRvc(args, { onLine } = {}) {
     // 二进制必须能被找到（GPT-SoVITS runtime 有 ffmpeg.exe，ffprobe 在 D:/rvc/bin）
     const extraPath = [config().rvc?.binPath || 'D:/rvc/bin', path.dirname(config().rvc?.ffmpeg || 'D:/GPT-SoVITS/runtime/ffmpeg.exe')]
       .filter((p) => fs.existsSync(p)).join(path.delimiter)
-    const child = spawn(RVC_PY(), args, { cwd: root, windowsHide: true, env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1', PYTHONPATH: root, ...(extraPath ? { PATH: extraPath + path.delimiter + (process.env.PATH || '') } : {}) } })
+    const child = spawn(RVC_PY(), args, { cwd: root, windowsHide: true, env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1', PYTHONPATH: root, PYTORCH_CUDA_ALLOC_CONF: 'expandable_segments:True', ...(extraPath ? { PATH: extraPath + path.delimiter + (process.env.PATH || '') } : {}) } })
     let tail = []
     const feed = (buf) => {
       for (const line of String(buf).split(/\r?\n/)) {
@@ -228,25 +228,60 @@ export async function trainVoice({ name, datasetDir, epochs = 150, batch = 8, sa
 }
 
 // ── ③ 推理换声（infer/cli.py）──────────────────────────────────────────────
+function ffprobe(path_) {
+  try {
+    const exe = 'D:/rvc/bin/ffprobe.exe'
+    if (!fs.existsSync(exe)) return 0
+    return Number(execFileSync(exe, ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', String(path_).replace(/\//g, path.sep)], { encoding: 'utf8', timeout: 20000 }).trim()) || 0
+  } catch { return 0 }
+}
+
 export async function convertVoice({ input, output, name, pitch = 0, indexRate = 0.75, protect = 0.33, log = () => {} }) {
   const run = readRun()
   const model = run.models?.[name || run.current]
   if (!model) throw new Error(`音色模型没登记：${name || '(current)'}（voice models 看看）`)
   const out = String(output).replace(/\//g, path.sep)
   fs.mkdirSync(path.dirname(out), { recursive: true })
-  const args = [
-    'infer/cli.py', '--model', model.pth, '--input', String(input).replace(/\//g, path.sep),
-    '--output', out, '--pitch', String(pitch), '--f0-method', 'rmvpe',
-    '--index-rate', String(indexRate), '--protect', String(protect), '--overwrite',
-  ]
-  if (model.index) args.push('--index', model.index)
-  const r = await runRvc(args, { onLine: log })
-  if (r.code !== 0 || !fs.existsSync(out)) throw new Error('换声失败：' + r.tail.join(' | ').slice(-300))
+  const base = ['infer/cli.py', '--model', model.pth, '--pitch', String(pitch), '--f0-method', 'rmvpe',
+    '--index-rate', String(indexRate), '--protect', String(protect), '--overwrite']
+  if (model.index) base.push('--index', model.index)
+  const convertOne = (inp, o) => new Promise((resolve, reject) => {
+    runRvc([...base, '--input', String(inp).replace(/\//g, path.sep), '--output', String(o).replace(/\//g, path.sep)], { onLine: log })
+      .then((r) => (r.code === 0 && fs.existsSync(o) ? resolve(o) : reject(new Error('换声失败：' + r.tail.join(' | ').slice(-300)))))
+  })
+  // 长音频切块：8GB 卡整条 4 分钟会 CUDA OOM —— 30s 一段各换各的，再 ffmpeg concat 拼回去
+  const dur = ffprobe(input)
+  const CHUNK = 30
+  if (dur > CHUNK + 10) {
+    const tmp = path.join(path.dirname(out), `.rvc-chunks-${Date.now()}`)
+    fs.mkdirSync(tmp, { recursive: true })
+    try {
+      const ffmpegExe = 'D:/rvc/bin/ffmpeg.exe'
+      execFileSync(ffmpegExe, ['-hide_banner', '-loglevel', 'error', '-y', '-i', String(input).replace(/\//g, path.sep),
+        '-f', 'segment', '-segment_time', String(CHUNK), '-ac', '1', '-ar', '44100', path.join(tmp, 'seg%04d.wav').replace(/\//g, path.sep)],
+        { timeout: 120000, windowsHide: true })
+      const segs = fs.readdirSync(tmp).filter((f) => f.startsWith('seg') && f.endsWith('.wav')).sort()
+      log(`  长音频 ${Math.round(dur)}s → 切 ${segs.length} 段换声`)
+      const outs = []
+      for (let i = 0; i < segs.length; i++) {
+        const o = path.join(tmp, `c${segs[i].slice(3)}`)
+        await convertOne(path.join(tmp, segs[i]), o)
+        outs.push(`file '${o.replace(/\\/g, '/')}'`)
+        log(`  [${i + 1}/${segs.length}] ✓`)
+      }
+      fs.writeFileSync(path.join(tmp, 'list.txt'), outs.join('\n'))
+      // 重编码拼接（防各段采样率/声道不一致炸 copy）
+      execFileSync(ffmpegExe, ['-hide_banner', '-loglevel', 'error', '-y', '-f', 'concat', '-safe', '0',
+        '-i', path.join(tmp, 'list.txt').replace(/\//g, path.sep), '-c:a', 'pcm_s16le', out], { timeout: 120000, windowsHide: true })
+      return out
+    } finally { try { fs.rmSync(tmp, { recursive: true, force: true }) } catch {} }
+  }
+  await convertOne(String(input).replace(/\//g, path.sep), out)
   return out
 }
 
 // ── ④ 人声分离（pymss worker 协议：request.json → stdout JSON 事件）────────
-export async function separateVocals({ input, outDir, model = 'model_bs_roformer_ep_368_sdr_12.9628' }) {
+export async function separateVocals({ input, outDir, model = 'vocals-bs-roformer-368' }) {
   const root = RVC_ROOT()
   const tmpReq = path.join(dataPath('rvc'), `sep-${Date.now()}.json`)
   const vocalRoot = path.join(outDir, 'vocals').replace(/\//g, path.sep)

@@ -53,16 +53,26 @@ async function fetchSource(src, dir) {
   const rvcPy = config().rvc?.python || 'D:/rvc/venv/Scripts/python.exe'
   const args = ['-m', 'yt_dlp', '-x', '--audio-format', 'wav', '--audio-quality', '0', '--no-playlist',
     '--proxy', PROXY(), '-o', path.join(dir, 'source.%(ext)s'), src]
+  // YouTube 2026 起抽取要 JS 运行时解 NSIG（默认只认 deno）——机器上有 DSH 的 node，指给它用
+  const nodeExe = 'C:/Users/30828/.dsh/dsh-runtimes/dsh-primary-runtime/dependencies/node/bin/node.exe'
+  if (fs.existsSync(nodeExe)) args.push('--js-runtimes', `node:${nodeExe}`)
+  // -x 抽音轨的后期处理要 ffmpeg/ffprobe（D:/rvc/bin 里有全套）
+  const ffDir = config().rvc?.binPath || 'D:/rvc/bin'
+  if (fs.existsSync(path.join(ffDir, 'ffmpeg.exe'))) args.push('--ffmpeg-location', String(ffDir).replace(/\//g, path.sep))
   try {
     execFileSync(rvcPy, args, { encoding: 'utf8', timeout: 600000, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
   } catch (e) {
     throw new Error('yt-dlp 下载失败：' + String(e.stderr || e.message).split('\n').filter(Boolean).slice(-2).join('；').slice(-200))
   }
+  // yt-dlp 有 ffmpeg 时 -x 直接产出 source.wav（并删掉 webm 原件）；没有时留下 webm/m4a，自己转
+  const wav = path.join(dir, 'source.wav')
+  if (fs.existsSync(wav) && fs.statSync(wav).size > 100000) { searchQuotaRecord(); return wav }
   const got = fs.readdirSync(dir).find((f) => f.startsWith('source.') && f !== 'source.wav')
   if (!got) throw new Error('yt-dlp 没产出音频（链接/代理/额度？）')
-  if (got !== 'source.wav') fs.renameSync(path.join(dir, got), out)
+  ffmpeg(['-i', path.join(dir, got), '-ar', '44100', '-ac', '2', wav])
+  try { fs.rmSync(path.join(dir, got), { force: true }) } catch {}
   searchQuotaRecord()
-  return out
+  return wav
 }
 
 /** 歌单目录：按源 md5 落位，meta.json 存名字。 */
