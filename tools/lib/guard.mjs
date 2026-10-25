@@ -24,7 +24,7 @@ function writeJson(file, value) {
 }
 
 /** 3-gram 集合（dafeiyu guard.py _grams）。 */
-function grams(s, n = 3) {
+export function grams(s, n = 3) {
   s = String(s ?? '').replace(/\s+/g, '')
   const out = new Set()
   for (let i = 0; i < Math.max(0, s.length - n + 1); i++) out.add(s.slice(i, i + n))
@@ -70,6 +70,15 @@ export function dupOk(chatId, text, cfg = config()) {
   }
   return true
 }
+
+/** 干跑闸（10-25 统一）：所有"对外真发"的写操作都必须先过这里。
+ *  以前只有 B站评论 / QQ 秒回主链 / 主动搭话查了 dryRun，
+ *  弹幕·动态·点赞·投币·图片评论·关注·群插话·空间说说·唱歌发音频全都照发 —— 干跑形同虚设。 */
+export function dryBlocked(cfg = config()) {
+  return !!cfg.guard?.dryRun
+}
+
+export const DRY_WHY = '干跑（guard.dryRun 开着）：这次不真发 —— 想真发先把 feiyu.config.json 的 guard.dryRun 改成 false'
 
 /**
  * 统一判定入口（发送前）。

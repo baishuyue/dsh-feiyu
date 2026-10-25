@@ -113,7 +113,7 @@ export async function run(argv = []) {
   // ⑭ 抖音互动（douyin_interact.py + patchright 环境）
   let dyOk = false
   try { fs.accessSync('D:/social-auto-upload/douyin_interact.py'); fs.accessSync('D:/social-auto-upload/.venv/Scripts/python.exe'); dyOk = true } catch {}
-  let dyCookie = fs.existsSync(os.homedir() + '/.feiyu-ai/douyin-cookies.json')
+  let dyCookie = fs.existsSync(dataPath('douyin-cookies.json'))
   add('抖音互动（可选）', true, dyOk
     ? (dyCookie ? '脚本+环境+登录态就绪（刷视频/读评论/发评论可用，默认干跑）' : '脚本+环境就绪，但还没扫码登录 —— node feiyu.mjs douyin login')
     : '抖音互动脚本未装 —— 需要 D:/social-auto-upload 下的 patchright 环境')

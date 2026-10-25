@@ -14,6 +14,7 @@ const has = (argv, name) => argv.includes(name)
 
 async function sendToOwnerQQ(file) {
   const cfg = config()
+  if (cfg.guard?.dryRun) { console.log('   （干跑 guard.dryRun：贴纸不发 QQ，图已经存进图库）'); return false }
   const ownerQQ = String(cfg.owner?.qq || '')
   const napcat = String(cfg.qq?.napcat_http || 'http://127.0.0.1:3000').replace(/\/+$/, '')
   if (!ownerQQ) throw new Error('owner.qq 未配置')

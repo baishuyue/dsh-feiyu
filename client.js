@@ -89,6 +89,7 @@ input.fy-input:focus,select.fy-input:focus,textarea.fy-input:focus{border-color:
 input.fy-input{width:190px}
 input.fy-w-md{width:248px}
 input.fy-w-sm{width:84px}
+input.fy-w-xs{width:64px}
 select.fy-input{min-width:250px}
 textarea.fy-input{width:100%;min-height:136px;resize:vertical;line-height:1.65;font-family:inherit}
 .fy-btn{background:transparent;
@@ -218,16 +219,17 @@ textarea.fy-input{width:100%;min-height:136px;resize:vertical;line-height:1.65;f
 				douyinOwner: (c.douyin && c.douyin.owner && c.douyin.owner.name) || "",
 					nightStart: n.start || "20:00",
 					nightEnd: n.end || "24:00",
-					nightWakes: n.wakes || 1,
+					nightWakes: (n.wakes != null) ? n.wakes : 1,
 				shareDaily: (c.quota && c.quota.shareDaily != null) ? c.quota.shareDaily : 3,
 				shareOn: !!(c.share && c.share.enabled),
-				shareMinScore: (c.share && c.share.minScore) || 13,
-				douyinCount: (c.douyin && c.douyin.maxPerRun) || 2,
+				shareMinScore: (c.share && c.share.minScore != null) ? c.share.minScore : 13,
+				douyinCount: (c.douyin && c.douyin.maxPerRun != null) ? c.douyin.maxPerRun : 2,
 				douyinShareDaily: (c.douyin && c.douyin.shareDaily != null) ? c.douyin.shareDaily : 5,
 				douyinAt: !!(c.douyin && c.douyin.atMention),
 				douyinShare: !!(c.douyin && c.douyin.shareToOwner),
 				douyinAutoComment: !!(c.douyin && c.douyin.autoComment),
 				douyinDm: !!(c.douyin && c.douyin.dm && c.douyin.dm.enabled),
+				douyinDmStartWithDsh: !!(c.douyin && c.douyin.dm && c.douyin.dm.startWithDsh),
 				douyinSilent: !!(c.douyin && c.douyin.watch && c.douyin.watch.silent),
 				douyinFreeRoam: !!(c.douyin && c.douyin.freeRoam && c.douyin.freeRoam.enabled),
 				douyinUnlimited: (c.douyin && c.douyin.freeRoam && c.douyin.freeRoam.unlimited) !== false,
@@ -250,22 +252,22 @@ textarea.fy-input{width:100%;min-height:136px;resize:vertical;line-height:1.65;f
 				dykRepliesMax: (c.bilibili && c.bilibili.replies && c.bilibili.replies.dailyMax != null) ? c.bilibili.replies.dailyMax : 10,
 				dykFish: !!(c.bilibili && c.bilibili.fishCircle && c.bilibili.fishCircle.enabled),
 				dykFollow: !!(c.bilibili && c.bilibili.follow && c.bilibili.follow.enabled),
-					voiceChance: (c.qq && c.qq.voice_chance) || 0,
+					voiceChance: (c.qq && c.qq.voice_chance != null) ? c.qq.voice_chance : 0.15,   // 跟 config.mjs 默认值一致（以前显示 0）
 				stickerChance: (c.qq && c.qq.stickerChance != null) ? c.qq.stickerChance : 0.5,
 				qqProactive: !!(c.qq && c.qq.proactive && c.qq.proactive.enabled),
 				qqProactiveMax: (c.qq && c.qq.proactive && c.qq.proactive.dailyMax != null) ? c.qq.proactive.dailyMax : 3,
-				qqProactiveGap: (c.qq && c.qq.proactive && c.qq.proactive.minGapMin) || 150,
+				qqProactiveGap: (c.qq && c.qq.proactive && c.qq.proactive.minGapMin != null) ? c.qq.proactive.minGapMin : 150,
 				aiSticker: (c.imageGen && c.imageGen.enabled) !== false,
 				webRoam: !!(c.web && c.web.roam && c.web.roam.enabled),
-				webRestMin: (c.web && c.web.roam && c.web.roam.restMin) || 2,
+				webRestMin: (c.web && c.web.roam && c.web.roam.restMin != null) ? c.web.roam.restMin : 2,
 				webSelfUp: !!(c.web && c.web.selfUpgrade && c.web.selfUpgrade.enabled),
 				evoOn: !!(c.personality && c.personality.evolve && c.personality.evolve.enabled),
-				evoDays: (c.personality && c.personality.evolve && c.personality.evolve.days) || 2,
+				evoDays: (c.personality && c.personality.evolve && c.personality.evolve.days != null) ? c.personality.evolve.days : 2,
 				freedomOn: !!(c.freedom && c.freedom.enabled),
 					voicePath: (c.voice && c.voice.ref_audio_path) || "",
 					wxRhythm: (c.wechat && c.wechat.rhythm) || "fast",
-					wxMerge: (c.wechat && c.wechat.merge_window_sec) || 3,
-					wxContext: (c.wechat && c.wechat.context_n) || 12,
+					wxMerge: (c.wechat && c.wechat.merge_window_sec != null) ? c.wechat.merge_window_sec : 3,
+					wxContext: (c.wechat && c.wechat.context_n != null) ? c.wechat.context_n : 12,
 					wxSkip: !(c.wechat && c.wechat.smart_skip === false),
 				};
 			};
@@ -400,10 +402,14 @@ textarea.fy-input{width:100%;min-height:136px;resize:vertical;line-height:1.65;f
 			const commitNight = useCallback(() => {
 				const start = String(draft.nightStart || "").trim() || "20:00";
 				const end = String(draft.nightEnd || "").trim() || "24:00";
-				const wakes = Math.max(1, Math.min(5, Number(draft.nightWakes) || 1));
-				save({ night: { windows: [{ start: start, end: end, wakes: wakes }] } },
+				const wakes = Math.max(1, Math.min(12, Number(draft.nightWakes) || 1));   // 后端 night-plan 上限是 12，以前夹到 5
+				// 只改第一个窗口：以前整组替换成单元素，多窗口配置一编辑就丢
+				const wins = ((cfg && cfg.night && Array.isArray(cfg.night.windows)) ? cfg.night.windows : []).slice();
+				const first = Object.assign({}, wins[0] || {}, { start: start, end: end, wakes: wakes });
+				wins[0] = first;
+				save({ night: { windows: wins } },
 					"作息已保存：" + start + " → " + end + "，醒 " + wakes + " 次");
-			}, [draft, save]);
+			}, [cfg, draft, save]);
 
 			const startNapcat = useCallback(async () => {
 				setBusy("svc:napcat");
@@ -431,7 +437,7 @@ textarea.fy-input{width:100%;min-height:136px;resize:vertical;line-height:1.65;f
 			const testVoice = useCallback(async () => {
 				setBusy("voice");
 				try {
-					await api("/voice-test", { method: "POST", body: JSON.stringify({ name: draft.voicePath || "" }) });
+					await api("/voice-test", { method: "POST", body: JSON.stringify({ ref_audio_path: draft.voicePath || "" }) });
 					flash("合成完成，已发到你 QQ（看手机）");
 				} catch (e) {
 					flash("试听失败：" + ((e && e.message) || e), true);
@@ -501,6 +507,18 @@ textarea.fy-input{width:100%;min-height:136px;resize:vertical;line-height:1.65;f
 							h("span", { className: "fy-hint", style: { marginLeft: 6 } }, "说话音色在下面「音色」里，两套独立")),
 						h("div", { className: "fy-chip" + ((status && status.dryRun) ? "" : " bad") },
 							"干跑 ", h("b", null, (status && status.dryRun) ? "开（只演练）" : "关（真发）"))),
+					// 干跑总闸（10-25 补上 UI）：以前面板只能看不能改，改它必须手动编辑 feiyu.config.json
+					h(Row, { label: "干跑（总闸）" },
+						h(Switch, {
+							on: !!(status && status.dryRun),
+							label: "dryRun",
+							onChange: async (v) => {
+								const ok = await save({ guard: { dryRun: v } }, v ? "已切干跑：所有对外动作只演练不发送" : "已切真发：弹幕/动态/点赞/评论/群聊/说说/音频都会真的发出去");
+								if (ok) setStatus((prev) => Object.assign({}, prev || {}, { dryRun: v }));
+							},
+						}),
+						h("span", { className: "fy-hint", style: { marginTop: 0, flex: "1 1 240px" } },
+							"开 = 只打印不发送（她照常思考、算分、写日记）；关 = 真发。别和 douyin.dryRun 搞混，那个只管抖音。")),
 					// 通道健康：进程活着 ≠ 能收发。QQ 要看 NapCat 网关，微信要看心跳
 					h("div", { className: "fy-stats", style: { marginTop: 10 } },
 						h("div", { className: "fy-chip" + (napcatOk ? "" : " bad") },
@@ -700,7 +718,7 @@ textarea.fy-input{width:100%;min-height:136px;resize:vertical;line-height:1.65;f
 							className: "fy-input fy-w-sm", type: "number", min: 1, max: 10, step: 0.5,
 							value: draft.wxMerge,
 							onChange: (e) => setDraft(Object.assign({}, draft, { wxMerge: e.target.value })),
-							onBlur: () => save({ wechat: { merge_window_sec: Number(draft.wxMerge) || 3 } }, "合并窗口已保存"),
+							onBlur: () => save({ wechat: { merge_window_sec: String(draft.wxMerge).trim() === "" ? 3 : Math.max(0, Number(draft.wxMerge) || 0) } }, "合并窗口已保存"),
 						}),
 						h("span", { className: "fy-hint", style: { marginTop: 0 } }, "对方说完几秒后才回；期间又发就继续等（最长 12 秒）")),
 					h(Row, { label: "上下文条数" },
@@ -708,7 +726,7 @@ textarea.fy-input{width:100%;min-height:136px;resize:vertical;line-height:1.65;f
 							className: "fy-input fy-w-sm", type: "number", min: 4, max: 30,
 							value: draft.wxContext,
 							onChange: (e) => setDraft(Object.assign({}, draft, { wxContext: e.target.value })),
-							onBlur: () => save({ wechat: { context_n: Number(draft.wxContext) || 12 } }, "上下文条数已保存（下一条消息生效）"),
+							onBlur: () => save({ wechat: { context_n: String(draft.wxContext).trim() === "" ? 12 : Math.max(0, Number(draft.wxContext) || 0) } }, "上下文条数已保存（下一条消息生效）"),
 						}),
 						h("span", { className: "fy-hint", style: { marginTop: 0 } }, "往前带多少条对话来理解语境")),
 					h(Row, { label: "自己判断该不该接" },
@@ -805,6 +823,22 @@ textarea.fy-input{width:100%;min-height:136px;resize:vertical;line-height:1.65;f
 							},
 						}),
 						h("span", { className: "fy-hint", style: { marginTop: 0 } }, "常驻轮询主人私信，新消息自动回")),
+					h(Row, { label: "随 DSH 自启" },
+						h(Switch, {
+							on: draft.douyinDmStartWithDsh,
+							label: "douyinDmStartWithDsh",
+							onChange: async (v) => {
+								setDraft(Object.assign({}, draft, { douyinDmStartWithDsh: v }));
+								// 开"自启"时顺手把私信也打开：否则自启只是"开机后再关一次"
+								const patch = v ? { dm: { startWithDsh: true, enabled: true } } : { dm: { startWithDsh: false } };
+								const ok = await save({ douyin: patch }, v ? "私信陪聊随 DSH 自启（退出时不会被自动关掉）" : "私信陪聊不再自启：DSH 退出时会自动关掉");
+								if (ok && v && !draft.douyinDm) {
+									setDraft(Object.assign({}, draft, { douyinDmStartWithDsh: true, douyinDm: true }));
+									restartService("douyin-dm", "start");
+								}
+							},
+						}),
+						h("span", { className: "fy-hint", style: { marginTop: 0 } }, "关着的话，DSH 一重启私信陪聊就被自动关掉（10-25 那个「还是没回复」就是这原因）")),
 					h(Row, { label: "评论 @ 通知" },
 						h(Switch, {
 							on: draft.douyinAt,
@@ -1030,13 +1064,17 @@ textarea.fy-input{width:100%;min-height:136px;resize:vertical;line-height:1.65;f
 								setDraft(Object.assign({}, draft, { freedomOn: v }));
 								const ok = await save({ freedom: { enabled: v } }, v ? "完全自由已开：世界是她的了" : "完全自由已关");
 								if (!ok) return;
-								try {
-									const r = await api("/services", { method: "POST", body: JSON.stringify({ target: "web-roam", action: v ? "start" : "stop" }) });
-									setSvc(r.services || null);
-									const r2 = await api("/services", { method: "POST", body: JSON.stringify({ target: "free-roam", platform: "bilibili", action: v ? "start" : "stop" }) });
-									setSvc(r2.services || null);
-									flash(v ? "已放她出去：自由上网+B站自由刷在跑，会话按她的意愿被唤醒" : "已收回：自由上网和 B站自由刷已停");
-								} catch (e) { flash("完全自由服务操作失败：" + ((e && e.message) || e), true); }
+								// 两个服务各自独立起停：以前第一个抛错就跳过第二个 → 配置已开、进程没起
+								const errs = [];
+								for (const body of [{ target: "web-roam", action: v ? "start" : "stop" },
+									{ target: "free-roam", platform: "bilibili", action: v ? "start" : "stop" }]) {
+									try {
+										const r = await api("/services", { method: "POST", body: JSON.stringify(body) });
+										setSvc(r.services || null);
+									} catch (e) { errs.push(body.target + "：" + ((e && e.message) || e)); }
+								}
+								flash(errs.length ? "服务操作有失败：" + errs.join("；")
+									: (v ? "已放她出去：自由上网+B站自由刷在跑，会话按她的意愿被唤醒" : "已收回：自由上网和 B站自由刷已停"), errs.length > 0);
 							},
 						}),
 						h("span", { className: "fy-hint", style: { marginTop: 0 } }, "唤醒间隔/概率在 feiyu.config.json 的 freedom（默认 75 分钟 · 55%）"))),

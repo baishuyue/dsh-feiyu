@@ -443,15 +443,41 @@ export async function run(argv = []) {
   //       每天有上限（dailyMax）；开口前情绪先漂移一次；发完即写记忆（推送即记忆）。
   const PROACT_FILE = dataPath('qq-proactive.json')
   let ownerLastMsgAt = 0
+  const STARTED_AT = Date.now()
   const dayKeyNow = () => new Date().toLocaleDateString('sv-SE')
   const readProact = () => { try { return JSON.parse(fs.readFileSync(PROACT_FILE, 'utf8')) } catch { return {} } }
   const writeProact = (st) => { try { fs.writeFileSync(PROACT_FILE, JSON.stringify(st)) } catch {} }
+
+  // 10-25 修（用户抓到"两条差不多的抱怨"）：ownerLastMsgAt 只在内存里 → DSH 一重启就归零
+  // → quietH 变成 99 → 她一律按"主人很久没理我"开口，编出"你消失四天了"（当时其实 13 分钟前刚聊过）。
+  // 启动时从 QQ 记忆里把主人最后一条消息的真实时间捞回来。
+  function seedOwnerLastMsgAt() {
+    const ownerQQ = String(config().owner?.qq || '')
+    try {
+      const file = dataPath('qq', 'episodes.jsonl')
+      const rows = fs.readFileSync(file, 'utf8').trim().split('\n').filter(Boolean)
+      for (let i = rows.length - 1; i >= 0; i--) {
+        const r = JSON.parse(rows[i])
+        if (r && r.role === 'user' && (!ownerQQ || String(r.userId || '') === ownerQQ)) {
+          ownerLastMsgAt = Number(r.ts) || 0
+          log(`[qq] 主人最后一条消息：${new Date(ownerLastMsgAt).toLocaleString('zh-CN')}（从记忆恢复）`)
+          return
+        }
+      }
+    } catch {}
+    // 记忆里翻不到 → 按"刚刚聊过"算：宁可不提时间，也不许编一个天数出来
+    ownerLastMsgAt = Date.now()
+    log('[qq] 记忆里没有主人的消息 → 按刚聊过处理（先不提"多久没见"）')
+  }
+  seedOwnerLastMsgAt()
 
   async function tryProactive() {
     try {
       const cfgNow = config()
       const pp = cfgNow.qq?.proactive ?? {}
       if (pp.enabled !== true) return
+      // 启动宽限（10-25）：刚拉起来就"你很久没理我"纯属噪音 —— 重启当天连发三条同义句的教训
+      if (Date.now() - STARTED_AT < Number(pp.startupGraceMin ?? 10) * 60_000) return
       // 晚间限制（用户 10-25 拍板可关）：activeHours 配成 null / [] = 全天可主动搭话；[a,b] 才限时
       const ah = pp.activeHours
       if (Array.isArray(ah) && ah.length === 2) {
@@ -469,7 +495,11 @@ export async function run(argv = []) {
       const ownerQQ = String(cfgNow.owner?.qq || '')
       if (!ownerQQ) return
       tickMood()
-      const quietH = ownerLastMsgAt ? Math.floor((Date.now() - ownerLastMsgAt) / 3600_000) : 99
+      const quietMs = Math.max(0, Date.now() - ownerLastMsgAt)
+      const quietMin = Math.floor(quietMs / 60_000)
+      const quietH = Math.floor(quietMs / 3600_000)
+      const quietText = quietMin < 60 ? `${quietMin} 分钟` : `${quietH} 小时 ${quietMin % 60} 分`
+      const nowText = new Date().toLocaleString('zh-CN', { hour12: false })
       // 素材钩子（10-25）：光给类型菜单 LLM 只会甩视频链接 —— 把她今天真实的经历、时段、情绪值
       // 和主人记忆喂进去，她才有"日常/思考/疑惑/心情"可说
       const hour = new Date().getHours()
@@ -486,14 +516,18 @@ export async function run(argv = []) {
       try { const li = memory.loreInterests(1); if (li.length) hooks.push('最近挂在心上：' + String(li[0]).slice(0, 40)) } catch {}
       const lastProact = readProact()
       const lastType = String(lastProact.lastType || '')
+      const saidBefore = (Array.isArray(lastProact.recent) ? lastProact.recent : []).slice(-3)
+        .map((x) => `「${String(x.text || '').slice(0, 24)}」`).join('、')
       const built = buildMessages({ platform: 'qq', userText: '', chatId: `qq:${ownerQQ}`, userId: ownerQQ, turnsToday: 0 })
-      const quietHint = quietH >= 5 ? `（主人已经 ${quietH} 个小时没理你了，可以带一点点小委屈或调侃他，但别过头）` : ''
+      const quietHint = quietH >= 5 ? '（可以带一点点小委屈或调侃他，但别过头）' : ''
       const msgs = [
         built[0],
-        { role: 'user', content: `【主动搭话】主人有${quietH >= 99 ? '一阵子' : quietH + ' 小时'}没说话了。${quietHint}\n`
+        { role: 'user', content: `【主动搭话】现在是 ${nowText}。主人最后一条消息是 ${quietText} 前。${quietHint}\n`
+          + `**时间只准用这一句里的数字**：不许换算成"几天"，不许说"四天/好几天/整整几天"这种我没告诉你的数字${quietMin < 120 ? '；才两个钟头不到，别摆出"好久没见"的架势' : ''}。\n`
           + '**自己挑一个类型**（上次用过「' + (lastType || '无') + '」，这次换一个）：'
           + '①日常——你现在正在干嘛/看到什么随口说；②思考——最近琢磨的小念头；③疑惑——想问他的问题；'
           + '④心情——结合情绪值说现在的状态；⑤安利——甩视频链接。\n'
+          + (saidBefore ? `你最近已经说过：${saidBefore} —— 别再重复同样的意思，换个由头。\n` : '')
           + (hooks.length ? '你手上的真实素材（自然地用，别照念）：\n- ' + hooks.join('\n- ') + '\n' : '')
           + '像真人发微信：一条，一两句话，自然具体。禁止"在吗/你好"式开场。只输出 JSON：{"type":"日常|思考|疑惑|心情|安利","text":"消息正文"}' },
       ]
@@ -509,12 +543,31 @@ export async function run(argv = []) {
         } else out = guard.clean(String(resp ?? ''), cfgNow)
       } catch { out = guard.clean(String(resp ?? ''), cfgNow) }
       if (!out) return
+      // 跨重启/跨措辞去重（10-25 用户抓的 bug）：状态里只记类型不记原文，于是
+      // "你消失四天 / 整整四天 / 快四天" 三条同义句能连发。这里按 3-gram 相似度 + 同类冷却卡住。
+      const hist = (Array.isArray(st.recent) ? st.recent : []).filter((x) => x && Date.now() - Number(x.at || 0) < 6 * 3600_000)
+      const g1 = guard.grams(out)
+      const typeCd = Number(pp.typeCooldownMin ?? 180)
+      const clash = hist.find((x) => {
+        if (typeCd > 0 && x.type === usedType && Date.now() - Number(x.at) < typeCd * 60_000) return true
+        const g2 = guard.grams(String(x.text || ''))
+        if (!g1.size || !g2.size) return false
+        let inter = 0
+        for (const g of g1) if (g2.has(g)) inter++
+        return inter / (g1.size + g2.size - inter) > Number(pp.similarityMax ?? 0.25)
+      })
+      if (clash) {
+        log(`[qq] 主动搭话草稿跟 ${Math.round((Date.now() - Number(clash.at)) / 60000)} 分钟前的「${String(clash.text || '').slice(0, 16)}…」撞了（同类/同义），这轮不发`)
+        return
+      }
       if (cfgNow.guard?.dryRun) { log(`[qq][干跑] 本要主动搭话：${out.slice(0, 50)}`); return }
       const ok = await send('send_private_msg', { user_id: Number(ownerQQ), message: [{ type: 'text', data: { text: out } }] })
       if (!ok) return
       memory.remember('qq', `qq:${ownerQQ}`, ownerQQ, 'assistant', out)   // 推送即记忆：她自己"说过"这句
       const st2 = readProact()
-      writeProact({ day: dayKeyNow(), count: Number(st2.count ?? 0) + 1, lastAt: Date.now(), lastType: usedType })
+      const rec = (Array.isArray(st2.recent) ? st2.recent : []).slice(-7)
+      rec.push({ at: Date.now(), type: usedType, text: String(out).slice(0, 60) })
+      writeProact({ day: dayKeyNow(), count: Number(st2.count ?? 0) + 1, lastAt: Date.now(), lastType: usedType, recent: rec })
       log(`[qq] 🐟 主动搭话（${usedType}）：${out.slice(0, 50)}`)
     } catch (e) { logErr('[qq] 主动搭话失败：' + e.message) }
   }
@@ -535,6 +588,7 @@ export async function run(argv = []) {
       const QQ = config().qq ?? {}
       const gc = QQ.groupChat ?? {}
       if (gc.enabled !== true) return
+      if (config().guard?.dryRun) return   // 干跑：群插话也不真发（10-25 统一闸门）
       const now = Date.now()
       const day = new Date().toLocaleDateString('sv-SE')
       const dailyMax = Number(gc.dailyMax ?? 6)
@@ -566,8 +620,11 @@ export async function run(argv = []) {
         if (!j.speak || !String(j.text || '').trim()) continue
         const out = guard.clean(String(j.text), config())
         if (!out) continue
+        const verdict = guard.allow(chatId, out, config(), { checkDryRun: false })   // 间隔 + 复读去重（干跑已在上游拦）
+        if (!verdict.ok) continue
         const ok = await send('send_group_msg', { group_id: Number(gid), message: [{ type: 'text', data: { text: out } }] })
         if (!ok) continue
+        guard.commit(chatId, out)
         memory.remember('qq', chatId, config().identity?.name ?? 'feiyu', 'assistant', out)   // 推送即记忆
         groupSpeak[gid] = { day, count: Number(g.count) + 1, lastAt: now }
         writeGC()
@@ -585,6 +642,7 @@ export async function run(argv = []) {
       const QQ = config().qq ?? {}
       const auto = QQ.qzoneAuto ?? {}
       if (QQ.qzone_enabled === false || auto.enabled !== true) return
+      if (config().guard?.dryRun) return   // 干跑：空间说说也不真发（10-25 统一闸门）
       const now = Date.now()
       const day = new Date().toLocaleDateString('sv-SE')
       const st = readJsonSafe(QZ_FILE, { day: '', count: 0, lastAt: 0 })

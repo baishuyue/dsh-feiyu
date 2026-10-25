@@ -10,7 +10,7 @@ import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { config } from '../lib/config.mjs'
 import * as llm from '../lib/llm.mjs'
-import { dataPath, homePath } from '../lib/paths.mjs'
+import { dataPath, homePath, WORK_DIR } from '../lib/paths.mjs'
 import { acquire } from '../lib/lock.mjs'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
@@ -117,7 +117,7 @@ async function roamLoop() {
     try {
       // 素材：她是谁、最近见闻、兴趣、上一轮干了什么（从日志尾捞）
       const { buildMessages } = await import('../lib/persona.mjs')
-      const { loreInterests, loreValues, recent } = await import('../lib/memory.mjs')
+      const { loreInterests, recent } = await import('../lib/memory.mjs')
       let lastDo = ''
       try {
         const logTail = fs.readFileSync(LOG(), 'utf8').split('\n').filter(Boolean).slice(-3).join(' / ')
@@ -160,7 +160,7 @@ async function roamLoop() {
           remember('web', 'web:roam', cfg.identity?.name ?? 'feiyu', 'assistant', `（读了 ${plan.url}：${text.slice(0, 80)}）`)
         } catch {}
       } else if (act === '写小说' && String(plan.text || '').trim()) {
-        const dir = homePath('.dsh', 'feiyu-work', 'creative')
+        const dir = path.join(WORK_DIR, 'creative')
         fs.mkdirSync(dir, { recursive: true })
         const file = path.join(dir, `novel-${new Date().toLocaleDateString('sv-SE')}.md`)
         fs.appendFileSync(file, `\n## ${new Date().toTimeString().slice(0, 5)} ${String(plan.topic || '').slice(0, 30)}\n\n${String(plan.text).slice(0, 800)}\n`)

@@ -130,6 +130,9 @@ export const DEFAULTS = {
       dailyMax: 3,          // 每天最多主动找主人几次（0 = 不限）
       minQuietMin: 90,      // 主人安静至少这么久才开口（最近在聊就别插话）
       minGapMin: 150,       // 两次主动之间的最小间隔
+      startupGraceMin: 10,  // 进程起来头 N 分钟不发（10-25：重启就"你消失四天"的根在这）
+      typeCooldownMin: 180, // 同一类型（心情/日常/疑惑…）N 分钟内不重复
+      similarityMax: 0.25,  // 跟 6 小时内任一条 3-gram 相似度超这个就不发（换措辞重复也算重）
       activeHours: [10, 23],// 活跃时段（10:00~23:00 之外不打扰）；null = 不限时（10-25 用户拍板可关）
       chance: 0.12,         // 每 60s tick 命中概率（不定点闹钟，随机开口）
     },
@@ -152,6 +155,25 @@ export const DEFAULTS = {
       chance: 0.15,         // 每 30 分钟 tick 命中概率
       imageChance: 0.5,     // 配图概率
     },
+  },
+
+  // 微信（wechat-bot 桥；10-25 起本机停用，但默认值必须补齐 ——
+  // 以前 DEFAULTS 缺这一整段，新装机/配置被清空时 cfg.wechat.* 全 undefined：
+  // 自制贴纸（stickers.mjs 取 cfg.wechat.python）恒返 null、面板合并窗口/上下文条数落回硬编码。
+  wechat: {
+    enabled: false,
+    python: 'D:/wechat-bot/.venv/Scripts/python.exe',
+    script: 'D:/wechat-bot/wechat_bot.py',
+    owner_nickname: '',                       // 主人在微信里的昵称（认人用）
+    at_only: true,
+    voice_enabled: false,
+    voice_chance: 0.15,                       // 与 qq.voice_chance / config 默认对齐（面板别自造默认值）
+    rhythm: 'fast',                           // fast | slow
+    merge_window_sec: 3,                      // 连续消息合并窗口
+    merge_max_wait_sec: 12,                   // 合并最长等待
+    context_n: 12,                            // 上下文条数
+    smart_skip: true,                         // 智能跳过（群里没被叫就不插话）
+    max_replies_per_min: 8,                   // 每分钟最多回几条（防刷屏）
   },
 
   // 语音（GPT-SoVITS 本地音色克隆；xiaoxiao 音色）
@@ -193,7 +215,9 @@ export const DEFAULTS = {
     produce: { enabled: true, dailyMax: 2 },   // 每天最多生产几条（0 = 不限）
     // 私信陪聊（参照 QQ 模式）：常驻轮询主人私信，新消息→LLM 回
     // 端口默认 8095：8090 常被 Wondershare 推送组件（WsToastNotification.exe）抢占，绑不上
-    dm: { enabled: false, pollSec: 300, port: 8095 },
+    // 随 DSH 启停：true = 开机自启、DSH 退出不关；false = DSH 一退就自动关掉
+    // （10-25 教训：默认 false 意味着"开了私信陪聊，重启一次就永远关了"，主人以为坏了）
+    dm: { enabled: false, pollSec: 300, port: 8095, startWithDsh: false },
   },
 
   // B站（生物钟在 night 段；这里放自由刷的限度 + 活人感写通道）

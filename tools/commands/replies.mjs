@@ -87,7 +87,6 @@ export async function run(argv = []) {
   let done = 0
   let left = maxOnce
   if (items.length) {
-    const myMid = String(config().owner?.mid || '')
     const isFishy = (u) => /鱼|鲸|鲲|fish/i.test(String(u || ''))
     items.sort((a, b) => {
       const rank = (x) => (String(x.reply.uname) && x.reply.uname === config().owner?.name ? 0 : isFishy(x.reply.uname) ? 1 : 2)

@@ -5,6 +5,7 @@
 //
 //   node feiyu.mjs review [--days 1]
 import fs from 'node:fs'
+import path from 'node:path'
 import { dataPath, diaryPath, homePath } from '../lib/paths.mjs'
 import * as llm from '../lib/llm.mjs'
 import { config } from '../lib/config.mjs'
@@ -79,6 +80,7 @@ export async function run(argv = []) {
 
   const out = diaryPath('private')
   const entry = `\n## ${date} 复盘\n${text}\n`
+  fs.mkdirSync(path.dirname(out), { recursive: true })   // 换机/新装时 feiyu-work 可能还不存在
   fs.appendFileSync(out, entry, 'utf8')
   console.log(`[review] 复盘已写进 ${out}`)
   console.log(text)

@@ -12,7 +12,7 @@ import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { config } from '../lib/config.mjs'
 import { synth } from '../lib/tts.mjs'
-import { dataPath } from '../lib/paths.mjs'
+import { dataPath, configPath } from '../lib/paths.mjs'
 
 const MODELS_DIR = 'D:/GPT-SoVITS/models'
 const INTRO = '主人，这是我现在的声音，好听吗？我是大肥鱼，这条声音你觉得适合我就换上吧。'
@@ -132,9 +132,9 @@ export async function run(argv = []) {
     const name = arg(argv, '--name')
     const v = voices.find(x => x.name === name)
     if (!v) { console.error('没这个音色'); process.exit(1) }
-    const cfg = JSON.parse(fs.readFileSync(config().configPath ?? (process.env.USERPROFILE + '/.dsh/feiyu.config.json'), 'utf8'))
-    // 直接改配置文件（config() 是只读视图）
-    const cfgFile = process.env.USERPROFILE + '/.dsh/feiyu.config.json'
+    // 直接改配置文件（config() 是只读视图）；路径统一走 paths.mjs，
+    // 认 $FEIYU_CONFIG / $DSH_HOME —— 以前读 config().configPath（不存在的字段）再硬编码 USERPROFILE。
+    const cfgFile = configPath()
     const j = JSON.parse(fs.readFileSync(cfgFile, 'utf8'))
     // 参考文本语言要跟音频一致（英文参考配 zh 会文本-音频错位，克隆质量崩）——粗判 ASCII 占比
     const asciiRatio = (v.text.match(/[\x20-\x7E]/g) || []).length / Math.max(1, v.text.length)

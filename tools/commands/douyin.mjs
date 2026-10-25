@@ -14,6 +14,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { config } from '../lib/config.mjs'
+import { dataPath } from '../lib/paths.mjs'
 import * as memory from '../lib/memory.mjs'
 import { sanitizeFor } from '../lib/stickers.mjs'
 
@@ -29,7 +30,7 @@ function scriptPath(cfg) {
   return cfg.douyin?.script || 'D:/social-auto-upload/douyin_interact.py'
 }
 function cookiePath(cfg) {
-  return cfg.douyin?.cookie || path.join(os.homedir(), '.feiyu-ai', 'douyin-cookies.json')
+  return cfg.douyin?.cookie || dataPath('douyin-cookies.json')
 }
 
 // 抖音独立 dryRun（默认开）：不跟随全局 guard.dryRun，抖音要单独确认后才真发
@@ -84,7 +85,7 @@ export function run(argv = []) {
     if (!videos.length) { console.log('没扫到投稿（登录态/主页结构变了？）'); return }
     console.log(`自己的投稿 ${videos.length} 个：${videos.map((v) => v.desc.slice(0, 12)).join(' / ')}`)
     // ② 各视频的新评论（水位：已见 cid）
-    const WM = path.join(os.homedir(), '.feiyu-ai', 'douyin-engage.json')
+    const WM = dataPath('douyin-engage.json')
     let wm = { seen: [] }
     try { wm = JSON.parse(fs.readFileSync(WM, 'utf8')) } catch {}
     const news = []

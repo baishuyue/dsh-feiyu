@@ -23,7 +23,7 @@ function has(argv, name) { return argv.includes(name) }
 
 function pyPath(cfg) { return cfg.douyin?.python || 'D:/social-auto-upload/.venv/Scripts/python.exe' }
 function scriptPath(cfg) { return cfg.douyin?.script || 'D:/social-auto-upload/douyin_interact.py' }
-function cookiePath(cfg) { return cfg.douyin?.cookie || path.join(os.homedir(), '.feiyu-ai', 'douyin-cookies.json') }
+function cookiePath(cfg) { return cfg.douyin?.cookie || dataPath('douyin-cookies.json') }
 
 function runPy(argv, cfg) {
   try {
@@ -76,10 +76,10 @@ async function ensureCdp(cfg) {
 }
 
 function douyinDry(cfg) { return cfg.douyin?.dryRun !== false }
-const SHARE_FILE = () => path.join(os.homedir(), '.feiyu-ai', 'douyin-share.json')
+const SHARE_FILE = () => dataPath('douyin-share.json')
 function shareDay() { return new Date().toLocaleDateString('sv-SE') }
 // 评论每日上限（自由刷不限量跑通宵，评论不设顶会被风控盯上 —— 宁可少发；0 = 不限）
-const COMMENT_FILE = () => path.join(os.homedir(), '.feiyu-ai', 'douyin-comment.json')
+const COMMENT_FILE = () => dataPath('douyin-comment.json')
 function commentQuotaOk(cfg) {
   const max = Number(cfg.douyin?.commentDaily ?? 8)
   if (max <= 0) return true   // 0 = 不限，随便玩
@@ -174,7 +174,7 @@ export async function run(argv = []) {
     try {
       const { visionOn, describeFrames } = await import('../lib/vision.mjs')
       if (visionOn()) {
-        const framesDir = path.join(os.homedir(), '.feiyu-ai', 'frames', String(v.vid).replace(/[^\w-]/g, '').slice(0, 40))
+        const framesDir = path.join(dataPath('frames'), String(v.vid).replace(/[^\w-]/g, '').slice(0, 40))
         const out = jsonOf(runPy(['frames', '--vid', v.vid, '--out', framesDir, '--n', '3'], cfg))
         const frames = (out.frames || []).filter((f) => fs.existsSync(f))
         const desc = frames.length ? await describeFrames(frames) : null

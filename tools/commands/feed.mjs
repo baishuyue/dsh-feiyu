@@ -5,6 +5,8 @@
 import { apiGet, makeHeaders } from '../lib/bili-api.mjs'
 import { loadCred } from '../lib/cred.mjs'
 import { config } from '../lib/config.mjs'
+import { dataPath } from '../lib/paths.mjs'
+import fs from 'node:fs'
 import * as memory from '../lib/memory.mjs'
 
 // 偏好词是"话题名"（美食 / 猫咪 / AI 与 Agent 工具），标题和简介里几乎不会原样出现。
@@ -128,8 +130,24 @@ export async function run(argv = []) {
     const density = Number(it.play) > 0 ? it.danmaku / it.play : 0   // 弹幕密度：互动质量信号
     out.push({ ...it, hit, density: Number(density.toFixed(4)), why: why.join('、') || '无偏好命中（靠密度入选）' })
   }
-  out.sort((a, b) => b.hit - a.hit || b.density - a.density)
-  const picked = out.slice(0, n)
+  // 已发过的不再端上来（quota.json 里 sameVideoDays 天内的 BV）——以前 feed 只按偏好排序，
+  // 每天把 4/5 的已发视频重新推一遍，白挑一遍到 comment 才被"已发过"拦下（10-25 实测）
+  let usable = out
+  try {
+    const days = Number(config().quota?.sameVideoDays ?? 7)
+    if (days > 0) {
+      const cutoff = Date.now() - days * 86400_000
+      const q = JSON.parse(fs.readFileSync(dataPath('quota.json'), 'utf8'))
+      const used = new Set((q.log || []).filter((x) => x.target && new Date(x.at).getTime() >= cutoff).map((x) => x.target))
+      if (used.size) {
+        const kept = out.filter((v) => !used.has(v.bvid))
+        if (kept.length !== out.length) console.log(`（已剔除 ${out.length - kept.length} 条 ${days} 天内发过的，剩 ${kept.length} 条）`)
+        usable = kept
+      }
+    }
+  } catch {}
+  usable.sort((a, b) => b.hit - a.hit || b.density - a.density)
+  const picked = usable.slice(0, n)
 
   if (json) { console.log(JSON.stringify({ ok: true, n: picked.length, items: picked }, null, 2)); return }
 

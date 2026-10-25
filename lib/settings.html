@@ -205,11 +205,11 @@ function fillForm() {
   const w = (n.windows && n.windows[0]) || { start: '20:00', end: '24:00', wakes: 1 };
   $('night_start').value = w.start || '20:00';
   $('night_end').value = w.end || '24:00';
-  $('night_wakes').value = w.wakes || 1;
-  $('share_daily').value = (c.quota && c.quota.shareDaily) || 3;
-  $('douyin_count').value = (c.douyin && c.douyin.maxPerRun) || 2;
+  $('night_wakes').value = (w.wakes != null ? w.wakes : 1);
+  $('share_daily').value = (c.quota && c.quota.shareDaily != null) ? c.quota.shareDaily : 3;
+  $('douyin_count').value = (c.douyin && c.douyin.maxPerRun != null) ? c.douyin.maxPerRun : 2;
 
-  $('voice_chance').value = (c.qq && c.qq.voice_chance) || 0.5;
+  $('voice_chance').value = (c.qq && c.qq.voice_chance != null) ? c.qq.voice_chance : 0.15;
   const sel = $('voice_sel');
   sel.innerHTML = '';
   if (!state.voices.length) {
@@ -246,8 +246,8 @@ function bind() {
   $('night_start').addEventListener('change', saveNight);
   $('night_end').addEventListener('change', saveNight);
   $('night_wakes').addEventListener('change', saveNight);
-  $('share_daily').addEventListener('change', () => saveSection({ quota: Object.assign({}, state.config.quota, { shareDaily: Number($('share_daily').value) || 3 }) }));
-  $('douyin_count').addEventListener('change', () => saveSection({ douyin: Object.assign({}, state.config.douyin, { maxPerRun: Number($('douyin_count').value) || 2 }) }));
+  $('share_daily').addEventListener('change', () => saveSection({ quota: Object.assign({}, state.config.quota, { shareDaily: ($('share_daily').value.trim() === '' ? 3 : Math.max(0, Number($('share_daily').value) || 0)) }) }));
+  $('douyin_count').addEventListener('change', () => saveSection({ douyin: Object.assign({}, state.config.douyin, { maxPerRun: ($('douyin_count').value.trim() === '' ? 2 : Math.max(0, Number($('douyin_count').value) || 0)) }) }));
 
   $('voice_chance').addEventListener('change', () => {
     const qq = Object.assign({}, state.config.qq, { voice_chance: Number($('voice_chance').value) });
@@ -267,7 +267,7 @@ function bind() {
     if (!v) return toast('先选一个音色', true);
     toast('合成中…');
     try {
-      await api('/voice-test', { method: 'POST', body: JSON.stringify({ name: v.name }) });
+      await api('/voice-test', { method: 'POST', body: JSON.stringify({ ref_audio_path: v.ref_audio_path, prompt_text: v.prompt_text }) });
       toast('已合成并发送到 QQ（看手机）');
     } catch (e) { toast('试听失败：' + e.message, true); }
   });
@@ -286,9 +286,12 @@ function saveNight() {
   const w = {
     start: $('night_start').value.trim() || '20:00',
     end: $('night_end').value.trim() || '24:00',
-    wakes: Number($('night_wakes').value) || 1,
+    wakes: Math.max(1, Math.min(12, Number($('night_wakes').value) || 1)),
   };
-  const night = Object.assign({}, state.config.night, { windows: [w] });
+  // 只改第一个窗口，别把多窗口配置换成单元素
+  const wins = ((state.config.night && Array.isArray(state.config.night.windows)) ? state.config.night.windows : []).slice();
+  wins[0] = Object.assign({}, wins[0] || {}, w);
+  const night = Object.assign({}, state.config.night, { windows: wins });
   saveSection({ night }, '作息已保存（' + w.start + '→' + w.end + '，' + w.wakes + ' 次）');
 }
 

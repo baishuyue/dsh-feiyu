@@ -6,12 +6,15 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
 import { config } from '../lib/config.mjs'
-import { dataPath } from '../lib/paths.mjs'
+import { dataPath, configPath } from '../lib/paths.mjs'
 
 const BACKUP_ROOT = () => dataPath('selfup-backups')
 const LOG = () => dataPath('selfup-log.md')
-const HERE = path.dirname(new URL(import.meta.url).pathname).replace(/^\/([A-Za-z]:)/, '$1')
+// ⚠️ 别再用 new URL(import.meta.url).pathname：路径里有中文/空格/括号（如「新建文件夹 (6)」）时
+// 会变成 %E6%96%B0… 且丢掉盘符，path.resolve 后指向不存在的目录 → 备份直接 ENOENT（10-25 实测）。
+const HERE = path.dirname(fileURLToPath(import.meta.url))
 
 function doBackup() {
   const ts = new Date().toISOString().replace(/[:T]/g, '-').slice(0, 19)
@@ -30,7 +33,7 @@ function doBackup() {
   }
   copyDir(src, path.join(dest, 'dsh-feiyu'))
   // 配置 + 人设也快照
-  try { fs.copyFileSync(path.join(process.env.USERPROFILE || '', '.dsh', 'feiyu.config.json'), path.join(dest, 'feiyu.config.json')) } catch {}
+  try { fs.copyFileSync(configPath(), path.join(dest, 'feiyu.config.json')) } catch {}
   try { fs.copyFileSync(dataPath('persona.md'), path.join(dest, 'persona.md')) } catch {}
   // 只留最近 10 份
   const olds = fs.readdirSync(BACKUP_ROOT()).sort().reverse().slice(10)

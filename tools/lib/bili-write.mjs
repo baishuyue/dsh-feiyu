@@ -70,6 +70,7 @@ export async function sendDanmaku(bvid, rawText, { go = false, atSec = 0 } = {})
   const info = await videoInfo(bvid)
   const at = Math.max(0, Math.min(Math.round(atSec) || Math.floor(Math.random() * Math.max(1, info.duration - 5)), Math.max(0, info.duration - 1)))
   if (!go) return { ok: true, dry: true, why: `【干跑】弹幕 →《${info.title.slice(0, 24)}》第 ${at}s：${text}` }
+  if (guard.dryBlocked()) return { ok: false, dry: true, why: guard.DRY_WHY }
   if (!cfg.enabled) return { ok: false, why: 'bilibili.danmaku.enabled 是关的' }
   if (!capOk('danmaku', Number(cfg.dailyMax ?? 5))) return { ok: false, why: `今日弹幕额度已用完（${actCount('danmaku')}/${cfg.dailyMax ?? 5}）` }
   const cred = loadCred()
@@ -108,6 +109,7 @@ export async function postDynamic(rawText, { go = false } = {}) {
   const text = String(rawText || '').trim().slice(0, 1000)
   if (!text) return { ok: false, why: '动态内容为空' }
   if (!go) return { ok: true, dry: true, why: `【干跑】动态 → ${text.slice(0, 80)}` }
+  if (guard.dryBlocked()) return { ok: false, dry: true, why: guard.DRY_WHY }
   if (!cfg.enabled) return { ok: false, why: 'bilibili.dynamic.enabled 是关的' }
   if (!capOk('dyn', Number(cfg.dailyMax ?? 2))) return { ok: false, why: `今日动态额度已用完（${actCount('dyn')}/${cfg.dailyMax ?? 2}）` }
   const cred = loadCred()
@@ -146,6 +148,7 @@ export async function likeVideo(bvid, { go = false } = {}) {
   const cfg = config().bilibili?.react ?? {}
   const info = await videoInfo(bvid)
   if (!go) return { ok: true, dry: true, why: `【干跑】点赞 →《${info.title.slice(0, 24)}》` }
+  if (guard.dryBlocked()) return { ok: false, dry: true, why: guard.DRY_WHY }
   if (cfg.like === false) return { ok: false, why: 'bilibili.react.like 是关的' }
   if (!capOk('like', Number(cfg.likeDaily ?? 10))) return { ok: false, why: '今日点赞额度已用完' }
   const cred = loadCred()
@@ -162,6 +165,7 @@ export async function coinVideo(bvid, { go = false, num = 1 } = {}) {
   const cfg = config().bilibili?.react ?? {}
   const info = await videoInfo(bvid)
   if (!go) return { ok: true, dry: true, why: `【干跑】投币 x${num} →《${info.title.slice(0, 24)}》` }
+  if (guard.dryBlocked()) return { ok: false, dry: true, why: guard.DRY_WHY }
   if (cfg.coin !== true) return { ok: false, why: 'bilibili.react.coin 是关的（投币要显式开）' }
   if (!capOk('coin', Number(cfg.coinDaily ?? 1))) return { ok: false, why: '今日投币额度已用完' }
   const cred = loadCred()
@@ -201,6 +205,7 @@ export async function commentWithPicture(bvid, rawMessage, imagePath, { go = fal
   if (!message) return { ok: false, why: '评论文本为空' }
   const info = await videoInfo(bvid)
   if (!go) return { ok: true, dry: true, why: `【干跑】图片评论 →《${info.title.slice(0, 20)}》：${message} [图:${path.basename(imagePath)}]` }
+  if (guard.dryBlocked()) return { ok: false, dry: true, why: guard.DRY_WHY }
   if (!cfg.enabled) return { ok: false, why: 'bilibili.imageComment.enabled 是关的' }
   if (!capOk('imgComment', Number(cfg.dailyMax ?? 2))) return { ok: false, why: '今日图片评论额度已用完' }
   const verdict = guard.allow(`bilibili:${bvid}`, message, config())
@@ -221,6 +226,7 @@ export async function commentWithPicture(bvid, rawMessage, imagePath, { go = fal
 export async function followUser(mid, { go = false } = {}) {
   const cfg = config().bilibili?.follow ?? {}
   if (!go) return { ok: true, dry: true, why: `【干跑】关注 → mid ${mid}` }
+  if (guard.dryBlocked()) return { ok: false, dry: true, why: guard.DRY_WHY }
   if (cfg.enabled !== true) return { ok: false, why: 'bilibili.follow.enabled 是关的' }
   const cred = loadCred()
   const j = await formPost(cred, 'https://api.bilibili.com/x/relation/modify', { fid: String(mid), act: '1', re_src: '11' })

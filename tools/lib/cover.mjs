@@ -53,8 +53,13 @@ async function fetchSource(src, dir) {
   const rvcPy = config().rvc?.python || 'D:/rvc/venv/Scripts/python.exe'
   const args = ['-m', 'yt_dlp', '-x', '--audio-format', 'wav', '--audio-quality', '0', '--no-playlist',
     '--proxy', PROXY(), '-o', path.join(dir, 'source.%(ext)s'), src]
-  // YouTube 2026 起抽取要 JS 运行时解 NSIG（默认只认 deno）——机器上有 DSH 的 node，指给它用
-  const nodeExe = 'C:/Users/30828/.dsh/dsh-runtimes/dsh-primary-runtime/dependencies/node/bin/node.exe'
+  // YouTube 2026 起抽取要 JS 运行时解 NSIG（默认只认 deno）—— 用 runtime.mjs 探测到的真 node。
+  // ⚠️ 以前写死 C:/Users/30828/…，换机/换用户名即失效；探测失败就不传，让 yt-dlp 用默认。
+  let nodeExe = ''
+  try {
+    const { resolveRuntime } = await import('./runtime.mjs')
+    nodeExe = resolveRuntime(process.env.DSH_HOME || path.join(process.env.USERPROFILE || process.env.HOME || '', '.dsh')).file
+  } catch { nodeExe = '' }
   if (fs.existsSync(nodeExe)) args.push('--js-runtimes', `node:${nodeExe}`)
   // -x 抽音轨的后期处理要 ffmpeg/ffprobe（D:/rvc/bin 里有全套）
   const ffDir = config().rvc?.binPath || 'D:/rvc/bin'

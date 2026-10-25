@@ -27,7 +27,7 @@ function arg(argv, name, d) { const i = argv.indexOf(name); return i >= 0 ? (arg
 
 function runPy(args, cfg) {
   const cmd = [cfg.douyin?.script || 'D:/social-auto-upload/douyin_interact.py', ...args,
-    '--cookie', cfg.douyin?.cookie || path.join(os.homedir(), '.feiyu-ai', 'douyin-cookies.json')]
+    '--cookie', cfg.douyin?.cookie || dataPath('douyin-cookies.json')]
   return execFileSync(cfg.douyin?.python || 'D:/social-auto-upload/.venv/Scripts/python.exe', cmd,
     { encoding: 'utf8', timeout: 180000, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
 }
@@ -97,10 +97,16 @@ export async function run(argv = []) {
   })
   // 默认 8095：8090 常被 Wondershare 推送组件（WsToastNotification.exe）占着，绑不上
   const port = Number(arg(argv, '--port', cfg.douyin?.dm?.port || 8095))
+  // 端口被占（已有一个实例在跑）→ 安静退出，别在日志里留一堆无解的 EADDRINUSE
+  server.on('error', (e) => {
+    if (e && e.code === 'EADDRINUSE') { log(`[douyin-dm] 端口 ${port} 已被占用（大概率已有一个实例在跑），本实例退出`); process.exit(0) }
+    log('[douyin-dm] 服务错误：' + (e?.message ?? e))
+  })
   server.listen(port, '127.0.0.1', () => log(`[douyin-dm] 监听 http://127.0.0.1:${port}/health · 每 ${pollSec}s 轮询主人私信 · dry=${dry} · silent=${silent}`))
 
   async function tick() {
-    let text = ''
+    // ⚠️ 变量别叫 text：下面 try 块里有 let text = pick.text，会把它遮蔽 → catch 拼错误串永远是空
+    let inboundText = ''
     try {
       const readArgs = ['dm-read', '--sec-uid', secUid, '--name', ownerName, '--n', '20']
       if (silent) readArgs.push('--headless')
@@ -139,6 +145,7 @@ export async function run(argv = []) {
           } else text = '【发来一张图片】'
         } catch { text = '【发来一张图片】' }
       }
+      inboundText = text
       const key = norm(text || pick.img)
       if (!key || handled.includes(key)) { failStreak = 0; return }
 
@@ -150,11 +157,18 @@ export async function run(argv = []) {
 
       // 复用 QQ 那套：人格 + 记忆 + 清洗（douyin-dm 平台提示 = 私聊语气，不是评论区语气）
       const msgsOut = persona.buildMessages({ platform: 'douyin-dm', userText: text, chatId: CHAT_ID, userId: ownerKey, turnsToday: handled.length })
-      // 主人在回复她之前分享的视频卡片时（dm-read 对卡片只有 [分享视频] 占位）——
-      // 提示她去上文找自己发的附言，那才是内容本身；别再说"看不到内容"（10-25 实锤割裂 bug）
-      if (/\[分享(视频|作品)/.test(text) || /分享/.test(text)) {
+      // 卡片占位（dm-read 只能拿到 [分享视频]/[分享视频：标题]，有时连标题都没有）：
+      // 以前她会回"你发的这个我看不到内容呀，链接没打开"（10-25 实锤，主人当场无语）。
+      // 方向反了 —— 这是主人发给她的东西，该顺着他的话接，实在不知道就问一句，别喊看不到。
+      if (/\[分享/.test(text)) {
         const last = msgsOut[msgsOut.length - 1]
-        last.content += '\n\n（提示：主人这条很可能是在回复你之前分享的视频卡片。翻上面的对话——你发过的附言（「我的评论：…」或《…》链接）就是这个视频的内容，据此自然地接话。别再说"看不到内容"。）'
+        last.content += '\n\n（提示：主人这条是**分享给你的内容**，你只拿到占位符'
+          + (text.includes('[分享视频：') ? '和一个标题' : '、没有标题') + '。'
+          + '按他说的那句感想（比如"这个看起来好好吃"）自然接一句就行；真想知道细节就直接问"分享的哪个呀，标题给我看看"，'
+          + '**绝对不要**说"看不到内容""链接打不开""我这边显示不出来"这类话。）'
+      } else if (/分享/.test(text)) {
+        const last = msgsOut[msgsOut.length - 1]
+        last.content += '\n\n（提示：主人提到"分享"，去上文找他刚发来的那条内容，据此接话。）'
       }
       const resp = await llm.chat(msgsOut, { temperature: 0.85 })
       const reply = guard.clean(String(resp?.content ?? resp ?? ''))
@@ -181,7 +195,7 @@ export async function run(argv = []) {
       maintainLongMemory()
     } catch (e) {
       failStreak += 1
-      log(`[douyin-dm] tick 失败（连续 ${failStreak} 次，未标记已处理、下轮重试）：${text ? `回复「${text.slice(0, 20)}」时 ` : ''}${errTail(e)}`)
+      log(`[douyin-dm] tick 失败（连续 ${failStreak} 次，未标记已处理、下轮重试）：${inboundText ? `回复「${inboundText.slice(0, 20)}」时 ` : ''}${errTail(e)}`)
     }
   }
 

@@ -1,4 +1,4 @@
-/**
+﻿/**
  * client.js 渲染测试 —— 用一个极小的 hooks 运行时 + 假 fetch，
  * 把「大肥鱼」设置页真正渲染一遍（含数据回来后的一次重渲染），
  * 目的是在没起 DSH 的情况下抓出 TypeError / 白屏这类问题。
@@ -176,7 +176,7 @@ const switches = collect(platforms[0], (n) => String(n.props.className || '').in
 assert.equal(switches.length, 4, '平台开关数量应为 4，实际 ' + switches.length)
 assert.equal(switches.filter((n) => n.props.className.includes('on')).length, 3, '默认应有 3 个平台开启')
 const allSwitches = collect(tree, (n) => String(n.props.className || '').includes('fy-switch'))
-assert.equal(allSwitches.length, 29, '全页开关应为 29 个（28 + 完全自由总开关）')
+assert.equal(allSwitches.length, 31, '全页开关应为 31 个（28 + 完全自由 + 干跑总闸 + 私信随DSH自启）')
 
 assert.ok(fetchCalls.includes('/dsh-feiyu/api/config'), '没有请求 /config')
 assert.ok(styleTags.length >= 1, '样式没注入')

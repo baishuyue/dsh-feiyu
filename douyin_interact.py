@@ -548,8 +548,11 @@ async def _read_dm_messages(page):
             if (!list) return out;
             const seen = new Set();
             for (const content of list.querySelectorAll('[data-e2e="msg-item-content"], [class*="MessageBoxContent"]')) {
+                const imgEl = content.querySelector('img');
+                const imgSrc = (imgEl && imgEl.clientWidth >= 60 && imgEl.clientHeight >= 60 && (imgEl.src || '').startsWith('http')) ? imgEl.src : '';
                 let t = (content.innerText || '').trim();
-                if (!t || t.length > 400) continue;
+                if (t.length > 400) t = t.slice(0, 400);
+                if (!t && !imgSrc) continue;   // 纯图片消息：文字为空但带 img，交给视觉模型看
                 // 剥掉日期/时间行（"09/07"、"2025/12/13"、"21分钟前"）——那是时间分隔不是消息
                 const lines = t.split('\\n').filter((l) => {
                     const s = l.trim();
@@ -563,18 +566,24 @@ async def _read_dm_messages(page):
                 if (!t) continue;
                 // 分享卡片：douyin 渲染成 "[分享视频]" 占位 —— 从卡片里把标题挖出来拼上，
                 // 不然她永远不知道对方分享的是什么（10-25 实锤：主人回"这个看起来好好吃"，她看不懂）
-                if (/^\[分享(视频|作品|图片)?\]$/.test(t)) {
-                  const card = content.querySelector('a[href*="/video/"], a[href*="/note/"], [class*="share"] [class*="title"], [class*="cardTitle"]');
-                  const extraTitle = card ? (card.innerText || '').trim().split('\n').filter(Boolean).slice(0, 2).join(' ').slice(0, 60) : '';
-                  if (extraTitle) t = '[分享视频：' + extraTitle + ']';
-                }
+                if (t.indexOf('[分享') >= 0) {
+          const cardRoot = content.closest('[class*="messageBox"]') || content.parentElement || content;
+          const card = cardRoot.querySelector('a[href*="/video/"], a[href*="/note/"], [class*="cardTitle"], [class*="shareCard"], [class*="share"] img');
+          const extraTitle = card ? (card.innerText || '').trim().split('\\n').filter(Boolean).slice(0, 2).join(' ').slice(0, 60) : '';
+          const rawHref = card ? String(card.getAttribute('href') || '') : '';
+          const href = rawHref ? (rawHref.indexOf('http') === 0 ? rawHref : 'https://www.douyin.com' + rawHref) : '';
+          const tag = '[分享视频' + (extraTitle ? '：' + extraTitle : '') + (href ? ' ' + href : '') + ']';
+          const b = t.indexOf('[分享');
+          const e2 = t.indexOf(']', b);
+          if (e2 > b) t = t.slice(0, b) + tag + t.slice(e2 + 1);
+        }
                 // 系统占位卡/游戏邀请卡没有对话价值
                 if (/暂不支持该消息类型|邀请你一起|点击加入|接受邀请/.test(t)) continue;
                 const key = t.slice(0, 50);
                 if (seen.has(key)) continue;
                 seen.add(key);
                 const box = content.closest('[class*="messageBox"]') || content.parentElement;
-                out.push({ dir: (box && box.querySelector('[class*="isFromMe"]')) ? 'out' : 'in', text: t });
+                out.push({ dir: (box && box.querySelector('[class*="isFromMe"]')) ? 'out' : 'in', text: t, img: imgSrc });
             }
             return out;
         }""")

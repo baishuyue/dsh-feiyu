@@ -5,7 +5,7 @@
 import fs from 'node:fs'
 import { config } from './config.mjs'
 import { homePath } from './paths.mjs'
-import { stateBlock } from './mood.mjs'
+import * as mood from './mood.mjs'
 import * as memory from './memory.mjs'
 import { stickerPrompt } from './stickers.mjs'
 import * as qqMemory from './qq-memory.mjs'
@@ -107,7 +107,7 @@ export function buildMessages({ platform = 'qq', userText, chatId, userId, turns
   if (old.length) parts.push('你隐约记得这些（可以自然提起，别逐字复述）：\n- ' + old.join('\n- '))
 
   // 状态层（平台提示 + 情绪 + 时段）
-  parts.push(stateBlock(turnsToday, platform) + (PLATFORM_HINTS[platform] ? '\n' + PLATFORM_HINTS[platform] : ''))
+  parts.push(mood.stateBlock(turnsToday, platform) + (PLATFORM_HINTS[platform] ? '\n' + PLATFORM_HINTS[platform] : ''))
 
   // 表情层：颜文字随处可用；[表情:标签] 只有 QQ/微信 会真的发图
   parts.push(stickerPrompt(platform))
@@ -122,8 +122,8 @@ export function buildMessages({ platform = 'qq', userText, chatId, userId, turns
   return [sys, ...recent, { role: 'user', content: userText }]
 }
 
-/** 走神注入：10% 概率（dafeiyu：别超过 10%，多了就是噪音）。 */
+/** 走神注入：10% 概率（dafeiyu：别超过 10%，多了就是噪音）。
+ *  实现只留一份：mood.distract（那边"再干活"是给她自己干活用的，这里换成聊天口吻）。 */
 export function thinkingInstruction(random = Math.random) {
-  if (random() >= 0.10) return ''
-  return '\n（这次先在心里嘀咕一句跟吃有关的，再回答，不要解释为什么。）'
+  return mood.distract(random).replace('再干活', '再回答')
 }
