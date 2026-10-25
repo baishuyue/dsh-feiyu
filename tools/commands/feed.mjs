@@ -7,6 +7,57 @@ import { loadCred } from '../lib/cred.mjs'
 import { config } from '../lib/config.mjs'
 import * as memory from '../lib/memory.mjs'
 
+// 偏好词是"话题名"（美食 / 猫咪 / AI 与 Agent 工具），标题和简介里几乎不会原样出现。
+// 只做整串 includes = 永远漏（10-23、10-24 连续两天把"康师傅桶面""现钓渔获做餐"判成无命中）。
+// 这里把每条偏好拆成：话题名 + 内置同义词 + 主人可在 preferences.synonyms 里追加的词。
+const DEFAULT_SYNONYMS = {
+  '美食': ['吃', '饭', '好吃', '馋', '菜', '汤', '肉', '烤', '炖', '煮', '炒', '蒸', '锅', '卤', '酱', '馅',
+    '泡面', '拉面', '面条', '面粉', '面馆', '米饭', '白饭', '炒饭', '盖饭', '餐', '小吃', '探店', '饭店', '饭馆',
+    '做饭', '食谱', '厨房', '厨艺', '料理', '火锅', '烧烤', '肉串', '烤串', '饺子', '包子', '牛肉', '猪肉', '鸡腿',
+    '炸鸡', '海鲜', '螃蟹', '蟹黄', '甜品', '奶茶', '零食', '夜宵', '宵夜', '下饭', '口味', '试吃', '大胃王', '烟火气'],
+  '猫咪': ['猫', '喵', '小猫', '猫猫', '橘猫', '吸猫', '毛茸茸', 'kitty', 'cat', 'mew'],
+  '鬼畜与怀旧': ['鬼畜', '怀旧', '老歌', '童年', '回忆', '经典', '音MAD', '老番', '小时候', '九十年代', '红白机', '港片', '重制'],
+  'AI 与 Agent 工具': ['AI', '人工智能', '大模型', '智能体', 'agent', 'gpt', 'claude', 'llm', '提示词', 'prompt',
+    '算法', '编程', '代码', '开源', '模型', 'MCP', 'cursor', '自动化'],
+}
+
+/** 词命中判断：纯 ASCII 词按词边界匹配（避免 ai 命中 said / wait），中文按子串。 */
+function matches(hay, term) {
+  if (!term) return false
+  if (/^[\x00-\x7f]+$/.test(term)) {
+    const esc = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    return new RegExp(`(?<![a-z0-9])${esc}(?![a-z0-9])`).test(hay)
+  }
+  return hay.includes(term)
+}
+
+/** 一条偏好是否命中；命中返回 { term, weight }（方便在 feed 输出里看清是哪个词中的）。
+ *  多字词算强命中（2 分）；单字词（吃/猫/汤…）太容易撞车，只在标题+简介里算 1 分。 */
+function matchPreference(hay, hayCore, pref, synonyms = {}) {
+  const key = pref.trim()
+  const extra = synonyms[key] ?? DEFAULT_SYNONYMS[key] ?? []
+  const terms = [...new Set([key, ...extra].map(s => String(s).toLowerCase()).filter(Boolean))]
+  for (const t of terms) {
+    if (t.length >= 2 && matches(hay, t)) return { term: t, weight: 2 }
+  }
+  for (const t of terms) {
+    if (t.length === 1 && matches(hayCore, t)) return { term: t, weight: 1 }
+  }
+  return null
+}
+
+/** 时长统一成分分钟：热门接口给秒数，搜索接口给 "mm:ss" 字符串。 */
+function fmtMinutes(d) {
+  if (typeof d === 'number' && Number.isFinite(d)) return Math.round(d / 60)
+  const s = String(d ?? '').trim()
+  if (!s) return 0
+  if (/^\d+$/.test(s)) return Math.round(Number(s) / 60)
+  const p = s.split(':').map(Number)
+  if (p.length === 2 && p.every(Number.isFinite)) return Math.round(p[0] + p[1] / 60)
+  if (p.length === 3 && p.every(Number.isFinite)) return Math.round(p[0] * 60 + p[1] + p[2] / 60)
+  return 0
+}
+
 export async function run(argv = []) {
   const cfg = config()
   const json = argv.includes('--json')
@@ -59,15 +110,18 @@ export async function run(argv = []) {
   //    静态 preferences 是主人给的起点，口味由她自己长（进化闭环）。
   const like = cfg.preferences?.like ?? []
   const dislike = cfg.preferences?.dislike ?? []
+  const synonyms = cfg.preferences?.synonyms ?? {}   // 主人可以在这里按话题追加自己的词
   const grams = memory.interestGrams()
   const out = []
   for (const it of candidates.values()) {
     const hay = (it.title + ' ' + it.owner + ' ' + (it.desc ?? '')).toLowerCase()
-    if (dislike.some(w => hay.includes(String(w).toLowerCase()))) continue
+    const hayCore = (it.title + ' ' + (it.desc ?? '')).toLowerCase()
+    if (dislike.some(w => matches(hay, String(w).toLowerCase()))) continue
     let hit = 0
     const why = []
     for (const w of like) {
-      if (hay.includes(String(w).toLowerCase())) { hit += 2; why.push(w) }
+      const m = matchPreference(hay, hayCore, String(w), synonyms)
+      if (m) { hit += m.weight; why.push(m.term === w ? w : `${w}（${m.term}）`) }
     }
     const iHit = grams.size ? memory.interestScore(hay, grams) : 0
     if (iHit >= 3) { hit += Math.min(iHit, 6); why.push(`她养成的兴趣(${iHit})`) }
@@ -83,7 +137,7 @@ export async function run(argv = []) {
   console.log(`筛出 ${picked.length} 条（偏好命中在前，同分按弹幕密度）：\n`)
   for (const [i, v] of picked.entries()) {
     console.log(`${i + 1}. ${v.title}`)
-    console.log(`   UP：${v.owner} · 播放 ${v.play} · 弹幕 ${v.danmaku} · ${Math.round(v.duration / 60)} 分钟 · 来源 ${v.source}`)
+    console.log(`   UP：${v.owner} · 播放 ${v.play} · 弹幕 ${v.danmaku} · ${fmtMinutes(v.duration)} 分钟 · 来源 ${v.source}`)
     console.log(`   偏好：${v.why}`)
     console.log(`   BV：${v.bvid}\n`)
   }

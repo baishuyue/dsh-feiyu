@@ -39,7 +39,9 @@ export async function run(argv = []) {
   let self = null
   if (cred?.sessdata) {
     try {
-      const res = await apiGet('https://api.bilibili.com/x/web-interface/nav', makeHeaders(cred))
+      // ⚠️ 登录态一律不吃缓存：10-25 实锤 —— 缓存让人以为还登着主人的号，
+      //    实际凭据早已换成养号（改了凭据但 nav 命中旧缓存 → 体检谎报身份 → 判断全歪）。
+      const res = await apiGet('https://api.bilibili.com/x/web-interface/nav', makeHeaders(cred), { noCache: true })
       if (Number(res?.code) === 0 && res.data?.isLogin) {
         self = { mid: String(res.data.mid), name: String(res.data.uname) }
         add('B站 登录态', true, `已登录：${self.name}（mid ${self.mid}）`)
