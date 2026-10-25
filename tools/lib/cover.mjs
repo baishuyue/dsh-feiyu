@@ -79,15 +79,15 @@ async function fetchSource(src, dir) {
 function songDir(key) { return path.join(SONGS_DIR(), key) }
 function keyOf(source) { return crypto.createHash('md5').update(String(source)).digest('hex').slice(0, 12) }
 
-/** 歌单列表（有 cover.wav 的才算学会了）。 */
+/** 歌单列表（有成品 cover-<音色>.wav 的才算学会了）。 */
 export function listSongs() {
   const out = []
   try {
     for (const key of fs.readdirSync(SONGS_DIR())) {
       try {
         const meta = JSON.parse(fs.readFileSync(path.join(SONGS_DIR(), key, 'meta.json'), 'utf8'))
-        const cover = path.join(SONGS_DIR(), key, 'cover.wav')
-        out.push({ key, title: meta.title || key, hasCover: fs.existsSync(cover), source: meta.source || '', at: meta.createdAt || 0 })
+        const voices = fs.readdirSync(path.join(SONGS_DIR(), key)).filter((f) => /^cover-.*\.wav$/.test(f)).map((f) => f.replace(/^cover-/, '').replace(/\.wav$/, ''))
+        out.push({ key, title: meta.title || key, hasCover: voices.length > 0, voices, source: meta.source || '', at: meta.createdAt || 0 })
       } catch {}
     }
   } catch {}
@@ -112,13 +112,15 @@ export async function coverSong({ source, title = '', pitch = 0, log = () => {} 
   const key = keyOf(source)
   const dir = songDir(key)
   fs.mkdirSync(dir, { recursive: true })
-  const cover = path.join(dir, 'cover.wav')
+  // 成品按音色分缓存：换音色后同一首歌要重唱，不能命中旧音色的歌声
+  let voice = ''
+  try { voice = (await import('./rvc.mjs')).currentVoice() } catch {}
+  const cover = path.join(dir, `cover-${voice || 'none'}.wav`)
   const metaFile = path.join(dir, 'meta.json')
-  if (fs.existsSync(cover)) {
+  if (voice && fs.existsSync(cover)) {
     return { file: cover, title: title || JSON.parse(fs.readFileSync(metaFile, 'utf8')).title || key, cache: 'hit' }
   }
   if (!rvc.rvcReady()) throw new Error('RVC 环境不齐（voice models 看看）')
-  const voice = rvc.currentVoice()
   if (!voice) throw new Error('她还没有自己的音色模型（先 voice train）')
   if (!fs.existsSync(metaFile)) fs.writeFileSync(metaFile, JSON.stringify({ title: title || source, source, createdAt: Date.now() }))
 

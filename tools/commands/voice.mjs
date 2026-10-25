@@ -71,15 +71,23 @@ export async function run(argv = []) {
       console.error('✗ RVC 环境不齐：D:/rvc/venv 要有 torch+依赖，D:/rvc/RVC/assets 要有 48k 底模（见 rvc.mjs 头注释）')
       process.exit(1)
     }
-    console.log(`🎤 数据集生成（LLM 写稿 → 她的音色逐句合成，约 60 句 / 10 分钟语音）…`)
+    console.log(`🎤 数据集准备…`)
     const cfg = config()
-    const ds = await rvc.genDataset({
-      name,
-      refAudio: arg(argv, '--ref') || cfg.voice?.ref_audio_path || '',
-      promptText: arg(argv, '--prompt') || cfg.voice?.prompt_text || '',
-      log: (l) => console.log(l),
-    })
-    console.log(`✓ 数据集就绪：${ds.count} 句 / 约 ${ds.approxMinutes} 分钟 —— ${ds.dir}`)
+    const dsDir = arg(argv, '--dataset')
+    let ds
+    if (dsDir) {
+      // 现成数据集直训（真歌声干声目录——音色进化/明星音色的正路，不走 TTS 合成）
+      ds = { dir: dsDir, count: fs.readdirSync(dsDir).filter((f) => f.endsWith('.wav')).length, approxMinutes: 0 }
+      console.log(`使用现成数据集：${ds.dir}（${ds.count} 个 wav）`)
+    } else {
+      ds = await rvc.genDataset({
+        name,
+        refAudio: arg(argv, '--ref') || cfg.voice?.ref_audio_path || '',
+        promptText: arg(argv, '--prompt') || cfg.voice?.prompt_text || '',
+        log: (l) => console.log(l),
+      })
+    }
+    console.log(`✓ 数据集就绪：${ds.count} 句 / 约 ${ds.approxMinutes || '?'} 分钟 —— ${ds.dir}`)
     console.log(`🏋️ 开始训练 ${epochs} 轮（全程日志 ~/.feiyu-ai/rvc/train-${name}.log，挂后台别关机）…`)
     const t0 = Date.now()
     const out = await rvc.trainVoice({ name, datasetDir: ds.dir, epochs, log: (l) => console.log('  ' + String(l).slice(0, 110)) })
