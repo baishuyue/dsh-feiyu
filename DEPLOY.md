@@ -235,10 +235,10 @@ npm test                                      # 8 套测试全过
 
 | 配置键 | 当前值 | 作用 | 换掉会怎样 |
 |---|---|---|---|
-| `llm.model` | `deepseek-chat` | 所有实时对话 | 换模型要么更快要么更贵 |
-| `llm.base_url` | `https://api.deepseek.com/v1` | OpenAI 兼容端点 | 可换任何兼容服务（含本地 vLLM） |
-| `vision.model` | `Qwen/Qwen3-VL-8B-Instruct` | 看图（表情包形象校验、图片消息理解） | 换更强的 VL 更准 |
-| `imageGen.model` | `Qwen/Qwen-Image-Edit-2509` | 锁形象生图 | 换成纯文生图会丢形象一致性 |
+| `llm.model` | `deepseek-v4.1-flash-1017` | 所有实时对话 | 关掉 `params.enable_thinking` 会慢 3~14 倍 |
+| `llm.base_url` | `https://maas.qianwenaiapi.com/compatible-mode/v1` | OpenAI 兼容端点 | 可换任何兼容服务（含本地 vLLM）；主挂自动落 `llm.fallback` |
+| `vision.model` | `qwen3-vl-plus` | 看图（表情包形象校验、图片消息理解） | 换更强的 VL 更准；主挂自动落 `vision.fallback` |
+| `imageGen.model` | `Qwen/Qwen-Image-Edit-2509`（另有三段兜底：`imageGen.qwen.model` → Pollinations） | 锁形象生图 | 换成纯文生图会丢形象一致性 |
 | `imageGen.refImage` | `~/.feiyu-ai/sticker-ref.jpg` | 根本形象 | 换图 = 换她的长相 |
 | `voice.sovits_url` | `http://127.0.0.1:9880/tts` | 说话 | — |
 | `voice.ref_audio_path` | `D:/GPT-SoVITS/models/yinlang/yinlang.wav` | 零样本参考音 | 换音色 |

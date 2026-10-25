@@ -217,9 +217,9 @@ dsh plugin --profile desktop add "link:C:\Users\<你>\.dsh\plugins\dsh-feiyu"
 | DSH 桌面端 | `0.2.1-rc.2`（`@deepseek-ai/dsh-desktop-runtime`） | 宿主：会话 / 面板 / 模型 |
 | Node.js | `v24.21.0` | 工具链（DSH 运行时自带同版本） |
 | Python | `3.12.0` ×3（social-auto-upload / rvc / wechat-bot 各一个 venv） | 各平台脚本 |
-| **对话模型** | DeepSeek **`deepseek-chat`**（`api.deepseek.com/v1`） | QQ / 抖音私信 / 微信实时回复 |
-| **视觉模型** | 硅基流动 **`Qwen/Qwen3-VL-8B-Instruct`** | 看图、校验表情包形象 |
-| **生图模型** | 硅基流动 **`Qwen/Qwen-Image-Edit-2509`** | 锁形象生图（表情包/视频配图） |
+| **对话模型** | 千问AI平台 **`deepseek-v4.1-flash-1017`**（`maas.qianwenaiapi.com/compatible-mode/v1`，`enable_thinking:false` 关思考链） | QQ / 抖音私信 / 微信实时回复（备：官方 `deepseek-chat`） |
+| **视觉模型** | 千问AI平台 **`qwen3-vl-plus`** | 看图、校验表情包形象（备：硅基 `Qwen/Qwen3-VL-8B-Instruct`） |
+| **生图模型** | 硅基流动 **`Qwen/Qwen-Image-Edit-2509`** → 备用 **千问 `qwen-image-2.1-pro`**（带参考图 ≈16s） | 锁形象生图（表情包/视频配图） |
 | 生图兜底 | **Pollinations `flux`** | 免费、不保证形象（只做临时图） |
 | **语音克隆** | **GPT-SoVITS** `b4570b8`（2026-10-19）→ `api_v2.py:9880/tts` | 说话 / 语音条 / 视频旁白 |
 | **歌声转换** | **RVC**（Retrieval-based-Voice-Conversion-WebUI）`torch 2.7.1+cu128` | 翻唱（把真歌人声换成她的音色） |
@@ -308,7 +308,9 @@ produce ["主题"]
 {
   "identity": { "name": "友利奈绪的大肥鱼", "ownerTitle": "主人", "selfClaim": "我" },
   "owner": { "mid": "数字mid", "name": "B站昵称", "qq": "QQ号", "wechat": "wxid" },
-  "llm": { "api_key": "DeepSeek key", "base_url": "https://api.deepseek.com/v1", "model": "deepseek-chat" },
+  "llm": { "api_key": "千问AI平台 key", "base_url": "https://maas.qianwenaiapi.com/compatible-mode/v1",
+            "model": "deepseek-v4.1-flash-1017", "params": { "enable_thinking": false },
+            "fallback": { "api_key": "DeepSeek key", "base_url": "https://api.deepseek.com/v1", "model": "deepseek-chat" } },
   "imageGen": { "enabled": true, "provider": "siliconflow", "model": "Qwen/Qwen-Image-Edit-2509",
                 "refImage": "~/.feiyu-ai/sticker-ref.jpg" },   // 根本形象：所有表情包都锁它
   "night":   { "windows": [{ "start": "17:00", "end": "24:00", "wakes": 3 }], "skipChance": 0.3, "maxVideos": 5 },
