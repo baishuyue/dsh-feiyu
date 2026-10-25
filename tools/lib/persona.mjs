@@ -88,12 +88,16 @@ export function buildMessages({ platform = 'qq', userText, chatId, userId, turns
   // 记忆层
   const facts = memory.facts(userId)
   if (facts.length) parts.push('你记得关于对方的事：\n- ' + facts.slice(-8).join('\n- '))
-  // QQ 的长期记忆：主人画像 + 这个会话的滚动摘要（微信/B站不带，各自独立）
-  if (platform === 'qq') {
-    const profile = qqMemory.loadProfile()
-    if (profile) parts.push('【关于主人你知道的】（长期观察，别一次全倒出来）\n' + profile)
-    const sum = qqMemory.loadSummary(chatId)
-    if (sum) parts.push('【你们最近】\n' + sum)
+  // 长期记忆（主人画像 + 会话滚动摘要）：QQ 私聊和抖音私信陪聊共用（都是跟主人本人聊）。
+  // ⚠️ 群聊不注入 —— 画像里有主人的私事，群里说出来就是泄露（10-25 群聊放开后补的护栏）。
+  // 世界见闻（worldBlock：B站/抖音刷到的+lore+日记尾）QQ/抖音私信都注入 —— 人格连贯的关键。
+  if (platform === 'qq' || platform === 'douyin-dm') {
+    if (platform === 'douyin-dm' || !isGroup) {
+      const profile = qqMemory.loadProfile()
+      if (profile) parts.push('【关于主人你知道的】（长期观察，别一次全倒出来）\n' + profile)
+      const sum = qqMemory.loadSummary(chatId)
+      if (sum) parts.push('【你们最近】\n' + sum)
+    }
     const world = qqMemory.worldBlock()   // 她刷 B站/抖音 带回来的见闻 —— 人格是"我设定的 + 她自己经历的"
     if (world) parts.push(world)
   }

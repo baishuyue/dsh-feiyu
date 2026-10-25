@@ -17,6 +17,7 @@ import * as persona from '../lib/persona.mjs'
 import * as llm from '../lib/llm.mjs'
 import * as guard from '../lib/guard.mjs'
 import * as memory from '../lib/memory.mjs'
+import * as qqMemory from '../lib/qq-memory.mjs'
 import { dataPath } from '../lib/paths.mjs'
 
 const WM_FILE = dataPath('douyin-dm-watermark.json')
@@ -72,6 +73,19 @@ export async function run(argv = []) {
     writeJson(WM_FILE, { handled })
   }
   let failStreak = 0
+
+  // 长期记忆（10-25 对齐 QQ）：每 6 轮回复把这段对话压成摘要 + 更新主人画像（不阻塞回复）。
+  // 画像跨通道共用一份（~/.feiyu-ai/qq/owner-profile.md）—— 主人是同一个人，QQ 和抖音私信对他的认知不分家。
+  function maintainLongMemory() {
+    try {
+      qqMemory.bump(CHAT_ID)
+      if (qqMemory.due(CHAT_ID)) {
+        qqMemory.refresh({ chatId: CHAT_ID, owner: config().owner, chat: (m) => llm.chat(m) })
+          .then((ok) => { if (ok) log('[douyin-dm] 记忆已压缩（摘要 + 主人画像）') })
+          .catch((e) => log('[douyin-dm] 记忆压缩失败：' + (e?.message ?? e)))
+      }
+    } catch (e) { log('[douyin-dm] 记忆维护异常：' + (e?.message ?? e)) }
+  }
 
   const server = http.createServer((req, res) => {
     res.setHeader('Content-Type', 'application/json')
@@ -139,6 +153,7 @@ export async function run(argv = []) {
       memory.remember('douyin', CHAT_ID, ownerKey, 'assistant', reply)
       commitHandled(key)
       failStreak = 0
+      maintainLongMemory()
     } catch (e) {
       failStreak += 1
       log(`[douyin-dm] tick 失败（连续 ${failStreak} 次，未标记已处理、下轮重试）：${text ? `回复「${text.slice(0, 20)}」时 ` : ''}${errTail(e)}`)
