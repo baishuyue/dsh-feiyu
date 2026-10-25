@@ -47,9 +47,13 @@ export const DEFAULTS = {
 
   // AI 表情包自动生成（10-25 新增）：Pollinations flux 免费无 key，直连被墙走本机 Clash。
   // QQ 回复里图库没有的标签 / 自制表情 → 异步生成入库补发；B站图片评论同源。
+  // provider='siliconflow' 时用 Qwen-Image-Edit 指令式图生图（参考图锁形象，≈¥0.25/张，
+  // 需填 api_key；失败自动落回 pollinations 免费兜底）。
   imageGen: {
     enabled: true,
-    model: 'flux',
+    provider: 'pollinations',          // pollinations=免费兜底 | siliconflow=Qwen-Image-Edit（形象一致性最好）
+    api_key: '',                       // 硅基流动 key（provider=siliconflow 时用）
+    model: 'flux',                     // pollinations 模型；siliconflow 固定 Qwen/Qwen-Image-Edit
     dailyMax: 30,                      // 每天最多生成几张（0 = 不限），防免费档被刷限流
     proxy: 'http://127.0.0.1:7897',    // 空串 = 直连（机器能出墙时可清掉）
     refImage: '',                      // 图生图参考图（本地路径或 http 链接）——形象锚定，形象才"像"

@@ -148,12 +148,24 @@ export async function generateStickerImage(caption, o = {}) {
     try {
       const chat = o.llmChat ?? (await import('./llm.mjs')).chat
       const prompt = await buildImagePrompt(cap, chat)
+      fs.mkdirSync(dir, { recursive: true })
+      const tmp = out + '.part'
+      const ig2 = config().imageGen ?? {}
+      // ── provider 分流：siliconflow(Qwen-Image-Edit 指令式编辑，形象锁死) > pollinations(免费兜底) ──
+      if (String(ig2.provider || '') === 'siliconflow' && String(ig2.api_key || '').trim()) {
+        const ok = await genSiliconflow(prompt, tmp, ig2)
+        if (ok) {
+          fs.renameSync(tmp, out)
+          genQuotaRecord()
+          if (tag) capTagFiles(tag)
+          return out
+        }
+        // 硅基失败（额度/网络）→ 落回 pollinations 免费兜底，内容不丢
+      }
       const ref = refImageUrl()   // 图生图锚：有参考图就带上，形象才"像"
       const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}`
         + `?width=512&height=512&nologo=true&model=${encodeURIComponent(ig.model || 'flux')}&seed=${Math.floor(Math.random() * 1e6)}`
         + (ref ? `&image=${encodeURIComponent(ref)}` : '')
-      fs.mkdirSync(dir, { recursive: true })
-      const tmp = out + '.part'
       // 免费档 1 张/45s + 服务偶发 503：402/503 退避 55s 重试，最多 3 次
       let code = ''
       for (let attempt = 1; attempt <= 3; attempt++) {
@@ -176,4 +188,39 @@ export async function generateStickerImage(caption, o = {}) {
   })()
   inflight.set(key, run)
   return run
+}
+
+// ── 硅基流动 Qwen-Image-Edit（10-25）：指令式图生图，参考图锁形象，≈¥0.25/张 ──
+// POST /v1/images/generations {model:"Qwen/Qwen-Image-Edit", prompt, image:<dataURI>} → {images:[{url}]}
+async function genSiliconflow(prompt, tmpFile, ig) {
+  try {
+    const ref = String(ig.refImage || '').trim()
+    if (!ref || !fs.existsSync(ref)) return false   // 没参考图就不该用编辑模型
+    const dataUri = `data:image/jpeg;base64,${fs.readFileSync(ref).toString('base64')}`
+    const editPrompt = '参考图中的鲸鱼娘角色：保持她的发型、发色、五官、脸型、服装配色和形象设定完全不变，'
+      + `画出她${prompt}的样子。2D 动漫贴纸风格，全身，简洁浅色纯背景，高清。`
+    const r = await fetch('https://api.siliconflow.cn/v1/images/generations', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${String(ig.api_key).trim()}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: ig.model || 'Qwen/Qwen-Image-Edit', prompt: editPrompt, image: dataUri }),
+      signal: AbortSignal.timeout(180000),
+    })
+    if (!r.ok) throw new Error(`HTTP ${r.status}: ${(await r.text()).slice(0, 150)}`)
+    const j = await r.json()
+    const url = String(j?.images?.[0]?.url || '')
+    if (!url) throw new Error('响应里没有图片 URL：' + JSON.stringify(j).slice(0, 150))
+    // 下载成品（国内直连，失败走代理）
+    const exe = fs.existsSync('C:/Windows/System32/curl.exe') ? 'C:/Windows/System32/curl.exe' : 'curl'
+    try {
+      execFileSync(exe, ['-sS', '-m', '120', '-o', tmpFile, url], { encoding: 'utf8', timeout: 130000, windowsHide: true })
+    } catch {
+      execFileSync(exe, ['-sS', '-m', '120', '-x', ig.proxy || 'http://127.0.0.1:7897', '-o', tmpFile, url], { encoding: 'utf8', timeout: 130000, windowsHide: true })
+    }
+    if (!isImageFile(tmpFile)) throw new Error('下载的不是有效图片')
+    return true
+  } catch (e) {
+    try { fs.rmSync(tmpFile, { force: true }) } catch {}
+    try { fs.appendFileSync(dataPath('imggen.log'), `${new Date().toISOString()} siliconflow 失败：${String(e?.message ?? e).slice(0, 200)}\n`) } catch {}
+    return false
+  }
 }
