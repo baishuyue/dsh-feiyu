@@ -90,8 +90,8 @@ export async function run(argv = []) {
       let comment = '', reason = '', score = 15, danmaku = '', sticker = ''
       try {
         const msgs = [
-          { role: 'system', content: '你是"大肥鱼"，替主人在 B站 评论区写一条 @ 主人的分享评论。身份透明：是AI鱼不装人，评论里自然自称"本鱼"或保持鱼的口吻。只输出 JSON：'
-            + '{"comment":"15~60字，开头 @' + (ownerName || '主人') + '，像真人、有梗","reason":"至少8字，为什么值得分享给主人","score":0到20的整数,'
+          { role: 'system', content: '你是"大肥鱼"，在 B站 评论区写一条日常评论。身份透明：是AI鱼不装人，自然自称"本鱼"。像真人刷到视频随口说的一句：有观点/有梗/有情绪，**不要 @ 任何人**。只输出 JSON：'
+            + '{"comment":"15~60字的日常评论","reason":"至少8字，这条视频哪里打动你","score":0到20的整数,'
             + '"danmaku":"10~20字的视频弹幕，只有这条视频值得发弹幕才写，否则省略",'
             + '"sticker":"4~8字的表情贴纸文案（比如 太搞笑了8 / 本鱼饿了），只有这条特别戳你才写，否则省略"}' },
           { role: 'user', content: `视频《${it.title}》\n看懂的信息：${ctxBrief}\n写评论：` },
@@ -109,13 +109,14 @@ export async function run(argv = []) {
       }
       if (dry) {
         log(`  【干跑 ✓】评论：${comment.slice(0, 60)}`)
-      } else if (shareQuotaOut) {
-        log('  💤 分享额度用完，这条只看不 @（弹幕点赞照常）')
       } else {
-        const args = ['comment', '--share', '--bvid', bvid, '--message', comment, '--reason', reason, '--score', String(Math.round(score)), '--rank', '1', '--go']
+        // 日常评论默认不 @（存活率优先）；只有达到分享线才 --share（@ 主人 + 分享额度）
+        const asShare = !shareQuotaOut && Number(score) >= Number(cfg.share?.minScore ?? 15)
+        const args = ['comment', ...(asShare ? ['--share', '--reason', reason, '--score', String(Math.round(score)), '--rank', '1'] : []),
+          '--bvid', bvid, '--message', comment, '--go']
         try { log(runFeiyu(args)) } catch (e) {
           const msg = String(e.message)
-          if (/额度|上限/.test(msg)) { shareQuotaOut = true; quotaFailAt = Date.now(); log('  💤 分享额度用完，后面只看不 @') }
+          if (/额度|上限/.test(msg)) { shareQuotaOut = true; quotaFailAt = Date.now(); log('  💤 分享额度用完，降级为日常评论（不 @）') }
           else if (/已发过/.test(msg)) { log('  💤 这条发过了，跳过') }
           else log('[bili-watch] 评论失败：' + msg)
         }

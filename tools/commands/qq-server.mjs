@@ -145,6 +145,8 @@ export async function run(argv = []) {
       if (isGroup && QQ.at_only !== false && !atMe) return   // 群里只被 @ 才回
 
       const chatId = isGroup ? `qq:${groupId}` : `qq:${userId}`
+      // 群聊插话引擎的在场信号：有群消息就刷新该群的时间戳（她"看到"群里在聊天）
+      if (isGroup) groupLastMsgAt[groupId] = Date.now()
       // 主动搭话的安静计时：主人（私聊）每说一句话就刷新
       try {
         const ownerQQNow = String(config().owner?.qq || '')
@@ -417,7 +419,8 @@ export async function run(argv = []) {
       const msgs = [
         built[0],
         { role: 'user', content: `【主动搭话】主人有一阵子没说话了${quietH < 99 ? `（约 ${quietH} 小时）` : ''}。${quietHint}\n`
-          + '现在你主动给他发一条 QQ 消息。像真人主动发微信那样：一条，一两句话，自然、有具体由头（刚看到的视频、饭点饿了、想起他之前说过的话、B站有人回了你评论）。\n'
+          + '现在你主动给他发一条 QQ 消息。像真人主动发微信那样：一条，一两句话，自然、有具体由头（刚看到的视频、饭点饿了、想起他之前说过的话、B站有人回了你评论）；'
+          + '也可以顺手安利一条你刚刷到的好玩视频（贴上 https://www.bilibili.com/video/BV 号或抖音链接），像随手转发给好朋友。\n'
           + '禁止"在吗/你好"式开场，不要长篇，不要一次发多条，只输出消息正文。' },
       ]
       const resp = await llm.chat(msgs, { temperature: 0.95, max_tokens: 120 })
@@ -432,4 +435,60 @@ export async function run(argv = []) {
     } catch (e) { logErr('[qq] 主动搭话失败：' + e.message) }
   }
   setInterval(tryProactive, 60_000)
+
+  // ── 群聊自主插话引擎（10-25）：不等 @，她看着群聊气氛自己决定要不要接话 ──────────
+  // 原则：话题在场才开口（recentSec 内有人说话）+ 不抢话（minQuietSec）+ 概率 + 每群日额。
+  // 开口前 LLM 看最近群聊自己判断适不适合说话 —— 没话找话宁可不说。
+  const GC_FILE = dataPath('qq-groupchat.json')
+  const groupLastMsgAt = {}   // gid -> 最近一条群消息时间（内存，重启归零无妨）
+  let groupSpeak = readJsonSafe(GC_FILE, {})  // gid -> {day, count, lastAt}
+  function readJsonSafe(f, d) { try { return JSON.parse(fs.readFileSync(f, 'utf8')) } catch { return d } }
+  function writeGC() { try { fs.mkdirSync(path.dirname(GC_FILE), { recursive: true }); fs.writeFileSync(GC_FILE, JSON.stringify(groupSpeak)) } catch {} }
+
+  async function tryGroupChat() {
+    try {
+      const QQ = config().qq ?? {}
+      const gc = QQ.groupChat ?? {}
+      if (gc.enabled !== true) return
+      const now = Date.now()
+      const day = new Date().toLocaleDateString('sv-SE')
+      const dailyMax = Number(gc.dailyMax ?? 6)
+      for (const [gid, lastMsgAt] of Object.entries(groupLastMsgAt)) {
+        const g = groupSpeak[gid] || { day, count: 0, lastAt: 0 }
+        if (g.day !== day) { g.day = day; g.count = 0 }
+        if (dailyMax > 0 && Number(g.count) >= dailyMax) continue
+        if (now - Number(g.lastAt) < Number(gc.minGapMin ?? 20) * 60_000) continue
+        const sinceMsg = now - Number(lastMsgAt)
+        if (sinceMsg > Number(gc.recentSec ?? 600) * 1000) continue     // 话题已经凉了
+        if (sinceMsg < Number(gc.minQuietSec ?? 20) * 1000) continue    // 别人话音未落，不抢
+        if (Math.random() > Number(gc.chance ?? 0.1)) continue
+        const chatId = `qq:${gid}`
+        const recent = memory.recent(chatId, Number(gc.recentN ?? 14))
+        if (recent.length < 2) continue
+        tickMood()
+        const built = buildMessages({ platform: 'qq', userText: '', chatId, userId: '', turnsToday: Number(g.count) })
+        const msgs = [
+          built[0],
+          { role: 'user', content: '【群聊插话决策】下面是这个群最近的聊天记录。你自己决定：现在适不适合插一句话？'
+            + '正聊到你懂的/能接梗/有问题没人答/你能补充，才开口；插不上就安静。像熟群里的群友随口接一句，一两句以内。'
+            + '只输出 JSON：{"speak":true或false,"text":"要发的话"}\n\n最近群聊：\n'
+            + recent.map((m) => (m.role === 'assistant' ? '我' : '群友') + '：' + String(m.content).slice(0, 60)).join('\n') },
+        ]
+        const resp = await llm.chat(msgs, { temperature: 0.95, max_tokens: 200 })
+        const m = String(resp ?? '').match(/\{[\s\S]*\}/)
+        if (!m) continue
+        let j; try { j = JSON.parse(m[0]) } catch { continue }
+        if (!j.speak || !String(j.text || '').trim()) continue
+        const out = guard.clean(String(j.text), config())
+        if (!out) continue
+        const ok = await send('send_group_msg', { group_id: Number(gid), message: [{ type: 'text', data: { text: out } }] })
+        if (!ok) continue
+        memory.remember('qq', chatId, config().identity?.name ?? 'feiyu', 'assistant', out)   // 推送即记忆
+        groupSpeak[gid] = { day, count: Number(g.count) + 1, lastAt: now }
+        writeGC()
+        log(`[qq] 🗣️ 群${gid} 自主插话：${out.slice(0, 40)}`)
+      }
+    } catch (e) { logErr('[qq] 群聊插话失败：' + (e?.message ?? e)) }
+  }
+  setInterval(tryGroupChat, 60_000)
 }

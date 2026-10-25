@@ -53,11 +53,11 @@ export async function run(argv = []) {
     } catch (e) { console.error('✗ ' + e.message); process.exit(1) }
   }
 
-  // 真 @ 主人（发评论/回复评论都要）：正文开头写 @昵称，POST 时携带 at_name_to_mid
-  // （B站只有带 at_name_to_mid 才会真正通知被 @ 用户，纯文本 @昵称 不通知任何人）
+  // 真 @ 主人只在分享评论（--share）时带：日常评论不 @（存活率优先，10-25 用户拍板——
+  // 每条都 @ 又是软删除重灾区，且 @ 通知走 QQ 推送兜底）
   const ownerName = cfg.owner?.name
   const ownerMid = cfg.owner?.mid
-  if (ownerName && ownerMid && !message.startsWith('@')) message = `@${ownerName} ${message}`
+  if (isShare && ownerName && ownerMid && !message.startsWith('@')) message = `@${ownerName} ${message}`
 
   // ③ 内容清洗（预览和真发都要）
   message = guard.clean(message, cfg)

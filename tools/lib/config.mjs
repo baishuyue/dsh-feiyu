@@ -100,7 +100,7 @@ export const DEFAULTS = {
     sing: true,                              // 唱歌开关（"唱一首"触发：LLM 写词+她的音色逐句+鼓点混音）
     qzone_enabled: false,                    // 发空间说说开关
     // 主动搭话（B站同款自主性）：主人安静久了她会带着由头主动开口。
-    // 随机拟人不定点；正聊着不打扰；深夜不打扰；每天有上限 —— 宁可少说不刷屏。
+    // 随机拟人不定点；正聊着不打扰；每天有上限 —— 宁可少说不刷屏。
     proactive: {
       enabled: false,
       dailyMax: 3,          // 每天最多主动找主人几次（0 = 不限）
@@ -108,6 +108,17 @@ export const DEFAULTS = {
       minGapMin: 150,       // 两次主动之间的最小间隔
       activeHours: [10, 23],// 活跃时段（10:00~23:00 之外不打扰）；null = 不限时（10-25 用户拍板可关）
       chance: 0.12,         // 每 60s tick 命中概率（不定点闹钟，随机开口）
+    },
+    // 群聊自主插话（10-25）：不等 @，她自己看着群聊决定要不要接话。
+    // 趁话题正热（recentSec 内有人说话）+ 稍微等一下（minQuietSec 不抢话）+ 概率 + 双额度。
+    groupChat: {
+      enabled: true,
+      recentSec: 600,       // 群里最近这么久有人说话才算"话题在场"
+      minQuietSec: 20,      // 最后一条消息至少隔这么久（不抢话）
+      minGapMin: 20,        // 同一个群两次插话最小间隔
+      dailyMax: 6,          // 每个群每天最多插话几次（0 = 不限）
+      chance: 0.1,          // 每 60s tick 命中概率
+      recentN: 14,          // 决策时喂最近几条群聊
     },
   },
 

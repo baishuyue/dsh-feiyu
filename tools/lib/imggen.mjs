@@ -17,8 +17,9 @@ import { STICKER_DIR } from './stickers.mjs'
 
 const GEN_FILE = () => dataPath('imggen.json')
 const dayKey = () => new Date().toLocaleDateString('sv-SE')
-/** 固定画风：主角始终是那只圆滚滚的卡通蓝鲸鱼娘（大肥鱼），成品才像"她的"表情包。 */
-const STYLE = 'chibi kawaii sticker of a chubby round blue whale girl character, thick clean outlines, simple pastel background, expressive anime face, no text'
+/** 固定形象基底：鲸鱼娘（2D 动漫贴纸风，蓝发鱼尾少女 —— 参考主人给的形象），成品才像"她的"表情包。
+ *  情绪/动作/服装由每条文案的 LLM 翻译自由发挥 —— 基底不变，风格她自己探索。 */
+const STYLE = 'flat 2D anime chibi sticker illustration, cute whale-girl, long wavy navy-blue hair with light blue gradient, whale tail and small fin ears, big sparkling blue eyes, soft blush, kawaii, bold clean lineart, flat cel shading, simple pale background, high quality'
 const TAG_CAP = 12   // 每个标签目录最多留几张 ai- 生成图（老的删掉，只删自己生成的）
 
 // ── 日额度 ────────────────────────────────────────────────────────────────

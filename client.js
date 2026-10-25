@@ -51,10 +51,16 @@ window.__ModuleLoader__.load({
 		];
 
 		// ── 少量工具 ──────────────────────────────────────────────────────────
+		// 深合并镜像后端 /api/config 的语义：面板状态不再丢同节其它嵌套字段（刷新恢复原状的根因）
 		const section = (prev, patch) => {
-			const next = Object.assign({}, prev || {});
-			for (const k of Object.keys(patch)) next[k] = patch[k];
-			return next;
+			const deep = (b, o) => {
+				const next = Object.assign({}, b && typeof b === "object" && !Array.isArray(b) ? b : {});
+				for (const k of Object.keys(o || {})) {
+					next[k] = o[k] && typeof o[k] === "object" && !Array.isArray(o[k]) ? deep(next[k], o[k]) : o[k];
+				}
+				return next;
+			};
+			return deep(prev, patch);
 		};
 		const short = (s, n) => {
 			const t = String(s == null ? "" : s).replace(/\s+/g, " ").trim();
