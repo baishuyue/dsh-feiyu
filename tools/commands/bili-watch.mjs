@@ -176,7 +176,7 @@ export async function run(argv = []) {
       // 回评论社交：每 30 分钟扫一次别人对我评论的回复（replies 显式开）
       if (hc.replies?.enabled === true && dry === false && Date.now() - lastReplyScan > 30 * 60_000) {
         lastReplyScan = Date.now()
-        try { log(runFeiyu(['replies', '--go', '--max', '2']).split('\n').slice(0, 4).join(' | ')) } catch {}
+        try { log(runFeiyu(['replies', '--go', '--max', '5']).split('\n').slice(0, 4).join(' | ')) } catch {}
       }
       if (restMs > 0) await sleep(restMs + Math.random() * 60_000)
     }
