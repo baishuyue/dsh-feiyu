@@ -136,9 +136,12 @@ export async function run(argv = []) {
     // 直接改配置文件（config() 是只读视图）
     const cfgFile = process.env.USERPROFILE + '/.dsh/feiyu.config.json'
     const j = JSON.parse(fs.readFileSync(cfgFile, 'utf8'))
-    j.voice = { ...(j.voice || {}), ref_audio_path: v.wav, prompt_text: v.text, prompt_lang: 'zh' }
+    // 参考文本语言要跟音频一致（英文参考配 zh 会文本-音频错位，克隆质量崩）——粗判 ASCII 占比
+    const asciiRatio = (v.text.match(/[\x20-\x7E]/g) || []).length / Math.max(1, v.text.length)
+    const lang = arg(argv, '--lang') || (asciiRatio > 0.7 ? 'en' : 'zh')
+    j.voice = { ...(j.voice || {}), ref_audio_path: v.wav, prompt_text: v.text, prompt_lang: lang }
     fs.writeFileSync(cfgFile, JSON.stringify(j, null, 2) + '\n')
-    console.log(`✓ 默认音色已切换为「${v.name}」（即时生效，不用重启）`)
+    console.log(`✓ 默认音色已切换为「${v.name}」（prompt_lang=${lang}，即时生效，不用重启）`)
     return
   }
 

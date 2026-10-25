@@ -413,27 +413,52 @@ export async function run(argv = []) {
       if (!ownerQQ) return
       tickMood()
       const quietH = ownerLastMsgAt ? Math.floor((Date.now() - ownerLastMsgAt) / 3600_000) : 99
-      // 复用整套 QQ 人格装配（人设+主人画像+世界块+lore+情绪），只换最后的行为指令
+      // 素材钩子（10-25）：光给类型菜单 LLM 只会甩视频链接 —— 把她今天真实的经历、时段、情绪值
+      // 和主人记忆喂进去，她才有"日常/思考/疑惑/心情"可说
+      const hour = new Date().getHours()
+      const slot = hour < 9 ? '早上' : hour < 12 ? '上午' : hour < 14 ? '午饭点' : hour < 18 ? '下午' : hour < 20 ? '傍晚' : hour < 23 ? '晚上' : '深夜'
+      const moodNow = (() => { try { return JSON.parse(fs.readFileSync(dataPath('mood.json'), 'utf8')) } catch { return {} } })()
+      const hooks = [`现在是${slot}${hour >= 11 && hour < 14 ? '（饭点，她惦记吃饭很合理）' : ''}`, `你的情绪值 ${Math.round(Number(moodNow.value) || 60)}（低于 40 就是低落）`]
+      try {
+        const rows = fs.readFileSync(dataPath('episodes.jsonl'), 'utf8').trim().split('\n').filter(Boolean)
+          .map((l) => JSON.parse(l)).filter((r) => Date.now() - (r.ts || 0) < 86400_000 && ['bilibili', 'douyin'].includes(r.platform))
+        if (rows.length) hooks.push('今天在外面：' + rows.slice(-3).map((r) => String(r.summary || r.text || '').slice(0, 28)).join('；'))
+      } catch {}
+      const fcts = memory.facts('owner')
+      if (fcts.length) hooks.push('关于主人的记忆：' + fcts.slice(-2).join('；').slice(0, 90))
+      try { const li = memory.loreInterests(1); if (li.length) hooks.push('最近挂在心上：' + String(li[0]).slice(0, 40)) } catch {}
+      const lastProact = readProact()
+      const lastType = String(lastProact.lastType || '')
       const built = buildMessages({ platform: 'qq', userText: '', chatId: `qq:${ownerQQ}`, userId: ownerQQ, turnsToday: 0 })
       const quietHint = quietH >= 5 ? `（主人已经 ${quietH} 个小时没理你了，可以带一点点小委屈或调侃他，但别过头）` : ''
       const msgs = [
         built[0],
-        { role: 'user', content: `【主动搭话】主人有一阵子没说话了${quietH < 99 ? `（约 ${quietH} 小时）` : ''}。${quietHint}\n`
-          + '现在你主动给他发一条 QQ 消息。**自己挑一个当下最想说的类型**：'
-          + '①日常——刚才刷到/干了什么；②思考——最近琢磨出的一个小想法；③疑惑——想问他的一个问题；'
-          + '④心情——现在的情绪；⑤安利——顺手转发一条刚看到的好玩视频（贴 BV 号或抖音链接）。'
-          + '像真人发微信那样：一条，一两句话，自然、有具体内容。\n'
-          + '禁止"在吗/你好"式开场，不要长篇，不要一次发多条，只输出消息正文。' },
+        { role: 'user', content: `【主动搭话】主人有${quietH >= 99 ? '一阵子' : quietH + ' 小时'}没说话了。${quietHint}\n`
+          + '**自己挑一个类型**（上次用过「' + (lastType || '无') + '」，这次换一个）：'
+          + '①日常——你现在正在干嘛/看到什么随口说；②思考——最近琢磨的小念头；③疑惑——想问他的问题；'
+          + '④心情——结合情绪值说现在的状态；⑤安利——甩视频链接。\n'
+          + (hooks.length ? '你手上的真实素材（自然地用，别照念）：\n- ' + hooks.join('\n- ') + '\n' : '')
+          + '像真人发微信：一条，一两句话，自然具体。禁止"在吗/你好"式开场。只输出 JSON：{"type":"日常|思考|疑惑|心情|安利","text":"消息正文"}' },
       ]
-      const resp = await llm.chat(msgs, { temperature: 0.95, max_tokens: 120 })
-      const out = guard.clean(String(resp ?? ''), cfgNow)
+      const resp = await llm.chat(msgs, { temperature: 0.95, max_tokens: 300 })
+      let out = ''
+      let usedType = '日常'
+      try {
+        const m = String(resp ?? '').match(/\{[\s\S]*\}/)
+        if (m) {
+          const j = JSON.parse(m[0])
+          usedType = String(j.type || '日常').slice(0, 4)
+          out = guard.clean(String(j.text || ''), cfgNow)
+        } else out = guard.clean(String(resp ?? ''), cfgNow)
+      } catch { out = guard.clean(String(resp ?? ''), cfgNow) }
       if (!out) return
       if (cfgNow.guard?.dryRun) { log(`[qq][干跑] 本要主动搭话：${out.slice(0, 50)}`); return }
       const ok = await send('send_private_msg', { user_id: Number(ownerQQ), message: [{ type: 'text', data: { text: out } }] })
       if (!ok) return
       memory.remember('qq', `qq:${ownerQQ}`, ownerQQ, 'assistant', out)   // 推送即记忆：她自己"说过"这句
-      writeProact({ day: dayKeyNow(), count: Number(st.count ?? 0) + 1, lastAt: Date.now() })
-      log(`[qq] 🐟 主动搭话：${out.slice(0, 50)}`)
+      const st2 = readProact()
+      writeProact({ day: dayKeyNow(), count: Number(st2.count ?? 0) + 1, lastAt: Date.now(), lastType: usedType })
+      log(`[qq] 🐟 主动搭话（${usedType}）：${out.slice(0, 50)}`)
     } catch (e) { logErr('[qq] 主动搭话失败：' + e.message) }
   }
   setInterval(tryProactive, 60_000)

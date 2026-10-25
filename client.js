@@ -490,6 +490,8 @@ textarea.fy-input{width:100%;min-height:136px;resize:vertical;line-height:1.65;f
 						h("div", { className: "fy-chip" }, "今日分享 ",
 							h("b", null, (status && status.sharesToday) || 0), "/", (status && status.sharesMax) || 0),
 						h("div", { className: "fy-chip" }, "情绪 ", h("b", null, mood.value), " · 饿 ", h("b", null, mood.hunger)),
+						h("div", { className: "fy-chip" }, "🎤 唱歌音色 ", h("b", null, (status && status.rvcVoice) || "未训（RVC）"),
+							h("span", { className: "fy-hint", style: { marginLeft: 6 } }, "说话音色在下面「音色」里，两套独立")),
 						h("div", { className: "fy-chip" + ((status && status.dryRun) ? "" : " bad") },
 							"干跑 ", h("b", null, (status && status.dryRun) ? "开（只演练）" : "关（真发）"))),
 					// 通道健康：进程活着 ≠ 能收发。QQ 要看 NapCat 网关，微信要看心跳
