@@ -12,6 +12,7 @@ import * as memory from '../lib/memory.mjs'
 import * as llm from '../lib/llm.mjs'
 import { sendOwnerQQ } from '../lib/notify.mjs'
 import { dataPath } from '../lib/paths.mjs'
+import { acquire } from '../lib/lock.mjs'
 import fs from 'node:fs'
 
 const LOG = dataPath('watch.log')
@@ -106,6 +107,8 @@ function shareQuotaRecord(cfg) {
 
 export async function run(argv = []) {
   const cfg = config()
+  // 单实例锁（同 bili-watch）：完全自由/面板两条路径都能启动，双实例=重复观看/评论风控灾难
+  if (argv.includes('--free') && !acquire('douyin-watch')) { log('[watch] 已有实例在跑，本次不重复启动'); return }
   try { const n = memory.sweepEpisodes(); if (n) log(`[watch] 记忆归档：${n} 条 90 天前的旧事件移入 *.archive.jsonl`) } catch {}
   const dry = has(argv, '--dry') || douyinDry(cfg)
   const silent = has(argv, '--silent') || cfg.douyin?.watch?.silent === true   // 无头后台，不弹 Chrome

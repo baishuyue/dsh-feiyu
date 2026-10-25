@@ -11,6 +11,7 @@ import * as llm from '../lib/llm.mjs'
 import * as memory from '../lib/memory.mjs'
 import { ensureSelfSticker } from '../lib/stickers.mjs'
 import { dataPath } from '../lib/paths.mjs'
+import { acquire } from '../lib/lock.mjs'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const FEIYU = path.join(HERE, '..', 'feiyu.mjs')
@@ -43,6 +44,8 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms))
 
 export async function run(argv = []) {
   const cfg = config()
+  // 单实例锁：完全自由/面板两条路径都能启动，双实例=重复评论风控灾难
+  if (argv.includes('--free') && !acquire('bili-watch')) { log('[bili-watch] 已有实例在跑，本次不重复启动'); return }
   try { const n = memory.sweepEpisodes(); if (n) log(`[bili-watch] 记忆归档：${n} 条 90 天前的旧事件移入 *.archive.jsonl`) } catch {}
   const dry = has(argv, '--dry') || cfg.guard?.dryRun !== false
   const ownerName = cfg.owner?.name || ''

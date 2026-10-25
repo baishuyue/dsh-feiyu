@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url'
 import { config } from '../lib/config.mjs'
 import * as llm from '../lib/llm.mjs'
 import { dataPath, homePath } from '../lib/paths.mjs'
+import { acquire } from '../lib/lock.mjs'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 
@@ -203,7 +204,10 @@ export async function run(argv = []) {
   const sub = argv[0] || 'help'
   const has = (n) => argv.includes(n)
 
-  if (sub === 'roam' || has('--free')) { await roamLoop(); return }
+  if (sub === 'roam' || has('--free')) {
+    if (!acquire('web-roam')) { console.log('[web] 已有自由上网实例在跑，本次不重复启动'); return }
+    await roamLoop(); return
+  }
 
   if (sub === 'search') {
     const kw = argv.slice(1).join(' ').trim()
