@@ -147,10 +147,9 @@ async function roamLoop() {
       console.log(`\n[roam #${round}] ${act}：${String(plan.why || plan.query || plan.topic || plan.url || '').slice(0, 60)}`)
 
       if (act === '搜索' && String(plan.query || '').trim()) {
-        const rs = searchWeb(String(plan.query).trim())
+        const rs = searchWeb(String(plan.query).trim())   // searchWeb 内部已记日志
         for (const r of rs.slice(0, 5)) console.log('  ·', r.title, '—', r.url)
         lastResults = rs
-        if (rs.length) logWeb('搜索', `「${plan.query}」${plan.why ? '（' + plan.why + '）' : ''} → 首选：${rs[0].url}`)
       } else if (act === '读网页' && String(plan.url || '').trim()) {
         const text = fetchWeb(String(plan.url).trim())
         console.log('  正文前 200 字：' + text.slice(0, 200).replace(/\n/g, ' '))
