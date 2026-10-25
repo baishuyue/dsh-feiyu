@@ -43,7 +43,7 @@ export async function run(argv = []) {
       replyText = String(await llm.chat(msgs, { temperature: 0.9, max_tokens: 120 }) || '').trim().slice(0, 80)
     } catch (e) { console.log('  ✗ 生成失败：' + e.message); continue }
     if (!replyText) continue
-    const r = await postReply(it.bvid, it.rootRpid, it.reply.rpid, replyText, { go })
+    const r = await postReply(it.bvid, it.rootRpid, it.reply.rpid, replyText, { go, inReplyTo: `${it.reply.uname}：${it.reply.text}` })
     console.log('  ' + (r.why || '?'))
     if (r.ok) done++
   }

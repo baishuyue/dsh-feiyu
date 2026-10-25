@@ -197,11 +197,15 @@ export async function trainVoice({ name, datasetDir, epochs = 150, batch = 8, sa
     ['f0提取', ['-m', 'train.dataset.extract_f0', 'cuda', '1', '0', '0', abs(path.join(root, 'logs', name)), 'False']],
     ['特征提取', ['-m', 'train.dataset.extract_hubert_feature', 'cuda', '1', '0', abs(path.join(root, 'logs', name)), 'v2', 'False']],
   ]
-  for (const [label, args] of steps) {
+  // 断点续训：特征产物齐了就跳过预处理（CUDA 偶发硬崩后重跑不用重做前两步）
+  const featDir = path.join(root, 'logs', name, `3_feature${FEAT_DIM}`)
+  const already = fs.existsSync(featDir) && fs.readdirSync(featDir).filter((f) => f.endsWith('.npy')).length >= 5
+  for (const [label, args] of already ? [] : steps) {
     log(`▶ ${label}…`)
     const r = await runRvc(args, { onLine })
     if (r.code !== 0) throw new Error(`${label}失败(code ${r.code})：${r.tail.join(' | ').slice(-300)}`)
   }
+  if (already) log('▶ 预处理产物已存在，跳过（断点续训）')
   buildMuteFiles(root)
   const { samples } = buildTrainInputs(root, name)
   log(`▶ filelist 就绪（${samples} 段），开始训练 ${epochs} 轮（4060 约 ${(epochs * 0.35).toFixed(0)} 分钟）…`)

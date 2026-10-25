@@ -164,7 +164,7 @@ export function stickerPrompt(platform = 'qq') {
 
   if (canImage) {
     lines.push(`情绪到点的时候，直接在回复句尾写 [表情:标签]（标签：${tags.join('/')}）发一张图，一次最多一个。`)
-    lines.push('这些都不贴切就写 [自制表情:不超过八个字的短句]，会当场生成一张专属表情包；图库会越用越丰富。')
+    lines.push('想要更贴的图就写 [自制表情:不超过八个字的短句]（比如 [自制表情:本鱼饿了]）——会现场画一张只属于这句话的专属表情包，勇敢用，图库还会越用越丰富。')
   } else if (platform === 'bilibili') {
     const live = readFaceCache() || BILI_FACES
     const faces = BILI_FACES.filter(f => live.includes(f)).slice(0, 10)   // 按精选顺序，别按面板顺序

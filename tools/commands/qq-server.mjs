@@ -260,24 +260,23 @@ export async function run(argv = []) {
           sent = false
         }
       }
+      const target = isGroup
+        ? { api: 'send_group_msg', key: 'group_id', id: Number(groupId) }
+        : { api: 'send_private_msg', key: 'user_id', id: Number(userId) }
       if (!sent) {
         // 像人一样分条发：一句一条，间隔几百毫秒到一秒多（不是机械固定）
         const bubbles = splitBubbles(plain)
-        const target = isGroup
-          ? { api: 'send_group_msg', key: 'group_id', id: Number(groupId) }
-          : { api: 'send_private_msg', key: 'user_id', id: Number(userId) }
         for (let i = 0; i < bubbles.length; i++) {
           if (i) await new Promise(r => setTimeout(r, 420 + Math.random() * 900))
-          const okOne = await send(target.api, { [target.key]: target.id, message: [{ type: 'text', data: { text: bubbles[i] } }] })
-          sent = sent || okOne
-        }
-        if (stickerFile) {
-          await new Promise(r => setTimeout(r, 300 + Math.random() * 500))
-          const okImg = await send(target.api, { [target.key]: target.id, message: [{ type: 'image', data: { file: 'file:///' + stickerFile.replace(/\\/g, '/') } }] })
-          sent = sent || okImg
-          if (okImg) log(`[qq] 已发表情：${tag || caption || '?'}`)
+          await send(target.api, { [target.key]: target.id, message: [{ type: 'text', data: { text: bubbles[i] } }] })
         }
         if (bubbles.length > 1) log(`[qq] 分 ${bubbles.length} 条发`)
+      }
+      // 表情：文字或语音发完都补发（以前语音命中时表情整个被跳过——10-25 实测坑）
+      if (stickerFile) {
+        await new Promise(r => setTimeout(r, 300 + Math.random() * 500))
+        const okImg = await send(target.api, { [target.key]: target.id, message: [{ type: 'image', data: { file: 'file:///' + stickerFile.replace(/\\/g, '/') } }] })
+        if (okImg) log(`[qq] 已发表情：${tag || caption || '?'}`)
       }
       // AI 表情包：生成入库 + 补发（异步，不占回复主线；干跑分支已在上面 return，走不到这）
       if (aiWanted) void aiStickerFollowup({ tag, caption, isGroup, groupId, userId })

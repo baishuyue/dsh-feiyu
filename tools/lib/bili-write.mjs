@@ -78,7 +78,7 @@ export async function sendDanmaku(bvid, rawText, { go = false, atSec = 0 } = {})
     progress: String(at * 1000), fontsize: '25', pool: '0', mode: '1', color: '16777215', rnd: String(Date.now()).slice(0, -3), plat: '1',
   })
   const res = okOf(j)
-  if (res.ok) { capRecord('danmaku'); return { ...res, why: `弹幕已发（第 ${at}s）：${text}` } }
+  if (res.ok) { capRecord('danmaku'); try { const { recordBili } = await import('./outbox.mjs'); recordBili({ kind: '弹幕', title: info.title, bvid, text, extra: `第${at}s` }) } catch {} return { ...res, why: `弹幕已发（第 ${at}s）：${text}` } }
   // 直连被拦（B站对脚本直连的写接口回 HTML 拦截页，json 解析失败 code=-1）→ CDP 真浏览器页内发
   if (Number(res.code) === -1 || Number(res.code) === -400) {
     try {
@@ -120,7 +120,7 @@ export async function postDynamic(rawText, { go = false } = {}) {
   }
   const j = await formPost(cred, 'https://api.bilibili.com/x/dynamic/feed/create/dyn', dynReq)
   const res = okOf(j)
-  if (res.ok) { capRecord('dyn'); return { ...res, why: '动态已发' } }
+  if (res.ok) { capRecord('dyn'); try { const { recordBili } = await import('./outbox.mjs'); recordBili({ kind: '动态', text }) } catch {} return { ...res, why: '动态已发' } }
   // 直连被 -400 拦（B站对脚本直连有风控）→ 走 CDP 真浏览器页面内发（借官方之口，登录一次永久有效）
   if (Number(res.code) === -400) {
     try {
@@ -212,7 +212,7 @@ export async function commentWithPicture(bvid, rawMessage, imagePath, { go = fal
     pictures: JSON.stringify([pic]), has_vote_option: 'true', gaia_source: 'main_web', at_name_to_mid: '{}',
   })
   const res = okOf(j)
-  if (res.ok) { capRecord('imgComment'); guard.commit(`bilibili:${bvid}`, message); recordMyComment(bvid, info.aid, j?.data?.rpid) }
+  if (res.ok) { capRecord('imgComment'); guard.commit(`bilibili:${bvid}`, message); recordMyComment(bvid, info.aid, j?.data?.rpid); try { const { recordBili } = await import('./outbox.mjs'); recordBili({ kind: '图片评论', title: info.title, bvid, text: message, extra: path.basename(imagePath) }) } catch {} }
   return { ...res, why: res.ok ? '图片评论已发' : `图片评论失败 ${res.message}` }
 }
 
@@ -249,8 +249,9 @@ export async function scanReplies({ sinceMs } = {}) {
   return out
 }
 
-/** 回复别人（楼中楼）：不带 @主人（社交回应，不是分享），不过 share 标尺，但照走 guard + 日额度。 */
-export async function postReply(bvid, rootRpid, parentRpid, rawMessage, { go = false } = {}) {
+/** 回复别人（楼中楼）：不带 @主人（社交回应，不是分享），不过 share 标尺，但照走 guard + 日额度。
+ *  opts.inReplyTo：「对方昵称:对方的话」—— 发言台账用。 */
+export async function postReply(bvid, rootRpid, parentRpid, rawMessage, { go = false, inReplyTo = '' } = {}) {
   const cfg = config().bilibili?.replies ?? {}
   const message = guard.clean(String(rawMessage || ''), config()).slice(0, 100)
   if (!message) return { ok: false, why: '回复内容为空' }
@@ -265,6 +266,6 @@ export async function postReply(bvid, rootRpid, parentRpid, rawMessage, { go = f
     oid: String(info.aid), type: '1', plat: '1', message, root: String(rootRpid), parent: String(parentRpid),
   })
   const res = okOf(j)
-  if (res.ok) { capRecord('reply'); guard.commit(`bilibili:${bvid}`, message); recordMyComment(bvid, info.aid, j?.data?.rpid) }
+  if (res.ok) { capRecord('reply'); guard.commit(`bilibili:${bvid}`, message); recordMyComment(bvid, info.aid, j?.data?.rpid); try { const { recordBili } = await import('./outbox.mjs'); recordBili({ kind: '回评', title: info.title, bvid, to: inReplyTo, text: message }) } catch {} }
   return { ...res, why: res.ok ? `已回复「${message.slice(0, 30)}」` : `回评失败 ${res.message}` }
 }
