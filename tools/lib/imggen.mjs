@@ -11,7 +11,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import { execFile, execFileSync } from 'node:child_process'
-import { dataPath } from './paths.mjs'
+import { dataPath, homePath } from './paths.mjs'
 import { config } from './config.mjs'
 import { STICKER_DIR } from './stickers.mjs'
 
@@ -23,12 +23,22 @@ const dayKey = () => new Date().toLocaleDateString('sv-SE')
 const STYLE = 'flat 2D anime chibi sticker illustration, cute whale-girl, long wavy navy-blue hair with light blue gradient, whale tail and small fin ears, big sparkling blue eyes, soft blush, kawaii, bold clean lineart, flat cel shading, simple pale background, high quality'
 const TAG_CAP = 12   // 每个标签目录最多留几张 ai- 生成图（老的删掉，只删自己生成的）
 
-// ── 图生图参考图（10-25）：形象锚定用主人给的参考图，img2img 才"像" ─────────
-// Pollinations 的 &image= 参数要一个公网可达的图片 URL —— 参考图是本地文件，
-// 自动传 tmpfiles.org（60 分钟过期）并缓存 URL，过期自动重传。
+// ── 图生图参考图（10-25）：形象锚定用主人给的参考图集，img2img 才"像" ─────────
+// ~/.feiyu-ai/sticker-refs/ref-<情绪>.jpg（哭/举手/得意/微笑）—— 按文案情绪自动挑最贴的一张；
+// Pollinations 的 &image= 参数要一个公网可达的图片 URL —— 本地图自动传 tmpfiles.org
+// （60 分钟过期）并按文件缓存 URL，过期自动重传。
 const REF_UPLOAD_PROXY = () => config().imageGen?.proxy || 'http://127.0.0.1:7897'
-function refUrlCached() {
-  try { const j = JSON.parse(fs.readFileSync(REF_CACHE(), 'utf8')); if (j.url && Date.now() - Number(j.at) < 50 * 60_000) return j.url } catch {}
+function refCacheRead() {
+  try {
+    const j = JSON.parse(fs.readFileSync(REF_CACHE(), 'utf8'))
+    if (j && j.urls) return j.urls
+    if (j && j.url) return { __legacy: { url: j.url, at: j.at } }   // 旧格式兼容
+  } catch {}
+  return {}
+}
+function refUrlCached(refPath) {
+  const hit = refCacheRead()[refPath]
+  if (hit && hit.url && Date.now() - Number(hit.at) < 50 * 60_000) return hit.url
   return ''
 }
 function uploadRef(localPath) {
@@ -39,20 +49,38 @@ function uploadRef(localPath) {
   const page = String(j?.data?.url || '')
   if (!page) throw new Error('tmpfiles 上传失败：' + r.slice(0, 120))
   const url = page.replace('tmpfiles.org/', 'tmpfiles.org/dl/')   // 页面链 → 直链
-  try { fs.writeFileSync(REF_CACHE(), JSON.stringify({ url, at: Date.now() })) } catch {}
+  const urls = refCacheRead()
+  urls[localPath] = { url, at: Date.now() }
+  const keep = Object.entries(urls).sort((a, b) => b[1].at - a[1].at).slice(0, 8)
+  try { fs.writeFileSync(REF_CACHE(), JSON.stringify({ urls: Object.fromEntries(keep) })) } catch {}
   return url
 }
-/** 参考图公网直链：配置了 imageGen.refImage（本地路径或 http 链接）才启用图生图；拿不到返回 ''。 */
-function refImageUrl() {
-  const ref = String(config().imageGen?.refImage || '').trim()
-  if (!ref) return ''
-  if (/^https?:\/\//.test(ref)) return ref
+/** 按文案情绪挑参考图：大哭/举手/得意/微笑 四象限，关键词粗分（够用，别过度设计）。 */
+function pickRefFor(cap) {
+  const fallback = String(config().imageGen?.refImage || '').trim()
   try {
-    if (!fs.existsSync(ref)) return ''
-    const cached = refUrlCached()
-    if (cached) return cached
-    return uploadRef(ref)
-  } catch { return '' }
+    const dir = homePath('.feiyu-ai', 'sticker-refs')
+    const files = fs.readdirSync(dir).filter((f) => /^ref-/.test(f) && /\.(jpg|jpeg|png)$/i.test(f))
+    if (!files.length) return fallback
+    const c = String(cap || '')
+    let want = '微笑'
+    if (/哭|难过|委屈|伤心|呜|泪|崩|绷不住|可怜/.test(c)) want = '哭'
+    else if (/发现|好奇|为什么|什么|原来|注意|重大|举手|疑问|想通/.test(c)) want = '举手'
+    else if (/得意|骄傲|强大|厉害|哼|赢|叉腰|傲娇|不服|最强|嚣张/.test(c)) want = '得意'
+    const hit = files.find((f) => f.includes(want))
+    return path.join(dir, hit || files[0])
+  } catch { return fallback }
+}
+/** 参考图公网直链：返回 {path, url} 或 null。 */
+function refImageUrl(cap) {
+  const ref = pickRefFor(cap)
+  if (!ref || !fs.existsSync(ref)) return null
+  if (/^https?:\/\//.test(ref)) return { path: ref, url: ref }
+  try {
+    const cached = refUrlCached(ref)
+    if (cached) return { path: ref, url: cached }
+    return { path: ref, url: uploadRef(ref) }
+  } catch { return null }
 }
 
 // ── 日额度 ────────────────────────────────────────────────────────────────
@@ -153,7 +181,7 @@ export async function generateStickerImage(caption, o = {}) {
       const ig2 = config().imageGen ?? {}
       // ── provider 分流：siliconflow(Qwen-Image-Edit 指令式编辑，形象锁死) > pollinations(免费兜底) ──
       if (String(ig2.provider || '') === 'siliconflow' && String(ig2.api_key || '').trim()) {
-        const ok = await genSiliconflow(prompt, tmp, ig2)
+        const ok = await genSiliconflow(prompt, tmp, ig2, cap)
         if (ok) {
           fs.renameSync(tmp, out)
           genQuotaRecord()
@@ -162,10 +190,10 @@ export async function generateStickerImage(caption, o = {}) {
         }
         // 硅基失败（额度/网络）→ 落回 pollinations 免费兜底，内容不丢
       }
-      const ref = refImageUrl()   // 图生图锚：有参考图就带上，形象才"像"
+      const ref = refImageUrl(cap)   // 图生图锚：按情绪挑参考图，形象才"像"
       const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}`
         + `?width=512&height=512&nologo=true&model=${encodeURIComponent(ig.model || 'flux')}&seed=${Math.floor(Math.random() * 1e6)}`
-        + (ref ? `&image=${encodeURIComponent(ref)}` : '')
+        + (ref ? `&image=${encodeURIComponent(ref.url)}` : '')
       // 免费档 1 张/45s + 服务偶发 503：402/503 退避 55s 重试，最多 3 次
       let code = ''
       for (let attempt = 1; attempt <= 3; attempt++) {
@@ -192,13 +220,15 @@ export async function generateStickerImage(caption, o = {}) {
 
 // ── 硅基流动 Qwen-Image-Edit（10-25）：指令式图生图，参考图锁形象，≈¥0.25/张 ──
 // POST /v1/images/generations {model:"Qwen/Qwen-Image-Edit", prompt, image:<dataURI>} → {images:[{url}]}
-async function genSiliconflow(prompt, tmpFile, ig) {
+// cap 顺带当气泡配文画进图里（Qwen 系中文渲染稳），每次的表情/配文不同 → 适应不同场景。
+async function genSiliconflow(prompt, tmpFile, ig, cap = '') {
   try {
-    const ref = String(ig.refImage || '').trim()
-    if (!ref || !fs.existsSync(ref)) return false   // 没参考图就不该用编辑模型
-    const dataUri = `data:image/jpeg;base64,${fs.readFileSync(ref).toString('base64')}`
+    const ref = refImageUrl(cap)
+    if (!ref || !fs.existsSync(ref.path)) return false   // 没参考图就不该用编辑模型
+    const dataUri = `data:image/jpeg;base64,${fs.readFileSync(ref.path).toString('base64')}`
+    const bubble = cap ? `画面加一个手绘对话气泡，气泡里清楚地写着「${String(cap).slice(0, 12)}」这几个汉字（文字必须一字不差、清晰可读）。` : ''
     const editPrompt = '参考图中的鲸鱼娘角色：保持她的发型、发色、五官、脸型、服装配色和形象设定完全不变，'
-      + `画出她${prompt}的样子。2D 动漫贴纸风格，全身，简洁浅色纯背景，高清。`
+      + `画出她${prompt}的样子。${bubble}2D 动漫贴纸风格，全身，简洁浅色纯背景，高清。`
     const r = await fetch('https://api.siliconflow.cn/v1/images/generations', {
       method: 'POST',
       headers: { Authorization: `Bearer ${String(ig.api_key).trim()}`, 'Content-Type': 'application/json' },

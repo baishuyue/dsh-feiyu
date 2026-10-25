@@ -67,6 +67,8 @@ export async function run(argv = []) {
     const rvc = await import('../lib/rvc.mjs')
     const name = arg(argv, '--name', 'feiyu-sunshine')
     const epochs = Number(arg(argv, '--epochs', 150)) || 150
+    const batch = Number(arg(argv, '--batch', 8)) || 8
+    const saveEvery = Number(arg(argv, '--se', 50)) || 50
     if (!rvc.rvcReady()) {
       console.error('✗ RVC 环境不齐：D:/rvc/venv 要有 torch+依赖，D:/rvc/RVC/assets 要有 48k 底模（见 rvc.mjs 头注释）')
       process.exit(1)
@@ -88,9 +90,9 @@ export async function run(argv = []) {
       })
     }
     console.log(`✓ 数据集就绪：${ds.count} 句 / 约 ${ds.approxMinutes || '?'} 分钟 —— ${ds.dir}`)
-    console.log(`🏋️ 开始训练 ${epochs} 轮（全程日志 ~/.feiyu-ai/rvc/train-${name}.log，挂后台别关机）…`)
+    console.log(`🏋️ 开始训练 ${epochs} 轮（bs=${batch}，全程日志 ~/.feiyu-ai/rvc/train-${name}.log，挂后台别关机）…`)
     const t0 = Date.now()
-    const out = await rvc.trainVoice({ name, datasetDir: ds.dir, epochs, log: (l) => console.log('  ' + String(l).slice(0, 110)) })
+    const out = await rvc.trainVoice({ name, datasetDir: ds.dir, epochs, batch, saveEvery, log: (l) => console.log('  ' + String(l).slice(0, 110)) })
     console.log(`✅ 训练完成（${Math.round((Date.now() - t0) / 60000)} 分钟）`)
     console.log(`  模型：${out.pth}`)
     console.log(`  索引：${out.index || '(无，index-rate 自动 0)'}`)
