@@ -150,13 +150,13 @@ async function roamLoop() {
         const rs = searchWeb(String(plan.query).trim())   // searchWeb 内部已记日志
         for (const r of rs.slice(0, 5)) console.log('  ·', r.title, '—', r.url)
         lastResults = rs
-      } else if (act === '读网页' && String(plan.url || '').trim()) {
+        try { const { remember } = await import('../lib/memory.mjs'); remember('web', 'web:roam', cfg.identity?.name ?? 'feiyu', 'assistant', `（搜索了「${String(plan.query).slice(0, 40)}」，首选：${rs[0]?.title || ''}）`) } catch {}      } else if (act === '读网页' && String(plan.url || '').trim()) {
         const text = fetchWeb(String(plan.url).trim())
         console.log('  正文前 200 字：' + text.slice(0, 200).replace(/\n/g, ' '))
         // 读完顺手沉淀
         try {
           const { remember } = await import('../lib/memory.mjs')
-          remember('qq', 'qq:web-roam-self', cfg.identity?.name ?? 'feiyu', 'assistant', `（读了 ${plan.url}：${text.slice(0, 80)}）`)
+          remember('web', 'web:roam', cfg.identity?.name ?? 'feiyu', 'assistant', `（读了 ${plan.url}：${text.slice(0, 80)}）`)
         } catch {}
       } else if (act === '写小说' && String(plan.text || '').trim()) {
         const dir = homePath('.dsh', 'feiyu-work', 'creative')
@@ -165,12 +165,14 @@ async function roamLoop() {
         fs.appendFileSync(file, `\n## ${new Date().toTimeString().slice(0, 5)} ${String(plan.topic || '').slice(0, 30)}\n\n${String(plan.text).slice(0, 800)}\n`)
         console.log('  ✓ 存入', file)
         logWeb('写小说', String(plan.topic || '').slice(0, 40))
+        try { const { remember } = await import('../lib/memory.mjs'); remember('web', 'web:roam', cfg.identity?.name ?? 'feiyu', 'assistant', `（写了小说片段：${String(plan.topic || '').slice(0, 30)}——${String(plan.text).slice(0, 60)}）`) } catch {}
       } else if ((act === '学习' || act === '自我升级') && String(plan.text || '').trim()) {
         if (act === '自我升级') {
           if (cfg.web?.selfUpgrade?.enabled !== true) { console.log('  （自我升级未开启，这轮跳过）'); await sleep(60000); continue }
           doBackup()
           console.log('  🔒 已自动备份，升级内容：' + String(plan.text).slice(0, 100))
           logWeb('自我升级', String(plan.text).slice(0, 120))
+          try { const { remember } = await import('../lib/memory.mjs'); remember('web', 'web:roam', cfg.identity?.name ?? 'feiyu', 'assistant', `（自我升级：${String(plan.text).slice(0, 80)}）`) } catch {}
           // 她在 DSH 会话里才能真正改文件 —— 这里的角色是"记账+备份"，实际修改由她会话执行
         } else {
           const { addLore } = await import('../lib/memory.mjs')

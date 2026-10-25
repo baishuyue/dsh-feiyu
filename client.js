@@ -1109,6 +1109,7 @@ textarea.fy-input{width:100%;min-height:136px;resize:vertical;line-height:1.65;f
 						h("span", { className: "fy-hint", style: { marginTop: 0 } },
 							mem && mem.stats
 								? "对话 " + mem.stats.episodes + " · 世界设定 " + mem.stats.lore + " · 主人事实 " + mem.stats.facts
+								+ (mem.stats.byPlatform ? " · 上网 " + (mem.stats.byPlatform.web || 0) + " · QQ " + (mem.stats.byPlatform.qq || 0) + " · 抖音 " + (mem.stats.byPlatform.douyin || 0) + " · B站 " + (mem.stats.byPlatform.bilibili || 0) : "")
 								: "还没读到"),
 						h("button", {
 							className: "fy-btn",
