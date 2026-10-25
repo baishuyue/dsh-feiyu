@@ -204,6 +204,100 @@ dsh plugin --profile desktop add "link:C:\Users\<你>\.dsh\plugins\dsh-feiyu"
 | 抖音 | social-auto-upload / patchright + Chrome | `D:/social-auto-upload/.venv` |
 | 表情包 | 硅基流动 key（`imageGen.api_key`）+ 参考图 `sticker-ref.jpg` | 锁住「根本形象」 |
 
+> **完整依赖清单（精确版本号、模型名、端口、安装顺序、验证命令）见 [DEPLOY.md](DEPLOY.md)。**
+
+---
+
+## 六·五、依赖与模型（精确版本）
+
+跑通这套东西的实测环境（Windows 11 / x64 / CUDA 12.8）：
+
+| 组件 | 版本 | 干什么 |
+|---|---|---|
+| DSH 桌面端 | `0.2.1-rc.2`（`@deepseek-ai/dsh-desktop-runtime`） | 宿主：会话 / 面板 / 模型 |
+| Node.js | `v24.21.0` | 工具链（DSH 运行时自带同版本） |
+| Python | `3.12.0` ×3（social-auto-upload / rvc / wechat-bot 各一个 venv） | 各平台脚本 |
+| **对话模型** | DeepSeek **`deepseek-chat`**（`api.deepseek.com/v1`） | QQ / 抖音私信 / 微信实时回复 |
+| **视觉模型** | 硅基流动 **`Qwen/Qwen3-VL-8B-Instruct`** | 看图、校验表情包形象 |
+| **生图模型** | 硅基流动 **`Qwen/Qwen-Image-Edit-2509`** | 锁形象生图（表情包/视频配图） |
+| 生图兜底 | **Pollinations `flux`** | 免费、不保证形象（只做临时图） |
+| **语音克隆** | **GPT-SoVITS** `b4570b8`（2026-10-19）→ `api_v2.py:9880/tts` | 说话 / 语音条 / 视频旁白 |
+| **歌声转换** | **RVC**（Retrieval-based-Voice-Conversion-WebUI）`torch 2.7.1+cu128` | 翻唱（把真歌人声换成她的音色） |
+| 取源歌 | **yt-dlp** `2026.10.21` | 翻唱素材 |
+| 音视频合成 | **ffmpeg** `7.1-essentials_build-ghyan`、**ffprobe**（RVC 自带） | 翻唱混音 / 视频成片 |
+| QQ 网关 | **NapCat.Onebot `4.18.41`**（OneBot **v11**）+ QQNT `9.9.20-36330` | QQ 收发 |
+| 抖音自动化 | **patchright `1.58.2`** + Chrome `156.0.8078.47` | 抖音网页版 |
+| 微信自动化 | **uiautomation `2.0.29`** + comtypes `1.4.17` + pywin32 `312` + Pillow `13.0.0` | 微信 PC |
+| 她的音色文件 | `D:\rvc\RVC\assets\weights\feiyu-rose.pth`（v2 40k）+ 参考音 `models\yinlang\yinlang.wav` | — |
+
+端口：`8080` QQ 服务 · `8095` 抖音私信 · `3000` NapCat · `9880` GPT-SoVITS · `9222` Chrome CDP · `7897` 代理。
+
+---
+
+## 六·六、四条特色流水线（怎么实现的）
+
+### 1）语音克隆 —— 她的声音
+
+```
+QQ 收到消息 → 摇中 voice_chance → lib/tts.mjs POST 9880/tts
+  { ref_audio_path: models/yinlang/yinlang.wav, prompt_text, prompt_lang, text, text_lang }
+→ 返回 wav → NapCat 发 { type: "record", file } → 失败自动降级纯文字
+```
+
+- 零样本克隆（给参考音就能说）；也可换训练好的 `sovits_path`/`gpt_path`（`models/sunshine_girl/`）
+- 插件启动自动拉起 `api_v2.py`，每 60s 探活；面板「音色」可直接试听（发你 QQ）
+
+### 2）唱歌 —— 原创与翻唱
+
+| 模式 | 链路 |
+|---|---|
+| 原创 `sing "主题"` | DeepSeek 写词 → GPT-SoVITS 按节奏念白式合成 → `lib/sing.mjs` 直接读写 WAV（RIFF/PCM16）拼接调音 → 发 QQ |
+| 翻唱 `sing cover "歌名"` | yt-dlp 取源 → ffmpeg 转 44.1k/立体声 → **RVC** 人声转换（`feiyu-rose.pth`）→ ffmpeg 混回伴奏 → 发 QQ，歌单存 `sing songs` |
+
+> 诚实说明：GPT-SoVITS 是**说话**引擎不是歌声合成（本机没装 SVC），所以"原创"是节奏念白式的唱；**真唱靠 RVC 翻唱**。
+
+### 3）生图 / 表情包 —— 只画"她本人"
+
+```
+文案/标签 → buildImagePrompt（DeepSeek 翻英文 prompt）
+  → 硅基 images/generations(model=Qwen-Image-Edit-2509, image=<参考图 dataURI>,
+      prompt="保持她的发型/五官/服装配色不变，画出她<情绪>的样子 + 手绘气泡写汉字")
+  → 存 ~/.feiyu-ai/stickers/<标签>/sf-<hash>.jpg  （sf = 根本形象，才允许发送）
+  硅基失败 → Pollinations flux 兜底（存 自制/px-*.jpg，永不入库、永不发送）
+```
+
+- 参考图按文案情绪自动挑：`sticker-refs/ref-{哭,举手,得意,微笑}.jpg`
+- 发送前 `pickSticker()` 过滤 `px-`；她没写标记时 `autoTag()` 按内容补标签（认不出只在开心/无语/比心里选）
+
+### 4）做视频 —— 投稿包（她策划，你点发布）
+
+```
+produce ["主题"]
+ ① DeepSeek 出脚本/分镜
+ ② 硅基 Qwen-Image-Edit 逐镜配图（锁她的形象）
+ ③ GPT-SoVITS 念旁白（她的音色）
+ ④ ffmpeg 图片序列 + 音频 → video.mp4
+ ⑤ 落地 ~/.feiyu-ai/douyin-posts/<日期-标题>/{img-*.jpg, narration.wav, video.mp4, 文案}
+ ⑥ 停在这里 —— 她不能自己发，等你在面板点发布
+```
+
+### 汇总：一次"完全自由"里她可能跑的全链路
+
+```
+调度器 tick → 会话注入任务
+   ├─ 上网搜吃的（web search → 记忆 platform=web）
+   ├─ 写小说片段（web roam 的写作模式 → 记忆）
+   ├─ 刷B站/抖音（bili-watch --free / watch --free → 评论走额度+风控闸）
+   ├─ 抖音评论区经营（engage：扫自己作品 → cid 精确回复）
+   ├─ 做视频投稿包（produce：策划→配图→旁白→成片，等你发布）
+   ├─ 唱歌/语音（sing / voice → 发 QQ）
+   └─ 给自己约下一次（selfwake 23:40 --note "把小说收尾"）
+        ↓ 到点
+  每日回顾（23:00）：翻今天 → 写日记 → 更新"我是谁"（改前存快照）→ 记账
+```
+
+每一环的产出都会写进记忆（`platform=web/douyin/bilibili`），所以你在 QQ 问她"今天干了啥"她答得出来。
+
 ---
 
 ## 七、配置
