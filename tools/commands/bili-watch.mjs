@@ -161,7 +161,15 @@ export async function run(argv = []) {
           }
           if (!pic) pic = ensureSelfSticker(sticker, cfg)
           if (pic) {
-            log(runFeiyu(['act', 'pic', '--bvid', bvid, '--message', comment.slice(0, 60), '--image', pic, '--go']))
+            // 图床上传偶发闪断（10-25 实测）：失败重试一次
+            let posted = ''
+            try { posted = runFeiyu(['act', 'pic', '--bvid', bvid, '--message', comment.slice(0, 60), '--image', pic, '--go']) }
+            catch (e1) {
+              log('  （图片评论第一次没成，重试：' + String(e1.message).slice(0, 50) + '）')
+              await sleep(15000)
+              posted = runFeiyu(['act', 'pic', '--bvid', bvid, '--message', comment.slice(0, 60), '--image', pic, '--go'])
+            }
+            log(posted)
           }
         } catch (e) { log('  （贴纸评论没成：' + String(e.message).slice(0, 60) + '）') }
       }
