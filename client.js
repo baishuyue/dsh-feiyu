@@ -251,6 +251,7 @@ textarea.fy-input{width:100%;min-height:136px;resize:vertical;line-height:1.65;f
 				dykFish: !!(c.bilibili && c.bilibili.fishCircle && c.bilibili.fishCircle.enabled),
 				dykFollow: !!(c.bilibili && c.bilibili.follow && c.bilibili.follow.enabled),
 					voiceChance: (c.qq && c.qq.voice_chance) || 0,
+				stickerChance: (c.qq && c.qq.stickerChance != null) ? c.qq.stickerChance : 0.5,
 				qqProactive: !!(c.qq && c.qq.proactive && c.qq.proactive.enabled),
 				qqProactiveMax: (c.qq && c.qq.proactive && c.qq.proactive.dailyMax) || 3,
 				qqProactiveGap: (c.qq && c.qq.proactive && c.qq.proactive.minGapMin) || 150,
@@ -612,6 +613,14 @@ textarea.fy-input{width:100%;min-height:136px;resize:vertical;line-height:1.65;f
 							className: "fy-btn", disabled: busy === "voice",
 							onClick: testVoice,
 						}, busy === "voice" ? "合成中…" : "试听（发到 QQ）")),
+					h(Row, { label: "表情包概率" },
+						h("input", {
+							className: "fy-input fy-w-sm", type: "number", min: 0, max: 1, step: 0.05,
+							value: draft.stickerChance,
+							onChange: (e) => setDraft(Object.assign({}, draft, { stickerChance: e.target.value })),
+							onBlur: () => save({ qq: { stickerChance: Math.max(0, Math.min(1, Number(draft.stickerChance) || 0)) } }, "表情包概率已保存（摇中强制带一个，图生图管够）"),
+						}),
+						h("span", { className: "fy-hint", style: { marginTop: 0 } }, "0~1，回复带图片表情的概率（自制表情=图生图现场画）")),
 					h(Row, { label: "音色工坊" },
 						h("button", {
 							className: "fy-btn", disabled: busy === "voiceall",

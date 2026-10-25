@@ -21,6 +21,7 @@ import { synth } from '../lib/tts.mjs'
 import { sing } from '../lib/sing.mjs'
 import { tickMood } from '../lib/mood.mjs'
 import { generateStickerImage } from '../lib/imggen.mjs'
+import { availableTags } from '../lib/stickers.mjs'
 
 const LOG_FILE = dataPath('qq-server.log')
 
@@ -72,16 +73,44 @@ export function splitBubbles(text, max = 3, perMax = 42) {
 export function parseMessage(message, selfId) {
   let text = ''
   let atMe = false
+  const images = []   // 图片 URL（等 Qwen3-VL 来"看"）
+  const marks = []    // 非文字内容的描述标记
   if (Array.isArray(message)) {
     for (const seg of message) {
-      if (seg?.type === 'text') text += seg.data?.text ?? ''
-      else if (seg?.type === 'at' && String(seg.data?.qq) === String(selfId)) atMe = true
+      const t = seg?.type
+      if (t === 'text') text += seg.data?.text ?? ''
+      else if (t === 'at' && String(seg.data?.qq) === String(selfId)) atMe = true
+      else if (t === 'image') {
+        const u = String(seg.data?.url || seg.data?.file || '')
+        if (/^https?:\/\//.test(u)) images.push(u)
+        marks.push('【发了一张图片】')
+      } else if (t === 'face') marks.push('【QQ表情】')
+      else if (t === 'video') marks.push('【发了一段视频】')
+      else if (t === 'record') marks.push('【发了一条语音】')
+      else if (t === 'reply') marks.push('【引用回复了一条消息】')
+      else if (t === 'forward' || t === 'node') marks.push('【合并转发消息】')
+      else if (t === 'json' || t === 'miniapp') {
+        // 卡片（B站/小程序/结构化消息）：挖 title/desc/url
+        let card = { title: '', desc: '', url: '' }
+        try {
+          const j = JSON.parse(seg.data?.data || seg.data?.json || '{}')
+          const dig = (o, depth = 0) => {
+            if (!o || typeof o !== 'object' || depth > 3) return null
+            if ((o.title || o.desc) && (o.url || o.jumpUrl || o.qqdocurl)) return o
+            for (const v of Object.values(o)) { const hit = dig(v, depth + 1); if (hit) return hit }
+            return null
+          }
+          const hit = dig(j)
+          card = { title: String(hit?.title || j.prompt || '').slice(0, 60), desc: String(hit?.desc || '').slice(0, 60), url: String(hit?.url || hit?.jumpUrl || hit?.qqdocurl || '').slice(0, 120) }
+        } catch { card.title = String(seg.data?.data || '').slice(0, 40) }
+        marks.push(`【分享卡片：${card.title || '未知内容'}${card.desc ? ' · ' + card.desc : ''}】`)
+      } else if (t) marks.push(`【${t}】`)
     }
   } else if (typeof message === 'string') {
     text = message.replace(/\[CQ:[^\]]*\]/g, '')
     atMe = message.includes(`[CQ:at,qq=${selfId}]`)
   }
-  return { text: text.trim(), atMe }
+  return { text: text.trim(), atMe, images, marks }
 }
 
 export async function run(argv = []) {
@@ -140,10 +169,12 @@ export async function run(argv = []) {
       const allow = QQ.allow_groups ?? []
       if (isGroup && allow.length && !allow.includes(groupId)) return
 
-      const { text, atMe } = parseMessage(evt.message, selfId)
-      if (!text) return
+      // 全类型消息理解（10-25）：卡片/视频/表情等非文字段 → 描述标记；图片 → Qwen3-VL 亲眼看
+      const parsed = parseMessage(evt.message, selfId)
+      let extra = parsed.marks.filter((m) => m !== '【发了一张图片】').join(' ')   // 图片单独走 VL
+      const { text, atMe, images } = { text: parsed.text, atMe: parsed.atMe, images: parsed.images }
+      if (!text && !images.length && !extra) return
       if (isGroup && QQ.at_only !== false && !atMe) return   // 群里只被 @ 才回
-
       const chatId = isGroup ? `qq:${groupId}` : `qq:${userId}`
       // 群聊插话引擎的在场信号：有群消息就刷新该群的时间戳（她"看到"群里在聊天）
       if (isGroup) groupLastMsgAt[groupId] = Date.now()
@@ -152,7 +183,26 @@ export async function run(argv = []) {
         const ownerQQNow = String(config().owner?.qq || '')
         if (!isGroup && ownerQQNow && String(userId) === ownerQQNow) ownerLastMsgAt = Date.now()
       } catch {}
-      const raw = text.replace(new RegExp(`@?${selfId}\\s*`), '').trim()
+      let imageDesc = ''
+      if (images.length) {
+        try {
+          const { visionOn, describeFrames } = await import('../lib/vision.mjs')
+          if (visionOn()) {
+            const dl = path.join(dataPath('qq-img'), `img-${Date.now()}-${Math.floor(Math.random() * 1e4)}.jpg`)
+            fs.mkdirSync(path.dirname(dl), { recursive: true })
+            const exe = fs.existsSync('C:/Windows/System32/curl.exe') ? 'C:/Windows/System32/curl.exe' : 'curl'
+            execFileSync(exe, ['-sS', '-L', '-m', '30', '-A', 'Mozilla/5.0', '-o', dl, images[0]], { timeout: 35000, windowsHide: true })
+            if (fs.existsSync(dl) && fs.statSync(dl).size > 2000) {
+              const desc = await describeFrames([dl], { query: '这是 QQ 聊天里对方发来的图片。一两句话说明：图里是什么/谁、在干什么、如果是表情包或梗图说出它的梗和情绪。' })
+              imageDesc = desc ? `【她发来的图片：${desc.slice(0, 120)}】` : '【她发来一张图片，但我没看清】'
+            } else imageDesc = '【她发来一张图片，但下载失败】'
+            try { fs.rmSync(dl, { force: true }) } catch {}
+          } else imageDesc = '【她发来一张图片】'
+        } catch { imageDesc = '【她发来一张图片】' }
+        try { fs.rmSync(path.join(dataPath('qq-img')), { recursive: true, force: true }) } catch {}   // 用完即清
+      }
+      const parts = [text.replace(new RegExp(`@?${selfId}\\s*`), '').trim(), extra, imageDesc]
+      const raw = parts.filter(Boolean).join(' ')
       if (!raw) return
       // 群聊像私聊一样回（at_only=false 时）：把说话人昵称带上，她才知道在跟谁说话，
       // 记忆里也留着"谁说了什么"（号码绝不当称呼 —— ownerLine 踩过的坑）。
@@ -206,6 +256,13 @@ export async function run(argv = []) {
       const turns = memory.recent(chatId).length
       const messages = buildMessages({ platform: 'qq', userText, chatId, userId, turnsToday: turns, isGroup })
       messages[0].content += thinkingInstruction()
+      // 表情包概率旋钮（10-25）：摇中就强制她带一个图 —— 不再靠她"想起来"写标记。
+      // 图生图管够，每个都是新的；用户可在面板调 qq.stickerChance。
+      const stickerChance = Number(QQ.stickerChance ?? 0.5)
+      if (Math.random() < stickerChance) {
+        messages[0].content += '\n\n【这条回复必须带一个图片表情】在正文句尾追加一个标记，二选一：'
+          + `[表情:标签]（可用标签：${availableTags().join('/')}）或 [自制表情:八个字以内的短句]（会现场画一张新的）。只带一个，别解释。`
+      }
       const answer = await llm.chat(messages)
       const out = guard.clean(answer, config())
       if (!out) return
