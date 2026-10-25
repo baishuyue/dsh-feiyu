@@ -34,7 +34,7 @@ async function makePlan(topic) {
       + '**主角必须是你自己的鲸鱼娘形象**（参考图那个蓝发鱼尾少女）：每一幕都是她在画面里演绎内容，第一人称叙事，她的表情动作是戏。'
       + '选题从你真实感兴趣的东西里来（下面素材），别做无根内容。只输出 JSON：'
       + '{"title":"视频标题，≤20字，有钩子","scenes":[{"acting":"这一幕鲸鱼娘在做什么：动作+表情+剧情（中文，如：系着围裙笨拙地拆螃蟹，满手是黄，眼睛瞪圆）","line":"这一幕的中文口播台词，10~18字，口语"}],'
-      + '"tags":["标签1","标签2","标签3"],"intro":"投稿简介，40字内"}。4~5 个 scenes，台词连起来是一条完整顺口的口播稿。' },
+      + '"tags":["标签1","标签2","标签3"],"intro":"投稿简介，40字内"}。4~5 个 scenes。**台词铁律：必须以「本鱼」第一人称**——鱼的视角（游/泡水里/鱼尾/鳃）、鱼的生活（白饭/主人/刷视频）、带傲娇小情绪，像她对镜头直播说话，绝不能写成美食博主腔。台词连起来是一条完整顺口的口播稿。' },
     { role: 'user', content: '素材（选题从这里来）：\n- 兴趣：' + interests.join('；').slice(0, 150)
       + (recent.length ? '\n- 刚在网上看的：' + recent.join('；').slice(0, 120) : '')
       + (topic ? '\n- 主人点的主题：' + topic : '') + '\n\n策划：' },
@@ -51,6 +51,12 @@ export async function run(argv = []) {
   const topic = argv.filter((a) => !a.startsWith('-')).join(' ').trim()
   const cfg = config()
   if (cfg.douyin?.produce?.enabled === false) { console.log('douyin.produce.enabled 是关的'); return }
+  // 日额度（那套额度模式：0 = 不限）
+  const dayKey0 = new Date().toLocaleDateString('sv-SE')
+  const capFile = dataPath('douyin-produce.json')
+  const capState = (() => { try { return JSON.parse(fs.readFileSync(capFile, 'utf8')) } catch { return { day: '', count: 0 } } })()
+  const capMax = Number(cfg.douyin?.produce?.dailyMax ?? 2)
+  if (capMax > 0 && capState.day === dayKey0 && Number(capState.count) >= capMax) { console.log(`⏭ 今日视频生产额度已用完（${capState.count}/${capMax}）`); return }
 
   console.log('🎬 策划中（选题/分镜/台词来自她的真实兴趣）…')
   const plan = await makePlan(topic)
@@ -78,7 +84,11 @@ export async function run(argv = []) {
   const segFiles = []
   for (const [i, s] of segs.entries()) {
     const seg = path.join(dir, `seg-${i}.mp4`)
-    sh(['-loop', '1', '-i', s.img, '-i', s.wav, '-t', String(s.dur), '-vf', 'scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,format=yuv420p', '-c:v', 'libx264', '-tune', 'stillimage', '-r', '24', '-c:a', 'aac', '-b:a', '128k', seg])
+    const frames = Math.max(24, Math.round(s.dur * 24))
+    // Ken Burns 推拉（10-25 进化：静图 → 会有缓慢推近的活镜头感）
+    sh(['-loop', '1', '-i', s.img, '-i', s.wav, '-t', String(s.dur), '-vf',
+      `scale=1440:2560:force_original_aspect_ratio=increase,crop=1440:2560,zoompan=z='min(1+0.0009*on,1.13)':d=${frames}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=720x1280:fps=24,format=yuv420p`,
+      '-c:v', 'libx264', '-tune', 'stillimage', '-c:a', 'aac', '-b:a', '128k', seg])
     segFiles.push(seg)
   }
   const listFile = path.join(dir, 'concat.txt')
@@ -102,6 +112,7 @@ export async function run(argv = []) {
     const { spawn } = await import('node:child_process')
     spawn('powershell.exe', ['-NoProfile', '-Command', `Start-Process explorer.exe "${dir}"`], { detached: true, stdio: 'ignore', windowsHide: true }).unref()
   } catch {}
+  try { fs.writeFileSync(capFile, JSON.stringify({ day: dayKey0, count: (capState.day === dayKey0 ? Number(capState.count) : 0) + 1 })) } catch {}
   console.log(`📦 投稿包就绪：${dir}（已弹窗；桌面「她的投稿包」常驻入口，等你点投稿）`)
 }
 

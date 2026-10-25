@@ -176,7 +176,7 @@ const switches = collect(platforms[0], (n) => String(n.props.className || '').in
 assert.equal(switches.length, 4, '平台开关数量应为 4，实际 ' + switches.length)
 assert.equal(switches.filter((n) => n.props.className.includes('on')).length, 3, '默认应有 3 个平台开启')
 const allSwitches = collect(tree, (n) => String(n.props.className || '').includes('fy-switch'))
-assert.equal(allSwitches.length, 28, '全页开关应为 28 个（25 + 上网冲浪 + 自我升级 + 人格进化）')
+assert.equal(allSwitches.length, 29, '全页开关应为 29 个（28 + 完全自由总开关）')
 
 assert.ok(fetchCalls.includes('/dsh-feiyu/api/config'), '没有请求 /config')
 assert.ok(styleTags.length >= 1, '样式没注入')

@@ -82,6 +82,14 @@ export const DEFAULTS = {
     proxy: 'http://127.0.0.1:7897',
   },
 
+  // 完全自由（10-25 总开关）：开了之后她自己决定干什么——上网/刷B站/刷抖音/做视频/写代码/玩/歇着。
+  // 唤醒走 DSH 会话（未分组那个），额度系统自动把关（作品量/评论量/分享量都还是那套额度）。
+  freedom: {
+    enabled: false,
+    wakeEveryMin: 75,     // 每 N 分钟给一次"自由意志"唤醒机会
+    chance: 0.55,         // 唤醒命中概率（她自己节奏）
+    engageEveryMin: 120,  // 抖音评论区巡检间隔（完全自由模式下）
+  },
   // 上网与进化（10-25）：给足自由度 —— 她在网上瞎溜达/玩/学习，甚至自我升级（备份+日志强制）。
   web: {
     roam: { enabled: false, restMin: 2 },       // 自由上网常驻（web roam --free）：每轮她自己决定干什么，轮间休息 N 分钟
@@ -182,7 +190,7 @@ export const DEFAULTS = {
     freeRoam: { enabled: false, unlimited: true, maxVideos: 0, maxMinutes: 0, restMin: 3 },
     // 运营（10-25）：她自己的账号自己运营——评论区按需回复（LLM 判断）+ 短视频生产（投稿点击归主人）
     engage: { enabled: true, dailyMax: 3 },
-    produce: { enabled: true },
+    produce: { enabled: true, dailyMax: 2 },   // 每天最多生产几条（0 = 不限）
     // 私信陪聊（参照 QQ 模式）：常驻轮询主人私信，新消息→LLM 回
     // 端口默认 8095：8090 常被 Wondershare 推送组件（WsToastNotification.exe）抢占，绑不上
     dm: { enabled: false, pollSec: 300, port: 8095 },

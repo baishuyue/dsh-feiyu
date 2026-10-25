@@ -261,6 +261,7 @@ textarea.fy-input{width:100%;min-height:136px;resize:vertical;line-height:1.65;f
 				webSelfUp: !!(c.web && c.web.selfUpgrade && c.web.selfUpgrade.enabled),
 				evoOn: !!(c.personality && c.personality.evolve && c.personality.evolve.enabled),
 				evoDays: (c.personality && c.personality.evolve && c.personality.evolve.days) || 2,
+				freedomOn: !!(c.freedom && c.freedom.enabled),
 					voicePath: (c.voice && c.voice.ref_audio_path) || "",
 					wxRhythm: (c.wechat && c.wechat.rhythm) || "fast",
 					wxMerge: (c.wechat && c.wechat.merge_window_sec) || 3,
@@ -1015,6 +1016,30 @@ textarea.fy-input{width:100%;min-height:136px;resize:vertical;line-height:1.65;f
 							onChange: (v) => { setDraft(Object.assign({}, draft, { dykFollow: v })); save({ bilibili: { follow: { enabled: v } } }, v ? "关注已开（好UP自己关注）" : "关注已关"); },
 						}),
 						h("span", { className: "fy-hint", style: { marginTop: 0 } }, "社交图谱自己长"))),
+
+// 完全自由（总开关）：她想干嘛就干嘛——上网/刷B站/刷抖音/做视频/写代码/玩/歇着，额度系统把关，微信不受影响
+				h(Card, {
+					title: "🔓 完全自由",
+					hint: "总开关。开了之后：自由上网进程 + B站自由刷自动拉起，DSH 会话按她自己的节奏被唤醒——想 produce 就 produce、想上网就上网、也能选择歇着。作品量/评论量/分享量照旧走额度；微信不受影响。重启 DSH 后开关自动复位。",
+				},
+					h(Row, { label: "完全自由" },
+						h(Switch, {
+							on: draft.freedomOn,
+							label: "freedomOn",
+							onChange: async (v) => {
+								setDraft(Object.assign({}, draft, { freedomOn: v }));
+								const ok = await save({ freedom: { enabled: v } }, v ? "完全自由已开：世界是她的了" : "完全自由已关");
+								if (!ok) return;
+								try {
+									const r = await api("/services", { method: "POST", body: JSON.stringify({ target: "web-roam", action: v ? "start" : "stop" }) });
+									setSvc(r.services || null);
+									const r2 = await api("/services", { method: "POST", body: JSON.stringify({ target: "free-roam", platform: "bilibili", action: v ? "start" : "stop" }) });
+									setSvc(r2.services || null);
+									flash(v ? "已放她出去：自由上网+B站自由刷在跑，会话按她的意愿被唤醒" : "已收回：自由上网和 B站自由刷已停");
+								} catch (e) { flash("完全自由服务操作失败：" + ((e && e.message) || e), true); }
+							},
+						}),
+						h("span", { className: "fy-hint", style: { marginTop: 0 } }, "唤醒间隔/概率在 feiyu.config.json 的 freedom（默认 75 分钟 · 55%）"))),
 
 // 上网与进化（给足自由度：她在网上瞎溜达/玩/学习/自我升级，全部有日志和备份）
 				h(Card, {
