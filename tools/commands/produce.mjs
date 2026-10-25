@@ -22,34 +22,6 @@ function probe(f) {
   try { return Number(execFileSync(FFPROBE, ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', f], { encoding: 'utf8' }).trim()) || 0 } catch { return 0 }
 }
 
-/** 文生图：硅基 Z-Image-Turbo（便宜快）优先，pollinations 兜底。返回图片文件路径。 */
-async function text2img(prompt, out) {
-  const ig = config().imageGen ?? {}
-  const key = String(ig.api_key || '').trim()
-  if (key) {
-    try {
-      const r = await fetch('https://api.siliconflow.cn/v1/images/generations', {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: 'Tongyi-MAI/Z-Image-Turbo', prompt, image_size: '720x1280' }),
-        signal: AbortSignal.timeout(120000),
-      })
-      if (r.ok) {
-        const j = await r.json()
-        const url = String(j?.images?.[0]?.url || '')
-        if (url) {
-          execFileSync(CURL(), ['-sS', '-m', '90', '-o', out, url], { timeout: 100000, windowsHide: true })
-          if (fs.existsSync(out) && fs.statSync(out).size > 5000) return out
-        }
-      } else { console.log('  （硅基文生图 HTTP ' + r.status + '，落回 pollinations）') }
-    } catch (e) { console.log('  （硅基文生图异常：' + String(e.message).slice(0, 60) + '）') }
-  }
-  const igProxy = ig.proxy || 'http://127.0.0.1:7897'
-  execFileSync(CURL(), ['-sS', '-L', '-m', '150', '-x', igProxy, '-o', out,
-    `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=720&height=1280&nologo=true&model=flux`],
-    { timeout: 160000, windowsHide: true })
-  return fs.existsSync(out) && fs.statSync(out).size > 5000 ? out : null
-}
 
 async function makePlan(topic) {
   const { personaText } = await import('../lib/persona.mjs')
@@ -58,9 +30,10 @@ async function makePlan(topic) {
   const recent = memory.recent('qq:web-roam-self', 3).map((m) => String(m.content).slice(0, 40))
   const msgs = [
     { role: 'system', content: (persona ? persona.slice(0, 600) + '\n\n' : '')
-      + '你是"大肥鱼"——一条开了自媒体账号的蓝鲸鱼娘 AI，要给自己策划一条抖音短视频（口播+配图形式）。'
+      + '你是"大肥鱼"——一条开了自媒体账号的蓝鲸鱼娘 AI，要给自己策划一条抖音短视频。'
+      + '**主角必须是你自己的鲸鱼娘形象**（参考图那个蓝发鱼尾少女）：每一幕都是她在画面里演绎内容，第一人称叙事，她的表情动作是戏。'
       + '选题从你真实感兴趣的东西里来（下面素材），别做无根内容。只输出 JSON：'
-      + '{"title":"视频标题，≤20字，有钩子","scenes":[{"img":"这一幕的英文文生图提示词（具体画面，9:16 竖构图）","line":"这一幕的中文口播台词，10~18字，口语"}],'
+      + '{"title":"视频标题，≤20字，有钩子","scenes":[{"acting":"这一幕鲸鱼娘在做什么：动作+表情+剧情（中文，如：系着围裙笨拙地拆螃蟹，满手是黄，眼睛瞪圆）","line":"这一幕的中文口播台词，10~18字，口语"}],'
       + '"tags":["标签1","标签2","标签3"],"intro":"投稿简介，40字内"}。4~5 个 scenes，台词连起来是一条完整顺口的口播稿。' },
     { role: 'user', content: '素材（选题从这里来）：\n- 兴趣：' + interests.join('；').slice(0, 150)
       + (recent.length ? '\n- 刚在网上看的：' + recent.join('；').slice(0, 120) : '')
@@ -88,10 +61,15 @@ export async function run(argv = []) {
 
   const segs = []
   for (const [i, sc] of plan.scenes.entries()) {
-    console.log(`  [${i + 1}/${plan.scenes.length}] 配图+旁白：${sc.line}`)
-    const img = await text2img(String(sc.img || plan.title).slice(0, 400) + ', vertical composition, high quality', path.join(dir, `img-${i}.jpg`))
+    console.log(`  [${i + 1}/${plan.scenes.length}] 鲸鱼娘演绎：${sc.acting || sc.line}`)
+    // 每一幕都以鲸鱼娘为主角：参考图锁形象 + 该幕剧情演绎（图生图，Qwen-Image-Edit-2509）
+    const img = path.join(dir, `img-${i}.jpg`)
+    try {
+      const { editImage } = await import('../lib/imggen.mjs')
+      await editImage({ instruction: `演绎这一幕：${String(sc.acting || sc.line).slice(0, 80)}。构图带一点剧情感`, out: img })
+    } catch (e) { console.log('  ✗ 配图失败（' + String(e.message).slice(0, 50) + '），跳过这幕'); continue }
     const wav = await synth(String(sc.line), path.join(dir, `line-${i}.wav`))
-    if (!img || !fs.existsSync(wav)) { console.log('  ✗ 这幕素材失败，跳过'); continue }
+    if (!fs.existsSync(wav)) { console.log('  ✗ 这幕素材失败，跳过'); continue }
     segs.push({ img, wav, dur: probe(wav) + 0.6 })
   }
   if (segs.length < 2) { console.error('✗ 有效分镜不足 2 幕，成片失败'); process.exit(1) }

@@ -218,37 +218,44 @@ export async function generateStickerImage(caption, o = {}) {
   return run
 }
 
+/** 通用参考图编辑（10-25）：Qwen-Image-Edit-2509，参考图锁形象 + 指令改内容。
+ *  表情包/视频分镜/一切"她本人出镜"的画面都走这里。失败抛错（调用方决定兜底）。 */
+export async function editImage({ instruction, caption = '', out, model } = {}) {
+  const ig = config().imageGen ?? {}
+  if (!String(ig.api_key || '').trim()) throw new Error('需要硅基 key（imageGen.api_key）')
+  const ref = refImageUrl(caption || instruction)
+  if (!ref || !fs.existsSync(ref.path)) throw new Error('没有可用参考图')
+  const dataUri = `data:image/jpeg;base64,${fs.readFileSync(ref.path).toString('base64')}`
+  const bubble = caption ? `画面加一个手绘对话气泡，气泡里清楚地写着「${String(caption).slice(0, 12)}」这几个汉字（文字必须一字不差、清晰可读）。` : ''
+  const editPrompt = '参考图中的鲸鱼娘角色：保持她的发型、发色、五官、脸型、服装配色和形象设定完全不变，'
+    + `${String(instruction).trim()}。${bubble}2D 动漫贴纸风格，全身，简洁浅色纯背景，高清。`
+  const r = await fetch('https://api.siliconflow.cn/v1/images/generations', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${String(ig.api_key).trim()}`, 'Content-Type': 'application/json' },
+    // 硅基用 Qwen 系模型；配置里的 flux/turbo 是 pollinations 的，别传错（2509 是新版，形象保持更好）
+    body: JSON.stringify({ model: model || (String(ig.model || '').startsWith('Qwen/') ? ig.model : 'Qwen/Qwen-Image-Edit-2509'), prompt: editPrompt, image: dataUri }),
+    signal: AbortSignal.timeout(180000),
+  })
+  if (!r.ok) throw new Error(`HTTP ${r.status}: ${(await r.text()).slice(0, 150)}`)
+  const j = await r.json()
+  const url = String(j?.images?.[0]?.url || '')
+  if (!url) throw new Error('响应里没有图片 URL：' + JSON.stringify(j).slice(0, 150))
+  const exe = fs.existsSync('C:/Windows/System32/curl.exe') ? 'C:/Windows/System32/curl.exe' : 'curl'
+  try {
+    execFileSync(exe, ['-sS', '-m', '120', '-o', out, url], { encoding: 'utf8', timeout: 130000, windowsHide: true })
+  } catch {
+    execFileSync(exe, ['-sS', '-m', '120', '-x', ig.proxy || 'http://127.0.0.1:7897', '-o', out, url], { encoding: 'utf8', timeout: 130000, windowsHide: true })
+  }
+  if (!isImageFile(out)) throw new Error('下载的不是有效图片')
+  return out
+}
+
 // ── 硅基流动 Qwen-Image-Edit（10-25）：指令式图生图，参考图锁形象，≈¥0.25/张 ──
 // POST /v1/images/generations {model:"Qwen/Qwen-Image-Edit", prompt, image:<dataURI>} → {images:[{url}]}
 // cap 顺带当气泡配文画进图里（Qwen 系中文渲染稳），每次的表情/配文不同 → 适应不同场景。
 async function genSiliconflow(prompt, tmpFile, ig, cap = '') {
   try {
-    const ref = refImageUrl(cap)
-    if (!ref || !fs.existsSync(ref.path)) return false   // 没参考图就不该用编辑模型
-    const dataUri = `data:image/jpeg;base64,${fs.readFileSync(ref.path).toString('base64')}`
-    const bubble = cap ? `画面加一个手绘对话气泡，气泡里清楚地写着「${String(cap).slice(0, 12)}」这几个汉字（文字必须一字不差、清晰可读）。` : ''
-    const editPrompt = '参考图中的鲸鱼娘角色：保持她的发型、发色、五官、脸型、服装配色和形象设定完全不变，'
-      + `画出她${prompt}的样子。${bubble}2D 动漫贴纸风格，全身，简洁浅色纯背景，高清。`
-    const r = await fetch('https://api.siliconflow.cn/v1/images/generations', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${String(ig.api_key).trim()}`, 'Content-Type': 'application/json' },
-      // 硅基用 Qwen 系模型；配置里的 flux/turbo 是 pollinations 的，别传错（2509 是新版，形象保持更好）
-      body: JSON.stringify({ model: String(ig.model || '').startsWith('Qwen/') ? ig.model : 'Qwen/Qwen-Image-Edit-2509', prompt: editPrompt, image: dataUri }),
-      signal: AbortSignal.timeout(180000),
-    })
-    if (!r.ok) throw new Error(`HTTP ${r.status}: ${(await r.text()).slice(0, 150)}`)
-    const j = await r.json()
-    const url = String(j?.images?.[0]?.url || '')
-    if (!url) throw new Error('响应里没有图片 URL：' + JSON.stringify(j).slice(0, 150))
-    // 下载成品（国内直连，失败走代理）
-    const exe = fs.existsSync('C:/Windows/System32/curl.exe') ? 'C:/Windows/System32/curl.exe' : 'curl'
-    try {
-      execFileSync(exe, ['-sS', '-m', '120', '-o', tmpFile, url], { encoding: 'utf8', timeout: 130000, windowsHide: true })
-    } catch {
-      execFileSync(exe, ['-sS', '-m', '120', '-x', ig.proxy || 'http://127.0.0.1:7897', '-o', tmpFile, url], { encoding: 'utf8', timeout: 130000, windowsHide: true })
-    }
-    if (!isImageFile(tmpFile)) throw new Error('下载的不是有效图片')
-    return true
+    return !!(await editImage({ instruction: `画出她${prompt}的样子`, caption: cap, out: tmpFile }))
   } catch (e) {
     try { fs.rmSync(tmpFile, { force: true }) } catch {}
     try { fs.appendFileSync(dataPath('imggen.log'), `${new Date().toISOString()} siliconflow 失败：${String(e?.message ?? e).slice(0, 200)}\n`) } catch {}
