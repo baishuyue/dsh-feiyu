@@ -37,7 +37,9 @@ window.__ModuleLoader__.load({
 			try { data = text ? JSON.parse(text) : {}; } catch {
 				throw new Error(r.status + " 非 JSON 响应：" + text.slice(0, 120));
 			}
-			if (!r.ok || data.ok === false) throw new Error(data.error || ("HTTP " + r.status));
+			if (!r.ok || data.ok === false) throw new Error(data.error
+				|| (Array.isArray(data.errors) && data.errors.length ? data.errors.join("；") : "")
+				|| ("HTTP " + r.status));   // 后端 /services 把原因放在 errors 数组，别吞成"HTTP 200"（10-25 实测坑）
 			return data;
 		}
 
