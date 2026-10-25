@@ -10,7 +10,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
-import { execFile } from 'node:child_process'
+import { execFile, execFileSync } from 'node:child_process'
 import { dataPath } from './paths.mjs'
 import { config } from './config.mjs'
 import { STICKER_DIR } from './stickers.mjs'
@@ -202,7 +202,8 @@ async function genSiliconflow(prompt, tmpFile, ig) {
     const r = await fetch('https://api.siliconflow.cn/v1/images/generations', {
       method: 'POST',
       headers: { Authorization: `Bearer ${String(ig.api_key).trim()}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: ig.model || 'Qwen/Qwen-Image-Edit', prompt: editPrompt, image: dataUri }),
+      // 硅基用 Qwen 系模型；配置里的 flux/turbo 是 pollinations 的，别传错（2509 是新版，形象保持更好）
+      body: JSON.stringify({ model: String(ig.model || '').startsWith('Qwen/') ? ig.model : 'Qwen/Qwen-Image-Edit-2509', prompt: editPrompt, image: dataUri }),
       signal: AbortSignal.timeout(180000),
     })
     if (!r.ok) throw new Error(`HTTP ${r.status}: ${(await r.text()).slice(0, 150)}`)
