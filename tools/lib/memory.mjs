@@ -72,6 +72,9 @@ export function remember(platform, chatId, userId, role, text, extra = {}) {
     // isGroup：群聊行。群里的"user"是群友不是主人，混进 recallAll 会被渲染成「主人：…」，
     // 于是她在私聊里把群友的话当主人的话记（10-26 实锤：把群友"叫爸爸"当成主人说的）。
     ...(extra.isGroup ? { isGroup: true } : {}),
+    // kind: 'push' = 她主动推给主人的消息（视频分享/提醒）。仍然要记（不然她不知道自己刚说过），
+    // 但 recent() 会把它当"广播"而不是"对话"，避免把对话窗口挤满（10-26）。
+    ...(extra.kind ? { kind: String(extra.kind) } : {}),
   }
   const file = episodeFile(p)
   fs.mkdirSync(path.dirname(file), { recursive: true })
@@ -154,15 +157,26 @@ function readRows(chatId, opts = {}) {
   return rows
 }
 
+/** 老数据里的推送行（还没有 kind 字段时写的）——开头就是这类标签的当广播看。 */
+const LEGACY_PUSH = /^【(?:B站|哔哩|抖音|微信|视频|分享|提醒|QQ)分享】/
+
 /** 最近 n 条对话（按 chatId 过滤，时间正序返回）。返回 {role, content} 格式，供 LLM 直接使用。
  *  ⚠️ 只放 user/assistant（10-25 修的 bug）：抖音那边会把"刷到某条视频"记成 role=event 的流水，
  *  混进 messages 里会被模型接口直接拒掉（HTTP 422 unknown variant `event`）——
  *  抖音 interact 因此整条链路一条评论都生成不出来。 */
 export function recent(chatId, n = 8) {
-  return readRows(chatId)
-    .filter(r => r.role === 'user' || r.role === 'assistant')
+  const rows = readRows(chatId).filter(r => r.role === 'user' || r.role === 'assistant')
+  // 10-26 主人报"记忆错乱"：她那边的"最近聊过"里塞满了自己推的视频（她一次能连推 7 条
+  // 【B站分享】），真正的对话被挤出窗口 —— 回复起来就像不记得刚才说过什么。
+  // 只要对话本身够多，就把推送（kind:'push'，以及打标记之前的老数据）排除在外；
+  // 对话太少时仍然全给，别让她失忆。
+  // 门槛：对话至少占窗口一半（且不少于 3 条）才把推送滤掉 —— 聊天很少时推送照给，别让她失忆。
+  const need = Math.max(3, Math.ceil(n / 2))
+  const convo = rows.filter(r => r.kind !== 'push' && !LEGACY_PUSH.test(String(r.text || '')))
+  const pool = convo.length >= need ? convo : rows
+  return pool
     .slice(-n)
-    .map(r => ({ role: r.role, content: r.text }))
+    .map(r => ({ role: r.role, content: r.text, at: r.ts, kind: r.kind }))
 }
 
 

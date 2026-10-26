@@ -39,10 +39,49 @@ export function sanitizeForTts(text) {
  * override：临时覆盖音色（{ref_audio_path, prompt_text} 等 PASS_THROUGH 字段）——
  * 音色工坊试听/唱歌逐句合成用，不改全局配置。
  */
+/** 参考文本必须和参考音频是**同一段话**。
+ *
+ *  10-26 主人报「说话包括做视频都重复出现一句『说好等手伤痊愈了就一起打游戏』」——
+ *  查出来是旧音色（银狼）的参考文本留在了配置里：ref_audio_path 换成了 yinlang，
+ *  prompt_text 还是那句"卡夫卡/手伤/打游戏"，而 yinlang.wav 真正说的是
+ *  「战斗体验该优化了，哼就这速度太慢了。」。GPT-SoVITS 拿错文本去对齐参考音频，
+ *  于是每次合成都会把这句参考文本**念出来**（实测同一句 42 字：错文本 30.66 秒 / 对文本 8.62 秒，
+ *  多出来的 22 秒就是泄漏）。
+ *
+ *  防守：模型目录里一般有同名 .txt（参考音频的转写）。它比配置可信 —— 配置是人手填的，
+ *  换音色时容易忘了跟着改。只要有 .txt 且内容不同，就用 .txt 的，并报一声。 */
+export function refTextOf(refAudioPath) {
+  try {
+    if (!refAudioPath) return ''
+    const dir = path.dirname(String(refAudioPath))
+    const base = path.basename(String(refAudioPath)).replace(/\.[^.]+$/, '')
+    const cands = [base + '.txt', base + '.lab']
+    for (const c of cands) {
+      const f = path.join(dir, c)
+      if (fs.existsSync(f)) return fs.readFileSync(f, 'utf8').trim()
+    }
+    // 没同名文件就退一步：目录里任意一个 .txt
+    const any = fs.readdirSync(dir).find((f) => f.toLowerCase().endsWith('.txt'))
+    if (any) return fs.readFileSync(path.join(dir, any), 'utf8').trim()
+  } catch {}
+  return ''
+}
+
 export async function synth(text, outFile, override = {}) {
   const v = config().voice ?? {}
   const speak = sanitizeForTts(text)
   if (!speak) throw new Error('文本里全是 GBK 发不出的符号（颜文字/emoji），没有可念的内容')
+  // 参考文本对齐（见 refTextOf 注释）：override 里显式给了就用它的（音色工坊/唱歌逐句覆盖），
+  // 否则以模型目录的转写为准，防"配置里的旧参考文本"把话念歪。
+  const refAudio = override.ref_audio_path || v.ref_audio_path || ''
+  let prompt = override.prompt_text ?? v.prompt_text ?? ''
+  if (override.prompt_text === undefined) {
+    const truth = refTextOf(refAudio)
+    if (truth && truth !== String(prompt).trim()) {
+      try { console.warn(`[tts] 参考文本与「${path.basename(String(refAudio))}」的转写不符，改用转写：${truth.slice(0, 40)}`) } catch {}
+      prompt = truth
+    }
+  }
   const body = {
     text: speak,
     text_lang: v.text_lang || 'zh',
@@ -51,6 +90,9 @@ export async function synth(text, outFile, override = {}) {
   }
   for (const k of PASS_THROUGH) if (v[k]) body[k] = v[k]
   for (const k of PASS_THROUGH) if (override[k]) body[k] = override[k]
+  // 配置里的 prompt_text 可能是换音色前的旧值 —— 用模型转写盖掉（显式 override 除外）
+  if (override.prompt_text === undefined && prompt) body.prompt_text = prompt
+  if (refAudio) body.ref_audio_path = refAudio
 
   const r = await fetch(v.sovits_url || 'http://127.0.0.1:9880/tts', {
     method: 'POST',

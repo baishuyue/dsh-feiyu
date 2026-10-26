@@ -110,6 +110,24 @@ export async function run(argv = []) {
   try { const c = new AbortController(); setTimeout(() => c.abort(), 1500); await fetch(sovitsUrl, { method: 'POST', signal: c.signal, body: '{}' }); ttsOk = true } catch {}
   add('语音 TTS（可选）', true, ttsOk ? `GPT-SoVITS 已连（${sovitsUrl}）` : 'GPT-SoVITS 未启动 —— 发 QQ 语音前先装（xiaoxiao 音色）')
 
+  // ⑬b 参考文本是否和参考音频对得上（10-26 主人报"语音和视频里反复出现同一句话"）
+  // 错配时 GPT-SoVITS 会把参考文本一起念出来 —— 这条不查出来，语音听起来就像"记忆错乱"
+  try {
+    const { refTextOf } = await import('../lib/tts.mjs')
+    const ref = cfg.voice?.ref_audio_path || ''
+    const configured = String(cfg.voice?.prompt_text || '').trim()
+    const truth = refTextOf(ref)
+    if (!ref) add('语音参考文本', true, '没配参考音频（用默认音色）')
+    else if (truth && configured && truth !== configured) {
+      add('语音参考文本', false,
+        `配置里的参考文本和「${ref.split(/[\\/]/).pop()}」说的话不一样 —— `
+        + `配置：「${configured.slice(0, 24)}…」实际：「${truth.slice(0, 24)}…」。`
+        + '这会让每次合成把参考文本也念出来（语音/视频里反复冒同一句）。'
+        + `修：把 voice.prompt_text 改成「${truth.slice(0, 40)}」`)
+    } else if (!truth && configured) add('语音参考文本', true, '模型目录没有转写文件，按配置里的来（无法自动核对）')
+    else add('语音参考文本', true, `和参考音频对齐：「${(truth || configured).slice(0, 30)}」`)
+  } catch (e) { add('语音参考文本', true, '跳过（' + String(e.message).slice(0, 40) + '）') }
+
   // ⑭ 抖音互动（douyin_interact.py + patchright 环境）
   let dyOk = false
   try { fs.accessSync('D:/social-auto-upload/douyin_interact.py'); fs.accessSync('D:/social-auto-upload/.venv/Scripts/python.exe'); dyOk = true } catch {}

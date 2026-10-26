@@ -95,8 +95,27 @@ export function fetchWeb(url) {
     html = curlGet(url, { proxy: true, timeout: 40000 })
   }
   const text = htmlToText(html).slice(0, 4000)
+  const shell = shellPageReason(text)
+  if (shell) throw new Error(shell + `：${url}`)
   logWeb('访问', url)
   return text
+}
+
+/** 空壳页判定（正文没有、只有站点模板/登录墙）。返回原因，正常页返回 ''。
+ *  10-26：她今天把同一个知乎落地页读了 11 次 —— 抓到的是"知乎，让每一次点击都充满意义…"，
+ *  正文一个字没有。她以为"读完了没记住"，下一轮又去读同一页。 */
+export function shellPageReason(text) {
+  const s = String(text ?? '')
+  const bare = s.replace(/\s+/g, '')
+  const BOILER = [
+    '知乎，让每一次点击都充满意义', '登录知乎', '登录后你可以', '扫码登录',
+    '请开启JavaScript', '启用JavaScript', '您的浏览器不支持', '访问验证', '滑动验证',
+    '该内容已被删除', '内容不存在', '404 Not Found', '页面不存在',
+  ]
+  const hit = BOILER.find((b) => s.includes(b))
+  if (hit && bare.length < 900) return `这一页只抓到站点模板（含"${hit}"），没有正文 —— 换一个链接或直接搜关键字吧`
+  if (bare.length < 200) return `这一页正文太少（${bare.length} 字），大概是空壳页/需要登录 —— 换个链接吧`
+  return ''
 }
 
 function arg(argv, name, d) { const i = argv.indexOf(name); return i >= 0 ? String(argv[i + 1] ?? d) : d }
@@ -152,13 +171,28 @@ async function roamLoop() {
         for (const r of rs.slice(0, 5)) console.log('  ·', r.title, '—', r.url)
         lastResults = rs
         try { const { remember } = await import('../lib/memory.mjs'); remember('web', 'web:roam', cfg.identity?.name ?? 'feiyu', 'assistant', `（搜索了「${String(plan.query).slice(0, 40)}」，首选：${rs[0]?.title || ''}）`) } catch {}      } else if (act === '读网页' && String(plan.url || '').trim()) {
-        const text = fetchWeb(String(plan.url).trim())
-        console.log('  正文前 200 字：' + text.slice(0, 200).replace(/\n/g, ' '))
-        // 读完顺手沉淀
+        const url = String(plan.url).trim()
+        let text = ''
         try {
-          const { remember } = await import('../lib/memory.mjs')
-          remember('web', 'web:roam', cfg.identity?.name ?? 'feiyu', 'assistant', `（读了 ${plan.url}：${text.slice(0, 80)}）`)
-        } catch {}
+          text = fetchWeb(url)
+        } catch (e) {
+          // 读不到就明确记一笔"别再来"，并把这条链接从下一轮候选里去掉 —— 否则她会一直读同一页空壳
+          console.log('  ✗ ' + String(e.message).slice(0, 140))
+          logWeb('读不到', url.slice(0, 70))
+          lastResults = lastResults.filter((r) => r.url !== url)
+          try {
+            const { remember } = await import('../lib/memory.mjs')
+            remember('web', 'web:roam', cfg.identity?.name ?? 'feiyu', 'assistant', `（这一页读不到正文，别再读它了：${url.slice(0, 60)}）`)
+          } catch {}
+        }
+        if (text) {
+          console.log('  正文前 200 字：' + text.slice(0, 200).replace(/\n/g, ' '))
+          // 读完顺手沉淀
+          try {
+            const { remember } = await import('../lib/memory.mjs')
+            remember('web', 'web:roam', cfg.identity?.name ?? 'feiyu', 'assistant', `（读了 ${url}：${text.slice(0, 80)}）`)
+          } catch {}
+        }
       } else if (act === '写小说' && String(plan.text || '').trim()) {
         const dir = path.join(WORK_DIR, 'creative')
         fs.mkdirSync(dir, { recursive: true })

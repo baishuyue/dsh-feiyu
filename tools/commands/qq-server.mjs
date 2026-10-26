@@ -695,7 +695,7 @@ export async function run(argv = []) {
           } catch (e) { logErr('[qq] 主动搭话补图失败：' + (e?.message ?? e)) }
         }
       }
-      memory.remember('qq', `qq:${ownerQQ}`, ownerQQ, 'assistant', out)   // 推送即记忆：她自己"说过"这句
+      memory.remember('qq', `qq:${ownerQQ}`, ownerQQ, 'assistant', out, { kind: 'push' })   // 推送即记忆：她自己"说过"这句（kind=push 不占对话窗口）
       const st2 = readProact()
       const rec = (Array.isArray(st2.recent) ? st2.recent : []).slice(-7)
       rec.push({ at: Date.now(), type: usedType, text: String(out).slice(0, 60) })

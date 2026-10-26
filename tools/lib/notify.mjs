@@ -25,7 +25,7 @@ export async function sendOwnerQQ(text) {
     const ok = r.ok && (j.retcode === 0 || j.status === 'ok' || j.message_id)
     if (!ok) { console.log(`[notify] 发主人失败：HTTP ${r.status} ${JSON.stringify(j).slice(0, 200)}`); return false }
     // 发送成功 = 她"亲口说过"这句话：记进 QQ 对话记忆，主人接着聊才接得上
-    try { memory.remember('qq', `qq:${ownerQQ}`, ownerQQ, 'assistant', content) } catch {}
+    try { memory.remember('qq', `qq:${ownerQQ}`, ownerQQ, 'assistant', content, { kind: 'push' }) } catch {}
     return true
   } catch (e) {
     console.log('[notify] 发主人异常：' + e.message)
