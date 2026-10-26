@@ -220,6 +220,10 @@ locks/                  自由进程单实例锁
 14. **DSH 重启灭全家**（NapCat/SoVITS/qq-server）；NapCat 手动 `schtasks.exe //Run //TN DSH-Feiyu-NapCat`；扫码登录时 3000 端口关闭是正常
 15. **面板数值**：0 是合法值（=不限），显示一律 `!= null` 判断，禁 `||默认值`
 16. **DM 虚拟列表**：先读底部最新再上翻（先滚后读丢最新）
+17. **完全自由是总开关，但子循环是独立开关**：`freedom.enabled` 只负责"每 N 分钟摇她一次"，真正干活的 `web.roam` / `bilibili.freeRoam` / `douyin.freeRoam` 各是各的，而且 `resetOnExitToggles` 每次 DSH 退出会把它们复位成 false → 面板亮着"完全自由"却整天空置（10-26 用户报障）。现在：面板点开连带点亮三个子循环、`freedom.startWithDsh:true` 跟 DSH 自启、60s 自愈连开关一起补回。**排查"她不活动"先看这三个开关和进程在不在**
+18. **额度 0 = 不限，提示语里也必须写"不限"**：`quota.shareDaily` 语义是 `limit > 0` 才拦，但 `wakePrompt` 以前直接打印数字 → 渲染成"每天合计 ≤0 条"，她照字面理解成"今天一条也不能发"，整天不动。凡把配置打进提示语，先判 `> 0`
+19. **语音 400 是 GBK 的锅**：Windows 上 GPT-SoVITS `api_v2.py` 用 GBK 编码，颜文字「・」(U+30FB) 和 emoji 🐟 会让 `/tts` 直接 400（异常原文 `'gbk' codec can't encode character`）。她的回复几乎条条带颜文字 → 语音**从来没成功过**。合成前必须过 `tts.mjs` 的 `sanitizeForTts()`
+20. **QQ 主动搭话的素材别只喂 B站/抖音**：只喂那两处 → 她会连着说"肚子叫/桑拿鸡"，大半草稿被去重拦掉（看着像主动性弱）。已把 `web-log.md`（她自己在网上干的事）和她写给主人的日记也喂进去
 17. **git**：user baishuyue / `206720720+baishuyue@users.noreply.github.com`；推送走 Clash 7897（`env -u http_proxy … git -c http.proxy=… push`）
 
 ---

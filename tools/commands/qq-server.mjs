@@ -617,6 +617,16 @@ export async function run(argv = []) {
       } catch {}
       const fcts = memory.facts('owner')
       if (fcts.length) hooks.push('关于主人的记忆：' + fcts.slice(-2).join('；').slice(0, 90))
+      // 10-26：以前素材只有 B站/抖音，她翻来覆去就那几句（"肚子叫/桑拿鸡"连着说），
+      // 大半草稿被去重拦掉，看着就像"主动性很弱"。把她自己在网上干的事也喂进去 —— 素材新鲜，话才不重。
+      try {
+        const wl = fs.readFileSync(dataPath('web-log.md'), 'utf8').split('\n').filter(Boolean).slice(-3).reverse()
+        if (wl.length) hooks.push('你自己刚才在网上干的：' + wl.map((s) => s.replace(/^-\s*/, '').replace(/\*\*/g, '').slice(0, 42)).join('；'))
+      } catch {}
+      try {
+        const dg = fs.readFileSync(dataPath('diary-owner.md'), 'utf8').split('\n').filter(Boolean).slice(-1)[0]
+        if (dg) hooks.push('你最近写给主人的日记里那句：' + dg.replace(/^[-#\s]+/, '').slice(0, 50))
+      } catch {}
       try { const li = memory.loreInterests(1); if (li.length) hooks.push('最近挂在心上：' + String(li[0]).slice(0, 40)) } catch {}
       const lastProact = readProact()
       const lastType = String(lastProact.lastType || '')
