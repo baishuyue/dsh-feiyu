@@ -267,7 +267,16 @@ export async function run(argv = []) {
       // 时间锚点已经搬进 persona 的「【现在】」常驻层（10-25 重构，照 dsh-world 的 timeContext）：
       // 贴在最后一条消息上的临时提示一重写就丢，现在每轮都在 system 里。
       // 这里只保留事后兜底要用的真实间隔（sanitizeDayClaims 的口径）。
-      const ownerGapMs = Math.max(0, Date.now() - lastOwnerMsgTs())
+      // 群聊要按**这个群**的最后一条算（10-26）：拿主人的私聊间隔去校群里的"好久没见"，
+      // 会把她对群友说的话按私聊时间线纠正，等于又混了一次通道。
+      let gapFrom = lastOwnerMsgTs()
+      if (isGroup) {
+        try {
+          const g = memory.lastByRole(chatId).lastUser
+          if (g) gapFrom = g
+        } catch {}
+      }
+      const ownerGapMs = Math.max(0, Date.now() - gapFrom)
       const gapTxt = gapText(ownerGapMs)
       // 表情包概率旋钮（10-25）：摇中就强制她带一个图 —— 不再靠她"想起来"写标记。
       // 图生图管够，每个都是新的；用户可在面板调 qq.stickerChance。
@@ -526,14 +535,19 @@ export async function run(argv = []) {
   // 启动时从 QQ 记忆里把主人最后一条消息的真实时间捞回来。
   function seedOwnerLastMsgAt() {
     const ownerQQ = String(config().owner?.qq || '')
+    // ⚠️ 10-26 修：原来只比对 userId，主人在**群里**说话也算"主人最后一条消息" ——
+    // 结果他群里聊了一整天，她在私聊就永远判定"他刚跟我聊过"，主动搭话全被 quiet 门槛吃掉。
+    // "多久没说话"只对私聊有意义，所以必须同时锁 chatId。
+    const ownerChat = 'qq:' + ownerQQ
     try {
       const file = dataPath('qq', 'episodes.jsonl')
       const rows = fs.readFileSync(file, 'utf8').trim().split('\n').filter(Boolean)
       for (let i = rows.length - 1; i >= 0; i--) {
         const r = JSON.parse(rows[i])
-        if (r && r.role === 'user' && (!ownerQQ || String(r.userId || '') === ownerQQ)) {
+        if (r && r.role === 'user' && String(r.chatId || '') === ownerChat
+          && (!ownerQQ || String(r.userId || '') === ownerQQ) && r.isGroup !== true) {
           ownerLastMsgAt = Number(r.ts) || 0
-          log(`[qq] 主人最后一条消息：${new Date(ownerLastMsgAt).toLocaleString('zh-CN')}（从记忆恢复）`)
+          log(`[qq] 主人最后一条私聊消息：${new Date(ownerLastMsgAt).toLocaleString('zh-CN')}（从记忆恢复）`)
           return
         }
       }
@@ -548,11 +562,14 @@ export async function run(argv = []) {
   // 内存里的 ownerLastMsgAt 只在收到消息时更新过，重启就归零，不能当事实用。
   function lastOwnerMsgTs() {
     const ownerQQ = String(config().owner?.qq || '')
+    // 同上：只认私聊。群里的"主人"发言不算"跟我说话"。
+    const ownerChat = 'qq:' + ownerQQ
     try {
       const line = fs.readFileSync(dataPath('qq', 'episodes.jsonl'), 'utf8').trim().split('\n')
       for (let i = line.length - 1; i >= 0; i--) {
         const r = JSON.parse(line[i])
-        if (r && r.role === 'user' && (!ownerQQ || String(r.userId || '') === ownerQQ)) return Number(r.ts) || 0
+        if (r && r.role === 'user' && String(r.chatId || '') === ownerChat
+          && (!ownerQQ || String(r.userId || '') === ownerQQ) && r.isGroup !== true) return Number(r.ts) || 0
       }
     } catch {}
     return 0
@@ -710,7 +727,10 @@ export async function run(argv = []) {
         const recent = memory.recent(chatId, Number(gc.recentN ?? 14))
         if (recent.length < 2) continue
         tickMood()
-        const built = buildMessages({ platform: 'qq', userText: '', chatId, userId: '', turnsToday: Number(g.count) })
+        // ⚠️ 10-26 修：这里原来**没传 isGroup** —— 等于她用"私聊人设"决定要不要在群里插话：
+        // 身份行给群友发主人通行证、时间锚点报"主人最后一次说话"、也没有末尾事实块。
+        // 群里自主开口必须和被动回话用同一套群聊装配。
+        const built = buildMessages({ platform: 'qq', userText: '', chatId, userId: '', turnsToday: Number(g.count), isGroup: true })
         const msgs = [
           built[0],
           { role: 'user', content: '【群聊插话决策】下面是这个群最近的聊天记录。你自己决定：现在适不适合插一句话？'
@@ -723,8 +743,16 @@ export async function run(argv = []) {
         if (!m) continue
         let j; try { j = JSON.parse(m[0]) } catch { continue }
         if (!j.speak || !String(j.text || '').trim()) continue
-        const out = guard.clean(String(j.text), config())
+        let out = guard.clean(String(j.text), config())
         if (!out) continue
+        // 群里插话也要过"别把主人叫给群友"这一关（10-26）：这条路径不经过主流程的拦截。
+        if (addressesOwner(out)) {
+          const fixed = out.replace(/(^|[，,。！!？?、\s])主人(?=$|[，,。！!？?、\s]|早|好|你|晚|再|睡|我|在)/g, '$1你')
+            .replace(/(晚安|早安|早上好|谢谢|再见|你好)\s*主人/g, '$1你')
+          log(`[qq] 群插话里叫了主人 → 就地改掉：「${out.slice(0, 24)}」→「${fixed.slice(0, 24)}」`)
+          if (addressesOwner(fixed)) continue
+          out = fixed
+        }
         const verdict = guard.allow(chatId, out, config(), { checkDryRun: false })   // 间隔 + 复读去重（干跑已在上游拦）
         if (!verdict.ok) continue
         const ok = await send('send_group_msg', { group_id: Number(gid), message: [{ type: 'text', data: { text: out } }] })

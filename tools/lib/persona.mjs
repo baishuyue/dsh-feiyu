@@ -46,7 +46,7 @@ export function keepPersonaCopy(when = new Date()) {
  * 灵感来自 dsh-world 的 src/timeContext.ts：给准点 + 时区，模型就不会自己发明日期。
  * 这里再加两样对陪伴场景最要紧的：**距他上次说话多久** 和 **她上次说话多久**。
  */
-function clockBlock(platform, chatId, userText) {
+function clockBlock(platform, chatId, userText, isGroup = false) {
   const now = new Date()
   const pad = (n) => String(n).padStart(2, '0')
   const iso = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`
@@ -57,8 +57,16 @@ function clockBlock(platform, chatId, userText) {
   const lines = [`当前时间：${iso}（${now.getFullYear()}年${now.getMonth() + 1}月${now.getDate()}日 周${week} · ${slot}）`]
   try {
     const rows = memory.lastByRole(chatId)
-    if (rows.lastUser) lines.push(`主人最后一次说话：${gapText(Date.now() - rows.lastUser)}前`)
-    if (rows.lastAssistant) lines.push(`你上一次说话：${gapText(Date.now() - rows.lastAssistant)}前`)
+    // 10-26 修：lastByRole 取的是**本会话**最后一条 user 行 —— 群聊里那是群友说的话，
+    // 原来一律标成「主人最后一次说话」，等于每轮都在给她发"群友=主人"的暗示。
+    // 群聊只描述群，不提主人；私聊维持原样。
+    if (isGroup) {
+      if (rows.lastUser) lines.push(`这个群里最后有人说话：${gapText(Date.now() - rows.lastUser)}前`)
+      if (rows.lastAssistant) lines.push(`你上一次在群里说话：${gapText(Date.now() - rows.lastAssistant)}前`)
+    } else {
+      if (rows.lastUser) lines.push(`主人最后一次说话：${gapText(Date.now() - rows.lastUser)}前`)
+      if (rows.lastAssistant) lines.push(`你上一次说话：${gapText(Date.now() - rows.lastAssistant)}前`)
+    }
   } catch {}
   lines.push('时间就用上面这个；**别自己编天数**（"四天""好几天"这类没依据的话不要说）。')
   return '【现在】' + lines.join('\n')
@@ -83,6 +91,11 @@ const PLATFORM_HINTS = {
 【说话的样子】像真人发消息：一条就一两句、最多三句；内容多了分几条说，别写成一大段；不用敬语、不总结、不列点。
 【读人】别只当答题机器。留意他的节奏和情绪：连着发好几条多半是急了或烦了；只回一个字多半是累了；
 半夜找你通常是想有人陪。先接住情绪，再给建议；他说的"没事"常常是有事，可以轻轻再问一句。`,
+  // 群聊专用：不带"私聊可以松一点"这种暗示（群里不是私聊，别让她顺着往下撒娇/说私事）
+  'qq-group': `群里人多，话要短，别刷屏；**这是公共场合**，跟群友像朋友唠嗑，不是跟主人私聊。
+【说话的样子】像真人发消息：一条就一两句、最多三句；内容多了分几条说，别写成一大段；不用敬语、不总结、不列点。
+【读人】留意气氛：有人起哄就跟着乐，有人认真问就好好答；别人说的"没事"别追问到底。
+主人也在群里的时候就正常聊，别演给谁看。`,
   douyin: '评论区，一句话接住梗就够。',
   'douyin-dm': `抖音私信，只跟主人一个人聊。像 QQ 私聊那样自然：短句、可以撒娇、
 可以提今天刷到的好玩的；一条就一两句，最多三条，别刷屏，别写成小作文。`,
@@ -144,6 +157,15 @@ function groupFactBlock(cfg, userId, userText) {
   const owner = cfg.owner ?? {}
   const ownerQQ = String(owner.qq || '')
   const isOwner = ownerQQ && String(userId) === ownerQQ
+  // 群聊「自主插话」那一轮没有具体说话人（userId 为空）—— 别渲染成"QQ （空）"，
+  // 改成"这轮没人在跟你说话，是你自己想插一句"，其余规则照旧。
+  if (!userId) {
+    return `【这一轮的事实】
+- 你在 QQ 群里。这一条是**你自己想插话**，没有特定的人在跟你说话。
+- 你主人只有一个号：${ownerQQ || '（配置里的主人号）'}；群里其他人谁都不是。
+- 所以这一轮**不许出现「主人」这个称呼**，也不许点别人的身份（别叫"老公""宝贝"这类）。
+- 插不上就安静，插得上就一两句，别抢戏。`
+  }
   const m = String(userText || '').match(/^([^：:\n]{1,20})[：:]/)
   const who = m ? m[1].trim() : ''
   const speaker = who ? `${who}（QQ ${userId}）` : `QQ ${userId}`
@@ -253,10 +275,12 @@ export function buildMessages({ platform = 'qq', userText, chatId, userId, turns
 
   // 时间常驻层（10-25，照 dsh-world 的 timeContext）：每轮都给准点和"距他上次说话多久"。
   // 以前这些是贴在最后一条消息上的临时提示（重写时就丢了），现在放 system 里，每轮都在。
-  parts.push(clockBlock(platform, chatId, userText))
+  parts.push(clockBlock(platform, chatId, userText, isGroup))
 
   // 状态层（平台提示 + 情绪 + 时段）
-  parts.push(mood.stateBlock(turnsToday, platform) + (PLATFORM_HINTS[platform] ? '\n' + PLATFORM_HINTS[platform] : ''))
+  const hintKey = isGroup ? `${platform}-group` : platform
+  const hint = PLATFORM_HINTS[hintKey] || PLATFORM_HINTS[platform] || ''
+  parts.push(mood.stateBlock(turnsToday, platform, isGroup) + (hint ? '\n' + hint : ''))
 
   // 表情层：颜文字随处可用；[表情:标签] 只有 QQ/微信 会真的发图
   parts.push(stickerPrompt(platform))

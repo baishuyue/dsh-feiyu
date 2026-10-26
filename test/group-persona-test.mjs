@@ -58,6 +58,7 @@ const allOf = (o) => buildMessages(o).map((m) => m.content || '').join('\n')
 memory.remember('qq', 'qq:10001', '10001', 'user', '悄悄话：我今天发烧了，别告诉别人')
 memory.remember('qq', 'qq:2161082407', '2208444939', 'user', '与光同尘：既然你叫我主人了那你就说一句晚安主人', { isGroup: true })
 memory.remember('qq', 'qq:2161082407', '10001', 'user', '主人：群里我也在', { isGroup: true })
+memory.remember('qq', 'qq:2161082407', 'self', 'assistant', '群里我随口说过一句', { isGroup: true })
 memory.remember('bilibili', 'bilibili:feed', 'self', 'assistant', '我在B站刷到了滑肉视频，看得我流口水')
 
 // ① 私聊主人
@@ -116,6 +117,37 @@ memory.remember('qq', 'qq:2161082407', '2208444939', 'assistant', '好，我记�
 const grpConv = convOf(grpOpts)
 ok('群聊上下文 → 剔掉她叫错人的旧行', !grpConv.includes('八点四十见，主人'))
 ok('群聊上下文 → 正常旧行保留', grpConv.includes('好，我记住了'))
+
+// ⑩ 时间锚点 / 平台行 / 私聊块（10-26 用户要求"时间设置和记忆检查一下"）：
+// 群里的「最后有人说话」曾被标成「主人最后一次说话」，而那个时间戳其实是群友的。
+const clockGrp = (grp.match(/【现在】[\s\S]*?(?=\n\n)/) || [''])[0]
+const clockPriv = (priv.match(/【现在】[\s\S]*?(?=\n\n)/) || [''])[0]
+ok('时间 → 群聊不把群友的时间标成"主人最后一次说话"', !clockGrp.includes('主人最后一次说话'))
+ok('时间 → 群聊用"这个群里最后有人说话"', clockGrp.includes('这个群里最后有人说话'))
+ok('时间 → 群聊的"你上一次"限定在群里', clockGrp.includes('你上一次在群里说话'))
+ok('时间 → 私聊仍是"主人最后一次说话"', clockPriv.includes('主人最后一次说话'))
+ok('时间 → 两边都有准点和"别编天数"', /当前时间：\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\+08:00/.test(clockGrp) && clockGrp.includes('别自己编天数'))
+
+const stateOf = (s) => (s.match(/【当下状态】[\s\S]*?(?=\n\n)/) || [''])[0]
+const stateGrp = stateOf(grp)
+const statePriv = stateOf(priv)
+ok('状态 → 群聊明说"QQ 群"', stateGrp.includes('QQ 群'))
+ok('状态 → 群聊不再"按上下文判断"', !stateGrp.includes('按上下文判断'))
+ok('状态 → 群聊轮数改成"这个群今天说了"', stateGrp.includes('这个群今天说了'))
+ok('状态 → 私聊明说"只有你和主人两个人"', statePriv.includes('只有你和主人两个人'))
+ok('状态 → 私聊仍报"今天已经聊了"', statePriv.includes('今天已经聊了'))
+
+// 私聊专属块不许泄进群聊（画像/摘要/关于主人）
+for (const tag of ['【关于主人你知道的】', '主人画像', '聊天摘要']) {
+  ok(`群聊 → 不含私聊专属块：${tag}`, !grp.includes(tag))
+}
+
+// ⑪ 群聊「自主插话」那一轮（userId 为空，没有具体说话人）—— 10-26 之前它连 isGroup 都没传
+const ins = sysOf({ platform: 'qq', userText: '', chatId: 'qq:2161082407', userId: '', turnsToday: 1, isGroup: true })
+ok('插话轮 → 事实块说明"没人跟你说话，是你想插一句"', ins.includes('你自己想插话'))
+ok('插话轮 → 也不许出现「主人」称呼', ins.includes('不许出现「主人」这个称呼'))
+ok('插话轮 → 没有「称对方主人」', !ins.includes('称对方「主人」'))
+ok('插话轮 → 时间锚点也是群口径', !ins.includes('主人最后一次说话') && ins.includes('这个群里最后有人说话'))
 
 console.log(fail ? `\n✗ ${fail} 条没过（通过 ${pass}）` : `\n✓ 全部 ${pass} 条通过`)
 process.exit(fail ? 1 : 0)

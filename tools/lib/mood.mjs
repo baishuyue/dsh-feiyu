@@ -65,25 +65,31 @@ function phaseText(now = new Date()) {
  * @returns {string}
  */
 const PLATFORM_STATE = {
-  qq: 'QQ（私聊或群聊，按上下文判断；私聊像真人聊天，群聊话短一点）',
+  qq: 'QQ 私聊（只有你和主人两个人；这里才该叫主人、才聊私事）',
   wechat: '微信私聊（一句一句聊，别写成一大段）',
   bilibili: 'B站评论区/动态（允许碎碎念，但别刷屏）',
   douyin: '抖音评论区（一句话接住梗就够）',
 }
 
-export function stateBlock(turnsToday = 0, platform = 'bilibili') {
+export function stateBlock(turnsToday = 0, platform = 'bilibili', isGroup = false) {
   const now = new Date()
   const m = readState()
   const style = m.value < 30 ? '不太想说话，句子压到 15 字以内'
     : m.value > 75 ? '挺高兴，可以主动闹一点'
     : '正常，按平时说话'
   const hunger = m.hunger > 60 ? `饿（${Math.round(m.hunger)}/100），满脑子都是吃的。` : ''
+  // 群聊必须**明说**在群里（10-26）：原来写"QQ（私聊或群聊，按上下文判断）"，
+  // 等于让她自己猜，猜错就把群友当主人。轮数同理 —— 群里的 34 条不是"跟他聊了 34 轮"。
+  const platformText = isGroup ? 'QQ 群（群里好几个人在，说话的是群友，不是只有主人）'
+    : (PLATFORM_STATE[platform] || platform)
+  const turnLine = isGroup ? `这个群今天说了 ${turnsToday} 条。`
+    : `今天已经聊了 ${turnsToday} 轮。${turnsToday > 40 ? '有点累了，敷衍一点。' : ''}`
   const lines = [
     `现在是 ${now.toLocaleString('sv-SE', { hour12: false })}（${phaseText(now)}）。`,
     `情绪 ${Math.round(m.value)}/100：${style}`,
     hunger,
-    `今天已经聊了 ${turnsToday} 轮。${turnsToday > 40 ? '有点累了，敷衍一点。' : ''}`,
-    `当前平台：${PLATFORM_STATE[platform] || platform}。`,
+    turnLine,
+    `当前平台：${platformText}。`,
   ].filter(Boolean)
   return '【当下状态】\n' + lines.join('\n')
 }
