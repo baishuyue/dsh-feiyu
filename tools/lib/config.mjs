@@ -212,7 +212,10 @@ export const DEFAULTS = {
     // unlimited=true 时刷到「每日分享额度用完」或手动停；unlimited=false 按 maxVideos/maxMinutes。
     freeRoam: { enabled: false, unlimited: true, maxVideos: 0, maxMinutes: 0, restMin: 3 },
     // 运营（10-25）：她自己的账号自己运营——评论区按需回复（LLM 判断）+ 短视频生产（投稿点击归主人）
-    engage: { enabled: true, dailyMax: 3 },
+    // maxPerUserPerDay（10-26）：同一个人每天最多回几次。0 = 不限。
+    //   以前水位按"视频+用户+文本"记、又看不到子回复，等于一人只能被回一句；
+    //   现在能连续聊了，用这个数当刹车（默认 5，别追着一个人刷屏）。
+    engage: { enabled: true, dailyMax: 3, maxPerUserPerDay: 5 },
     produce: { enabled: true, dailyMax: 2 },   // 每天最多生产几条（0 = 不限）
     // 私信陪聊（参照 QQ 模式）：常驻轮询主人私信，新消息→LLM 回
     // 端口默认 8095：8090 常被 Wondershare 推送组件（WsToastNotification.exe）抢占，绑不上
