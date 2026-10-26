@@ -1,4 +1,4 @@
-// douyin —— 抖音互动（刷视频 / 读评论 / 发评论@），Playwright 浏览器自动化。
+﻿// douyin —— 抖音互动（刷视频 / 读评论 / 发评论@），Playwright 浏览器自动化。
 // 个人号没有公开 API，只能靠 patchright + 本地 Chrome 模拟人操作 douyin.com。
 // 底层脚本：D:\social-auto-upload\douyin_interact.py（login/feed/comments/comment 四个子命令）。
 //
@@ -377,7 +377,8 @@ export function run(argv = []) {
     const out = arg(argv, '--out') || path.join(os.tmpdir(), 'feiyu-card-' + Date.now())
     const n = arg(argv, '--n') || '4'
     if (!secUid) { console.error('需要 --sec-uid 或配置 douyin.owner.sec_uid'); process.exit(2) }
-    console.log(runPy(['card-open', '--sec-uid', secUid, '--name', name, '--out', out, '--n', String(n)], cfg))
+    const expect = arg(argv, '--expect') || ''
+    console.log(runPy(['card-open', '--sec-uid', secUid, '--name', name, '--out', out, '--n', String(n), ...(expect ? ['--expect', expect] : [])], cfg))
     return
   }
   if (cmd === 'interact') {

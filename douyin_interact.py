@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """抖音网页版(douyin.com)互动工具 —— 登录 / 刷feed / 发评论。
 
@@ -1296,8 +1296,44 @@ async def cmd_frames(cookie_file: str, vid: str, out_dir: str, n: int, headed: b
     return 0
 
 
+def _norm_name(s: str) -> str:
+    """归一化名字/文案，用来比对「卡片上写的那行字」和「弹窗里那条的作者」。"""
+    return re.sub(r"[\s\[\]【】:：()（）·_\-…~!！?？]", "", str(s or "")).lower()
+
+
+def _parse_expect(s: str) -> str:
+    """从 dm-read 给的卡片文案里抽出"卡片上真实显示的那行字"。
+    dm-read 产出形如「[分享的视频：木又寸_（os 好想要女粉宝宝呀！]」，
+    冒号后面到右括号之间就是卡片正文（通常是作者名，有时带文案）。
+    老式占位符「[分享视频]」没有内容 → 返回空串（无法核对）。"""
+    t = str(s or "").strip()
+    if "：" in t:
+        t = t.split("：", 1)[1]
+    elif ":" in t:
+        t = t.split(":", 1)[1]
+    else:
+        # 没有冒号 → 要么是空串，要么是老式占位符「[分享视频]」，都拿不到卡片上的字
+        return ""
+    t = t.strip().rstrip("]").strip()
+    return "" if t.startswith("[") else t
+
+
+def _card_matches(expect: str, author: str, desc: str) -> bool:
+    """弹窗里"当前可见那条"的作者/文案，能不能跟卡片上那行字对上。
+    对不上就说明点开的是**别的**条目（10-26 实锤：把上一条视频当成新分享讲给她）。"""
+    e = _norm_name(expect)
+    if not e:
+        return True          # 没给期望文案 → 不判定（老占位符）
+    a, d = _norm_name(author), _norm_name(desc)
+    if e[:10] and e[:10] in (a + "|" + d):
+        return True
+    if a and (a[:8] in e or e[:8] in a):
+        return True
+    return False
+
+
 async def cmd_card_open(cookie_file: str, sec_uid: str, out_dir: str, name: str = "",
-                        headless: bool = True, n: int = 4) -> int:
+                        headless: bool = True, n: int = 4, expect: str = "") -> int:
     """点开私信里最新一张「分享视频」卡片，把那条视频真正看一遍（10-26）。
 
     为什么要这么绕：卡片正文在 DOM 里只有作者名，消息走二进制 WS 抓不到 aweme_id
@@ -1309,7 +1345,10 @@ async def cmd_card_open(cookie_file: str, sec_uid: str, out_dir: str, name: str 
     """
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
-    result = {"vid": "", "desc": "", "author": "", "duration": 0, "frames": []}
+    result = {"vid": "", "desc": "", "author": "", "duration": 0, "frames": [], "matched": None}
+    # expect：dm-read 给出的那张卡片的文案（"[分享的视频：木又寸_（os 好想要女粉宝宝呀！]"）。
+    # 只留"：…]"里面那段 —— 卡片上真实显示的**作者名/文案**，用来在列表里认出这一张。
+    expect_text = _parse_expect(expect)
 
     async with async_playwright() as pw:
         browser, context = await _launch(pw, headless=headless)
@@ -1319,24 +1358,40 @@ async def cmd_card_open(cookie_file: str, sec_uid: str, out_dir: str, name: str 
         try:
             await _open_dm_chat(page, sec_uid)
             await asyncio.sleep(3)
-            pos = await page.evaluate("""() => {
+            # 先滚到最底部（最新消息那端），保证新卡片在视野里。
+            # 私信列表是 rotate(180deg) 的反向虚拟列表：**DOM 顺序和视觉顺序相反**，
+            # 所以绝不能靠"最后一张可见卡片"来断定最新（10-26 实锤：点开了 30 分钟前的旧卡片，
+            # 把旧视频的画面当成新分享讲给她，主人当场发现"你说的还是之前那条"）。
+            for _ in range(3):
+                await page.mouse.wheel(0, 2000)
+                await asyncio.sleep(0.6)
+            pos = await page.evaluate("""({ expect }) => {
                 const list = document.querySelector('.messageMessageListlist')
                     || document.querySelector('[class*="messageMessageList"]');
                 if (!list) return null;
+                const clean = (s) => String(s || '').replace(/[\\s\\[\\]【】:：()（）·_\\-…~!！?？]/g, '').toLowerCase();
+                const want = clean(expect).slice(0, 10);
                 const items = Array.from(list.querySelectorAll('[data-e2e="msg-item-content"], [class*="MessageBoxContent"]'));
-                let best = null;
+                const hits = [];
                 for (const c of items) {
                     const box = c.closest('[class*="messageBox"]') || c.parentElement;
                     if (box && box.querySelector('[class*="isFromMe"]')) continue;   // 只要对方发来的
                     const share = c.querySelector('[class*="ShareAweme"]');
                     if (!share) continue;
                     const r = share.getBoundingClientRect();
-                    if (r.top <= 0 || r.bottom >= window.innerHeight || r.width < 40) continue;
-                    best = { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2),
-                             text: (c.innerText || '').trim().slice(0, 40) };
+                    if (r.top <= 4 || r.bottom >= window.innerHeight - 4 || r.width < 40) continue;
+                    const text = (c.innerText || '').trim().slice(0, 60);
+                    hits.push({ x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2),
+                                text, bottom: r.bottom, match: !!want && clean(text).includes(want) });
                 }
-                return best;
-            }""")
+                if (!hits.length) return null;
+                // ① 文案对得上的那几张里取最靠下的（=最新）；② 都对不上就取视觉最靠下的
+                const matched = hits.filter(h => h.match);
+                const pool = matched.length ? matched : hits;
+                pool.sort((a, b) => b.bottom - a.bottom);
+                const best = pool[0];
+                return { x: best.x, y: best.y, text: best.text, matched: !!best.match, candidates: hits.length };
+            }""", {"expect": expect_text})
             if not pos:
                 result["error"] = "视野里没有可点的分享卡片（可能已滚出屏幕）"
                 log("[card-open] " + result["error"])
@@ -1357,37 +1412,108 @@ async def cmd_card_open(cookie_file: str, sec_uid: str, out_dir: str, name: str 
                     log(f"[card-open] ⚠ 没等到 modal_id（url={page.url[:90]}）")
 
                 await asyncio.sleep(2.5)
+                # ⚠️ 只读"当前可见那条"的信息栏。弹窗是个 feed 列表（slideList），DOM 里同时躺着
+                # 前后两条的节点 —— 用 document.querySelector('[data-e2e="video-desc"]') 拿到的是
+                # **预加载的邻居**，而 [data-e2e="user-info"] 更是左侧聊天栏（显示聊天对象朴昌范）。
+                # 10-26 实锤：于是把 30 分钟前那条旧视频的标题/画面当成了新分享讲给她。
+                # 正确做法：先找**与视口中线相交**的那个 <video>，再找离它最近的信息栏
+                # （.video-info-detail / .account-name-text），从里面抠 "@作者 · 时间 文案"。
                 meta = await page.evaluate("""() => {
-                    const pick = (sel) => { const e = document.querySelector(sel); return e ? (e.innerText || '').trim() : ''; };
-                    const v = document.querySelector('video');
+                    const vh = window.innerHeight;
+                    const vids = Array.from(document.querySelectorAll('video')).filter(v => v.videoWidth > 100);
+                    let best = null, bestScore = -1;
+                    for (const v of vids) {
+                        const r = v.getBoundingClientRect();
+                        const inter = Math.max(0, Math.min(r.bottom, vh) - Math.max(r.top, 0)) * Math.max(0, r.width);
+                        if (inter > bestScore) { bestScore = inter; best = v; }
+                    }
+                    if (!best) return { err: 'no visible video' };
+                    const r = best.getBoundingClientRect();
+                    const cy = (Math.max(0, r.top) + Math.min(vh, r.bottom)) / 2;
+                    let info = null, bestD = 1e9;
+                    for (const e of document.querySelectorAll('[class*="video-info-detail"], [class*="player-position-box-bottom"]')) {
+                        const q = e.getBoundingClientRect();
+                        if (q.width <= 0 || q.height <= 0) continue;
+                        const d = Math.abs((q.top + q.bottom) / 2 - cy);
+                        if (d < bestD) { bestD = d; info = e; }
+                    }
+                    const txt = info ? (info.innerText || '').replace(/\\n/g, ' ').trim() : '';
+                    const am = txt.match(/@([^\\s·]+)/);
                     return {
-                        desc: pick('[data-e2e="video-desc"]') || pick('[data-e2e="detail-video-desc"]')
-                              || pick('[data-e2e="video-title"]') || (document.title || ''),
-                        author: pick('[data-e2e="user-info"] h1') || pick('[data-e2e="video-author"]')
-                                || pick('[class*="authorName"]'),
-                        duration: v ? Number(v.duration) || 0 : 0,
-                        hasVideo: !!v,
+                        author: am ? am[1] : '',
+                        text: txt.slice(0, 160),
+                        isNote: /图文/.test(txt),
+                        duration: Math.round((best.duration || 0) * 10) / 10,
+                        hasVideo: true,
+                        box: { x: Math.max(0, r.x), y: Math.max(0, r.y),
+                               w: Math.min(r.width, window.innerWidth - Math.max(0, r.x)),
+                               h: Math.min(Math.min(r.bottom, vh), vh) - Math.max(0, r.y) },
                     };
                 }""")
-                result["desc"] = str(meta.get("desc") or "").split("\n")[0][:120]
                 result["author"] = str(meta.get("author") or "")[:40]
+                # 文案 = 信息栏文本去掉 "@作者 · 6小时前" 前缀
+                _txt = str(meta.get("text") or "")
+                _txt = re.sub(r"^@[^\s·]+\s*·?\s*", "", _txt)
+                _txt = re.sub(r"(刚刚|昨天|\d+\s*(分钟|小时|天)前)\s*", "", _txt)
+                result["desc"] = _txt.strip()[:120]
                 result["duration"] = round(float(meta.get("duration") or 0), 1)
-                log(f"[card-open] 标题/作者：{result['desc'][:50]} / {result['author']}（{result['duration']}s）")
+                result["isNote"] = bool(meta.get("isNote"))
+                log(f"[card-open] 弹窗当前条目：@{result['author']}｜文案「{result['desc'][:40]}」"
+                    f"｜{result['duration']}s{'(图文)' if result['isNote'] else ''}")
 
-                if meta.get("hasVideo"):
-                    # 逐帧采样：按**整片时长**均匀取（之前固定 t=1,7,13,19 —— 113 秒的视频
-                    # 只看得到开头 20 秒，而且第 2/3 帧撞成同一张）。
-                    # 页面里可能有多个 <video>（弹窗里还有预加载的），取面积最大那个。
-                    VIDJS = """() => {
-                        const vs = Array.from(document.querySelectorAll('video'))
-                          .filter(v => v.duration > 0 && v.getBoundingClientRect().width > 200);
-                        if (!vs.length) return null;
-                        vs.sort((a, b) => {
-                            const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect();
-                            return rb.width * rb.height - ra.width * ra.height;
-                        });
-                        return vs[0];
-                    }"""
+                # 开错卡片自检：弹窗里"当前可见那条"的作者/文案，必须能跟卡片上那行字对上。
+                # 对不上说明点开的是**别的**条目（10-26 实锤：把上一条视频当成新分享讲）。
+                # 这种情况宁可不给她看，也不能拿错视频的画面去聊。
+                if expect_text:
+                    ok_match = _card_matches(expect_text, result["author"], result["desc"])
+                    result["matched"] = ok_match
+                    if not ok_match:
+                        log(f"[card-open] ⚠ 打开的视频与卡片不符（卡片「{expect_text[:20]}」vs 视频作者「{result['author'][:20]}」"
+                            f" / 文案「{result['desc'][:20]}」）→ 丢弃这些帧")
+                        result["frames"] = []
+                        result["error"] = "打开的视频与卡片不符（点错了卡片）"
+                        try:
+                            await page.keyboard.press("Escape")
+                        except Exception:
+                            pass
+                        await browser.close()
+                        payload = json.dumps(result, ensure_ascii=False)
+                        print(payload)
+                        try:
+                            (out / "card-open.json").write_text(payload, encoding="utf-8")
+                        except Exception:
+                            pass
+                        return 1
+                else:
+                    result["matched"] = None   # 没给期望文案（老占位符 [分享视频]）→ 无法核对
+
+                if meta.get("isNote"):
+                    # 图文帖（实测：「木又寸_」那条就是图文）没有视频帧可抽 —— 直接把当前那张大图截下来。
+                    # 弹窗里是个 feed，画面上就是它本身，截 box 即可。
+                    box = meta.get("box") or None
+                    for i in range(2):
+                        f = out / f"cardframe-{int(time.time()*1000)}-{i}.jpg"
+                        try:
+                            clip = None
+                            if box and box.get("w", 0) > 100 and box.get("h", 0) > 100:
+                                clip = {"x": box["x"], "y": box["y"], "width": box["w"], "height": box["h"]}
+                            f.write_bytes(await page.screenshot(type="jpeg", quality=82, clip=clip) if clip
+                                          else await page.screenshot(type="jpeg", quality=82))
+                            if f.exists() and f.stat().st_size > 2000:
+                                result["frames"].append(str(f))
+                                log(f"[card-open] 图文帧 {i}: {f.name}（{f.stat().st_size}B）")
+                        except Exception as e:
+                            log(f"[card-open] 图文帧 {i} 失败：{str(e)[:90]}")
+                        # 图文多张时点一下右半边翻页（尽力而为，翻不动就一张也够）
+                        try:
+                            if box and i == 0:
+                                await page.mouse.click(box["x"] + box["w"] * 0.8, box["y"] + box["h"] / 2)
+                                await asyncio.sleep(1.2)
+                        except Exception:
+                            pass
+                elif meta.get("hasVideo"):
+                    # 逐帧采样：按**整片时长**均匀取，且只取**视口里那一个** <video>
+                    # （弹窗是 feed，预加载的邻居节点也在 DOM 里，按面积挑会挑到邻居）。
                     try:
                         await page.evaluate("""() => {
                             const vs = Array.from(document.querySelectorAll('video')).filter(v => v.duration > 0);
@@ -1401,11 +1527,16 @@ async def cmd_card_open(cookie_file: str, sec_uid: str, out_dir: str, name: str 
                     # 取帧：优先在页面内把**解码帧**画进 canvas 导出（截图抓合成层，暂停/seek 时经常是旧帧，
                       # 实测 4 帧全撞 hash）；canvas 一定拿到当前真实画面。失败再退回截图。
                     CAPTURE_JS = """(t) => new Promise((res) => {
-                        const vs = Array.from(document.querySelectorAll('video'))
-                          .filter(v => v.duration > 0 && v.videoWidth > 100);
-                        if (!vs.length) return res('');
-                        vs.sort((a, b) => b.videoWidth * b.videoHeight - a.videoWidth * a.videoHeight);
-                        const v = vs[0];
+                        // 只认"在视口里"的那个 video（弹窗是 feed，邻居节点也在 DOM 里）
+                        const vh = window.innerHeight;
+                        const cands = Array.from(document.querySelectorAll('video')).filter(v => v.duration > 0 && v.videoWidth > 100);
+                        if (!cands.length) return res('');
+                        let v = null, bestA = -1;
+                        for (const c of cands) {
+                            const r = c.getBoundingClientRect();
+                            const a = Math.max(0, Math.min(r.bottom, vh) - Math.max(r.top, 0)) * Math.max(0, r.width);
+                            if (a > bestA) { bestA = a; v = c; }
+                        }
                         v.muted = true;
                         const shoot = () => {
                             try {
@@ -1437,22 +1568,9 @@ async def cmd_card_open(cookie_file: str, sec_uid: str, out_dir: str, name: str 
                             except Exception as e:
                                 log(f"[card-open] 帧 {i} 解码失败：{str(e)[:80]}")
                         if not wrote:
-                            # 退路：截播放器区域
+                            # 退路：截"当前可见条目"的区域（meta.box，别按面积挑 video —— 会挑到邻居）
                             try:
-                                box = await page.evaluate("""() => {
-                                    const vs = Array.from(document.querySelectorAll('video'))
-                                      .filter(v => v.duration > 0 && v.getBoundingClientRect().width > 200);
-                                    if (!vs.length) return null;
-                                    vs.sort((a, b) => {
-                                        const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect();
-                                        return rb.width * rb.height - ra.width * ra.height;
-                                    });
-                                    const r = vs[0].getBoundingClientRect();
-                                    if (r.width < 200 || r.height < 200) return null;
-                                    return { x: Math.max(0, r.x), y: Math.max(0, r.y),
-                                             w: Math.min(r.width, window.innerWidth - Math.max(0, r.x)),
-                                             h: Math.min(r.height, window.innerHeight - Math.max(0, r.y)) };
-                                }""")
+                                box = meta.get("box") or None
                                 if box:
                                     clip = {"x": box["x"], "y": box["y"], "width": box["w"], "height": box["h"]}
                                     f.write_bytes(await page.screenshot(type="jpeg", quality=80, clip=clip))
@@ -1590,6 +1708,7 @@ def main():
     p_card.add_argument("--n", type=int, default=4, help="帧数（1~6）")
     p_card.add_argument("--headed", action="store_true")
     p_card.add_argument("--headless", action="store_true", default=True)
+    p_card.add_argument("--expect", default="", help="要打开的卡片文案（在列表里认出那一张，避免点错旧卡片）")
     p_dmlist = sub.add_parser("dm-list", help="读私信会话列表")
     p_dmlist.add_argument("--cookie", default=DEFAULT_COOKIE)
     p_dmlist.add_argument("--out", default="-")
@@ -1634,7 +1753,7 @@ def main():
     elif args.cmd == "frames":
         sys.exit(asyncio.run(cmd_frames(args.cookie, args.vid, args.out, args.n, args.headed)))
     elif args.cmd == "card-open":
-        sys.exit(asyncio.run(cmd_card_open(args.cookie, args.sec_uid, args.out, args.name, args.headless, args.n)))
+        sys.exit(asyncio.run(cmd_card_open(args.cookie, args.sec_uid, args.out, args.name, args.headless, args.n, getattr(args, "expect", ""))))
 
 
 if __name__ == "__main__":

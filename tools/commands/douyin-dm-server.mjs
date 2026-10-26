@@ -1,4 +1,4 @@
-﻿// douyin-dm-server —— 抖音私信陪聊（参照 qq-server 的常驻模式，但收发走抖音网页私信）。
+// douyin-dm-server —— 抖音私信陪聊（参照 qq-server 的常驻模式，但收发走抖音网页私信）。
 // 轮询：dm-read 读主人会话 → 只挑主人的新消息 → LLM 回 → dm-send 发出。
 // 复用 guard（去重/清洗）、persona、记忆、llm，省掉一套独立逻辑。
 //
@@ -201,7 +201,11 @@ export async function run(argv = []) {
         try {
           const dir = dataPath('douyin-card', String(Date.now()))
           fs.mkdirSync(dir, { recursive: true })
-          const outCard = await runPy(['card-open', '--sec-uid', secUid, '--name', ownerName, '--out', dir, '--n', '4'], cfg)
+          const outCard = await runPy(['card-open', '--sec-uid', secUid, '--name', ownerName, '--out', dir, '--n', '4',
+            // --expect：把这条消息的卡片文案带上，让脚本在列表里认出**这一张**再点。
+            // 不带的话它只能猜"最靠下的那张"，10-26 实锤点开的是 30 分钟前的旧卡片，
+            // 结果把旧视频的画面当成新分享讲给她（主人当场发现"你说的是之前那条"）。
+            '--expect', String(pick.text || '')], cfg)
           const c = jsonOf(outCard)
           if (c && Array.isArray(c.frames) && c.frames.length && visionOn()) {
             const desc = await describeFrames(c.frames, {
@@ -209,11 +213,12 @@ export async function run(argv = []) {
                 + '就像你真的把这个视频看完了那样说，别逐帧报流水账。',
             })
             if (desc && desc.trim()) {
-              text = `${text}\n【主人分享的视频：${c.desc || '（无标题）'}`
+              const kind = c.isNote ? '图文' : '视频'
+              text = `${text}\n【主人分享的${kind}：${c.desc || '（无文案）'}`
                 + `${c.author ? `，作者 ${c.author}` : ''}${c.duration ? `，${Math.round(c.duration)} 秒` : ''}】`
                 + `\n【你看过之后的印象：${desc.trim().slice(0, 320)}】`
               gotVideo = true
-              log(`[douyin-dm] 已看完视频 ${c.vid}（${c.frames.length} 帧）：${desc.trim().slice(0, 60)}`)
+              log(`[douyin-dm] 已看完${kind} ${c.vid}（${c.frames.length} 帧，作者 ${c.author || '?'}，核对 ${c.matched === false ? '✗不符' : '✓'}）：${desc.trim().slice(0, 60)}`)
             }
           } else if (c?.error) log(`[douyin-dm] card-open 没拿到画面：${c.error}`)
         } catch (e) { log(`[douyin-dm] card-open 失败：${String(e).slice(0, 120)}`) }
