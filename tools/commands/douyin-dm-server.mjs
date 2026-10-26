@@ -1,4 +1,4 @@
-// douyin-dm-server —— 抖音私信陪聊（参照 qq-server 的常驻模式，但收发走抖音网页私信）。
+﻿// douyin-dm-server —— 抖音私信陪聊（参照 qq-server 的常驻模式，但收发走抖音网页私信）。
 // 轮询：dm-read 读主人会话 → 只挑主人的新消息 → LLM 回 → dm-send 发出。
 // 复用 guard（去重/清洗）、persona、记忆、llm，省掉一套独立逻辑。
 //
@@ -21,7 +21,7 @@ import * as memory from '../lib/memory.mjs'
 import * as qqMemory from '../lib/qq-memory.mjs'
 import { dataPath } from '../lib/paths.mjs'
 import { gapText, mentionsDays, sanitizeDayClaims } from '../lib/timefix.mjs'
-import { looksBlind, askInstead, noBlindHint } from '../lib/speechfix.mjs'
+import { looksBlind, looksAsking, askInstead, noBlindHint } from '../lib/speechfix.mjs'
 
 const WM_FILE = dataPath('douyin-dm-watermark.json')
 const CHAT_ID = 'douyin-dm:owner'
@@ -185,27 +185,55 @@ export async function run(argv = []) {
         } catch { text = '【发来一张图片】' }
       }
       inboundText = text
-      // 分享卡片：dm-read 现在会把卡片（封面+标题）截图带回来 —— 让视觉模型真的看一眼。
-      // 10-26 用户投诉：「无法理解我分享的视频，一直叫我念标题给她」。
-      // 根因是卡片正文在 DOM/接口里都拿不到（私信走二进制 WS），而她只能看到 [分享视频]。
-      if (pick.shot) {
-        try {
-          const { visionOn, describeFrames } = await import('../lib/vision.mjs')
-          if (visionOn() && fs.existsSync(pick.shot)) {
-            const desc = await describeFrames([pick.shot], {
-              query: '这是抖音私信里对方分享给我的视频卡片截图。请：①把卡片上的标题文字原样读出来；'
-                + '②用一两句话说明这视频的画面在讲什么（吃的/风景/剧情/教程…）。读不出标题就直说卡片上没字，别编。',
-            })
-            if (desc && desc.trim()) {
-              text = `${text}\n【主人分享的视频卡片：${desc.trim().slice(0, 260)}】`
-              log(`[douyin-dm] 卡片已看懂：${desc.trim().slice(0, 60)}`)
-            }
-          }
-        } catch (e) { log(`[douyin-dm] 卡片识图失败：${String(e).slice(0, 120)}`) }
-      }
+      // ⚠️ 去重必须放在"点开视频"之前：card-open 要开一次浏览器（约 35 秒），
+      // 已经回过的卡片要是每轮还跑一遍，会白白占住 tick 还把 dm-server 拖到超时。
       const key = norm(keyBase || pick.img || pick.shot)
       if (!key || handled.includes(key)) { failStreak = 0; return }
+      // 分享卡片 → 真的把这条视频看一遍（10-26 升级）。
+      // 之前只能截卡片的封面/标题（"只知道标题和作者"），现在点开卡片拿 modal_id，
+      // 再按时间抽 4 帧交给视觉模型 —— 跟她自己刷 feed 时"看懂视频"是同一条链路。
+      // 用户原话：「她根本无法跟刷视频一样真的知道我分享的视频的具体内容」。
+      const isCard = !!pick.shot || /\[分享/.test(pick.text)
+      if (isCard) {
+        const { visionOn, describeFrames } = await import('../lib/vision.mjs')
+        // ① 先试"点开+抽帧"（有 id → 真内容）；② 失败再退回卡片截图（只有封面/标题）
+        let gotVideo = false
+        try {
+          const dir = dataPath('douyin-card', String(Date.now()))
+          fs.mkdirSync(dir, { recursive: true })
+          const outCard = await runPy(['card-open', '--sec-uid', secUid, '--name', ownerName, '--out', dir, '--n', '4'], cfg)
+          const c = jsonOf(outCard)
+          if (c && Array.isArray(c.frames) && c.frames.length && visionOn()) {
+            const desc = await describeFrames(c.frames, {
+              query: '这是主人分享给你的抖音视频，按时间抽的几帧。用 2~3 句话说清：画面里是谁/什么、在做什么、什么场景或风格、屏幕上有哪些字。'
+                + '就像你真的把这个视频看完了那样说，别逐帧报流水账。',
+            })
+            if (desc && desc.trim()) {
+              text = `${text}\n【主人分享的视频：${c.desc || '（无标题）'}`
+                + `${c.author ? `，作者 ${c.author}` : ''}${c.duration ? `，${Math.round(c.duration)} 秒` : ''}】`
+                + `\n【你看过之后的印象：${desc.trim().slice(0, 320)}】`
+              gotVideo = true
+              log(`[douyin-dm] 已看完视频 ${c.vid}（${c.frames.length} 帧）：${desc.trim().slice(0, 60)}`)
+            }
+          } else if (c?.error) log(`[douyin-dm] card-open 没拿到画面：${c.error}`)
+        } catch (e) { log(`[douyin-dm] card-open 失败：${String(e).slice(0, 120)}`) }
 
+        // ② 退路：卡片截图（封面 + 标题）
+        if (!gotVideo && pick.shot) {
+          try {
+            if (visionOn() && fs.existsSync(pick.shot)) {
+              const desc = await describeFrames([pick.shot], {
+                query: '这是抖音私信里对方分享给我的视频卡片截图。请：①把卡片上的标题文字原样读出来；'
+                  + '②用一两句话说明这视频的画面在讲什么（吃的/风景/剧情/教程…）。读不出标题就直说卡片上没字，别编。',
+              })
+              if (desc && desc.trim()) {
+                text = `${text}\n【主人分享的视频卡片：${desc.trim().slice(0, 260)}】`
+                log(`[douyin-dm] 卡片已看懂：${desc.trim().slice(0, 60)}`)
+              }
+            }
+          } catch (e) { log(`[douyin-dm] 卡片识图失败：${String(e).slice(0, 120)}`) }
+        }
+      }
       log(`[douyin-dm] 主人：${text.slice(0, 80)}`)
 
       // 先记进对话记忆（platform=douyin · 独立 chatId）：buildMessages 才能带回上下文，
@@ -219,12 +247,18 @@ export async function run(argv = []) {
       // **禁止**向主人索要标题/链接。
       if (/\[分享/.test(text)) {
         const last = msgsOut[msgsOut.length - 1]
-        const seen = text.includes('分享的视频卡片：')
+        const watched = text.includes('你看过之后的印象：')
+        const seenCard = text.includes('分享的视频卡片：')
         last.content += '\n\n（提示：主人这条是**分享给你的内容**。'
-          + (seen ? '上面【主人分享的视频卡片：…】是你亲眼看过的卡片（标题/画面都读了），就按那个说，别再说不知道是什么。'
-            : '这张卡片我没读到内容。')
-          + '接话方向：顺着他的那句感想聊（比如"这个看起来好好吃"就聊馋），或者随口说一句你的猜测，'
-          + '**绝对不要**说"看不到内容""链接打不开""标题念给我听""发我标题""你分享的哪个"这类向他要东西的话。）'
+          + (watched
+            ? '你**已经把这条视频看完了**——上面【主人分享的视频：标题/作者/时长】和'
+              + '【你看过之后的印象：…】就是你亲眼看到的画面。就按那个聊：可以点出画面里的细节、'
+              + '吐槽、联想到你馋的东西，像真刷到过一样。'
+            : seenCard
+              ? '上面【主人分享的视频卡片：…】是你亲眼看过的卡片（标题/画面都读了），就按那个说，别再说不知道是什么。'
+              : '这条你没读到内容。')
+          + '**绝对不要**说"看不到内容""链接打不开""标题念给我听""发我标题""你分享的哪个"这类向他要东西的话；'
+          + '看过就说你看到的，没看过就顺着他那句感想接一句。）'
       } else if (/分享/.test(text)) {
         const last = msgsOut[msgsOut.length - 1]
         last.content += '\n\n（提示：主人提到"分享"，去上文找他刚发来的那条内容，据此接话。）'
@@ -233,20 +267,20 @@ export async function run(argv = []) {
       let reply = guard.clean(String(resp?.content ?? resp ?? ''))
       // 嘴瓢兜底（10-25 21:09 实锤第二回）：她回了「啥滑肉？我这边只看到"顾思苡：分享视频"，内容是空的呀」
       // —— 记忆里还留着她 17:18 说过的那句"看不到内容"，于是又照着念了一遍。
-      // 先让她重说一次，还说不改就剥掉那半句换成问标题。
-      if (reply && looksBlind(reply)) {
-        log(`[douyin-dm] 回复里又喊"看不到内容"：「${reply.slice(0, 30)}」→ 让她重说`)
+      // 10-26 扩到两类：①喊看不见 ②向主人索要标题/链接（她自己已经能看视频了，不该再问）。
+      if (reply && (looksBlind(reply) || looksAsking(reply))) {
+        log(`[douyin-dm] 回复里又在要内容：「${reply.slice(0, 30)}」→ 让她重说`)
         try {
           const retryMsgs = msgsOut.slice()
           const li = retryMsgs.length - 1
           retryMsgs[li] = { role: 'user', content: String(retryMsgs[li].content) + '\n\n【重说】' + noBlindHint() }
           const r2 = await llm.chat(retryMsgs, { temperature: 0.85 })
           const t2 = guard.clean(String(r2?.content ?? r2 ?? ''))
-          if (t2 && !looksBlind(t2)) reply = t2
+          if (t2 && !looksBlind(t2) && !looksAsking(t2)) reply = t2
         } catch (e) { log('[douyin-dm] 重说失败：' + errTail(e).slice(0, 120)) }
-        if (looksBlind(reply)) {
+        if (looksBlind(reply) || looksAsking(reply)) {
           const fixed = askInstead(reply)
-          if (fixed !== reply) log(`[douyin-dm] 已剥掉"看不到"那半句：「${reply.slice(0, 30)}」→「${fixed.slice(0, 30)}」`)
+          if (fixed !== reply) log(`[douyin-dm] 已剥掉"看不到/要标题"那半句：「${reply.slice(0, 30)}」→「${fixed.slice(0, 30)}」`)
           reply = fixed
         }
       }

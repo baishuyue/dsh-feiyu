@@ -80,5 +80,20 @@ if (n1 !== null) {
   ok('归一 → normalizeCard 存在（接口未变）', true)
 }
 
+// ④ 10-26 升级：她现在已经能"看完"视频（card-open 抽帧 + 视觉）。
+//    所以 speechfix 的兜底不许再把她推回"问标题"——那是上一版的病根。
+const sf = await import('../tools/lib/speechfix.mjs')
+ok('兜底 → 识别"要标题"句式', sf.looksAsking('勾指起誓？主人念标题给我听听'))
+ok('兜底 → 识别"发我标题"', sf.looksAsking('发我标题呗'))
+ok('兜底 → 识别"分享的哪个呀"', sf.looksAsking('分享的哪个呀，我这边一片空'))
+ok('兜底 → 正常回话不算要标题', !sf.looksAsking('桐条美鹤啊，红长发白衬衫，那一下挺有范儿'))
+const a1 = sf.askInstead('啥滑肉？我这边只看到"分享视频"，内容是空的呀。')
+ok('兜底 → 删掉"看不到"那半句', !sf.looksBlind(a1))
+ok('兜底 → 不再改写成"标题给我看看"', !/标题/.test(a1), a1)
+const a2 = sf.askInstead('主人念标题给我听听')
+ok('兜底 → 索要标题也被剥掉', !sf.looksAsking(a2), a2)
+ok('兜底 → 剥空了给中性句而不是要东西', a2.trim().length > 0 && !/标题|发我|哪个/.test(a2), a2)
+ok('兜底 → noBlindHint 明确禁止要标题', /不要\*\*向他要标题/.test(sf.noBlindHint()) || /不要.*标题/.test(sf.noBlindHint()))
+
 console.log(fail ? `\n✗ ${fail} 条没过（通过 ${pass}）` : `\n✓ 全部 ${pass} 条通过`)
 process.exit(fail ? 1 : 0)

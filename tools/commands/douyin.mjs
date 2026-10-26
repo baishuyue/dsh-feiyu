@@ -370,10 +370,20 @@ export function run(argv = []) {
     console.log(runPy(['dm-read', '--sec-uid', secUid, '--name', name], cfg))
     return
   }
+  if (cmd === 'card-open') {
+    // 点开私信里最新一张分享卡片：拿 aweme_id + 标题/作者 + 逐帧截图（她"看懂分享的视频"靠这个）
+    const secUid = arg(argv, '--sec-uid') || (cfg.douyin?.owner?.sec_uid || '')
+    const name = arg(argv, '--name') || (cfg.douyin?.owner?.name || '')
+    const out = arg(argv, '--out') || path.join(os.tmpdir(), 'feiyu-card-' + Date.now())
+    const n = arg(argv, '--n') || '4'
+    if (!secUid) { console.error('需要 --sec-uid 或配置 douyin.owner.sec_uid'); process.exit(2) }
+    console.log(runPy(['card-open', '--sec-uid', secUid, '--name', name, '--out', out, '--n', String(n)], cfg))
+    return
+  }
   if (cmd === 'interact') {
     return runInteract(cfg, { dry: argv.includes('--dry') })
   }
-  console.log('用法：login | cdp-start | feed [--headed] | comments --vid | comment --vid --message [--go --cdp] | reply --vid --cid --message [--go --cdp] | dm --sec-uid --message [--go --cdp] | dm-read --sec-uid | interact')
+  console.log('用法：login | cdp-start | feed [--headed] | comments --vid | comment --vid --message [--go --cdp] | reply --vid --cid --message [--go --cdp] | dm --sec-uid --message [--go --cdp] | dm-read --sec-uid | card-open --sec-uid [--out 目录 --n 4] | interact')
 }
 
 // 全流程：feed → 口味过滤 → 读热评 → LLM 生成评论 → 干跑发评论

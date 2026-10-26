@@ -12,7 +12,9 @@
 """
 import re
 import argparse
+import base64
 import asyncio
+import hashlib
 import json
 import os
 import random
@@ -1294,6 +1296,209 @@ async def cmd_frames(cookie_file: str, vid: str, out_dir: str, n: int, headed: b
     return 0
 
 
+async def cmd_card_open(cookie_file: str, sec_uid: str, out_dir: str, name: str = "",
+                        headless: bool = True, n: int = 4) -> int:
+    """点开私信里最新一张「分享视频」卡片，把那条视频真正看一遍（10-26）。
+
+    为什么要这么绕：卡片正文在 DOM 里只有作者名，消息走二进制 WS 抓不到 aweme_id
+    （实测：抓帧无 id、/im/ 接口无 aweme_id）。唯一的 id 来源是**点开后的 URL**：
+        https://www.douyin.com/user/<sec_uid>?modal_id=<aweme_id>
+    拿到 id 后顺手在同一个浏览器里逐帧采样（不重开浏览，省 20 秒）。
+
+    输出 JSON：{vid, desc, author, duration, frames:[...], error?}
+    """
+    out = Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    result = {"vid": "", "desc": "", "author": "", "duration": 0, "frames": []}
+
+    async with async_playwright() as pw:
+        browser, context = await _launch(pw, headless=headless)
+        if Path(cookie_file).exists():
+            await context.add_cookies(json.loads(Path(cookie_file).read_text(encoding="utf-8")))
+        page = await context.new_page()
+        try:
+            await _open_dm_chat(page, sec_uid)
+            await asyncio.sleep(3)
+            pos = await page.evaluate("""() => {
+                const list = document.querySelector('.messageMessageListlist')
+                    || document.querySelector('[class*="messageMessageList"]');
+                if (!list) return null;
+                const items = Array.from(list.querySelectorAll('[data-e2e="msg-item-content"], [class*="MessageBoxContent"]'));
+                let best = null;
+                for (const c of items) {
+                    const box = c.closest('[class*="messageBox"]') || c.parentElement;
+                    if (box && box.querySelector('[class*="isFromMe"]')) continue;   // 只要对方发来的
+                    const share = c.querySelector('[class*="ShareAweme"]');
+                    if (!share) continue;
+                    const r = share.getBoundingClientRect();
+                    if (r.top <= 0 || r.bottom >= window.innerHeight || r.width < 40) continue;
+                    best = { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2),
+                             text: (c.innerText || '').trim().slice(0, 40) };
+                }
+                return best;
+            }""")
+            if not pos:
+                result["error"] = "视野里没有可点的分享卡片（可能已滚出屏幕）"
+                log("[card-open] " + result["error"])
+            else:
+                log(f"[card-open] 点开卡片「{pos['text']}」…")
+                await page.mouse.click(pos["x"], pos["y"])
+                # 等 modal_id 出现（点开是站内弹窗，不换页）
+                m = None
+                for _ in range(30):
+                    await asyncio.sleep(0.4)
+                    m = re.search(r"modal_id=(\d{15,25})", page.url)
+                    if m:
+                        break
+                if m:
+                    result["vid"] = m.group(1)
+                    log(f"[card-open] 拿到视频 id：{result['vid']}")
+                else:
+                    log(f"[card-open] ⚠ 没等到 modal_id（url={page.url[:90]}）")
+
+                await asyncio.sleep(2.5)
+                meta = await page.evaluate("""() => {
+                    const pick = (sel) => { const e = document.querySelector(sel); return e ? (e.innerText || '').trim() : ''; };
+                    const v = document.querySelector('video');
+                    return {
+                        desc: pick('[data-e2e="video-desc"]') || pick('[data-e2e="detail-video-desc"]')
+                              || pick('[data-e2e="video-title"]') || (document.title || ''),
+                        author: pick('[data-e2e="user-info"] h1') || pick('[data-e2e="video-author"]')
+                                || pick('[class*="authorName"]'),
+                        duration: v ? Number(v.duration) || 0 : 0,
+                        hasVideo: !!v,
+                    };
+                }""")
+                result["desc"] = str(meta.get("desc") or "").split("\n")[0][:120]
+                result["author"] = str(meta.get("author") or "")[:40]
+                result["duration"] = round(float(meta.get("duration") or 0), 1)
+                log(f"[card-open] 标题/作者：{result['desc'][:50]} / {result['author']}（{result['duration']}s）")
+
+                if meta.get("hasVideo"):
+                    # 逐帧采样：按**整片时长**均匀取（之前固定 t=1,7,13,19 —— 113 秒的视频
+                    # 只看得到开头 20 秒，而且第 2/3 帧撞成同一张）。
+                    # 页面里可能有多个 <video>（弹窗里还有预加载的），取面积最大那个。
+                    VIDJS = """() => {
+                        const vs = Array.from(document.querySelectorAll('video'))
+                          .filter(v => v.duration > 0 && v.getBoundingClientRect().width > 200);
+                        if (!vs.length) return null;
+                        vs.sort((a, b) => {
+                            const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect();
+                            return rb.width * rb.height - ra.width * ra.height;
+                        });
+                        return vs[0];
+                    }"""
+                    try:
+                        await page.evaluate("""() => {
+                            const vs = Array.from(document.querySelectorAll('video')).filter(v => v.duration > 0);
+                            for (const v of vs) { v.muted = true; try { v.pause(); } catch (e) {} }
+                        }""")
+                    except Exception:
+                        pass
+                    dur = max(1.0, float(result["duration"] or 8))
+                    total = max(1, min(n, 6))
+                    seen_hash = set()
+                    # 取帧：优先在页面内把**解码帧**画进 canvas 导出（截图抓合成层，暂停/seek 时经常是旧帧，
+                      # 实测 4 帧全撞 hash）；canvas 一定拿到当前真实画面。失败再退回截图。
+                    CAPTURE_JS = """(t) => new Promise((res) => {
+                        const vs = Array.from(document.querySelectorAll('video'))
+                          .filter(v => v.duration > 0 && v.videoWidth > 100);
+                        if (!vs.length) return res('');
+                        vs.sort((a, b) => b.videoWidth * b.videoHeight - a.videoWidth * a.videoHeight);
+                        const v = vs[0];
+                        v.muted = true;
+                        const shoot = () => {
+                            try {
+                                const c = document.createElement('canvas');
+                                c.width = v.videoWidth; c.height = v.videoHeight;
+                                c.getContext('2d').drawImage(v, 0, 0, c.width, c.height);
+                                res(c.toDataURL('image/jpeg', 0.82));
+                            } catch (e) { res('ERR:' + String(e).slice(0, 60)) }
+                        };
+                        const target = Math.min(t, Math.max(0.1, v.duration - 0.3));
+                        if (Math.abs(v.currentTime - target) < 0.2) return shoot();
+                        v.currentTime = target;
+                        v.addEventListener('seeked', () => setTimeout(shoot, 120), { once: true });
+                        setTimeout(shoot, 3000);
+                    })"""
+                    for i in range(total):
+                        t = round(dur * (i + 1) / (total + 1), 1)
+                        data = ""
+                        try:
+                            data = await page.evaluate(CAPTURE_JS, t)
+                        except Exception as e:
+                            log(f"[card-open] 取帧失败 t={t}: {str(e)[:80]}")
+                        f = out / f"cardframe-{int(time.time()*1000)}-{i}.jpg"
+                        wrote = False
+                        if isinstance(data, str) and data.startswith("data:image") and "," in data:
+                            try:
+                                f.write_bytes(base64.b64decode(data.split(",", 1)[1]))
+                                wrote = True
+                            except Exception as e:
+                                log(f"[card-open] 帧 {i} 解码失败：{str(e)[:80]}")
+                        if not wrote:
+                            # 退路：截播放器区域
+                            try:
+                                box = await page.evaluate("""() => {
+                                    const vs = Array.from(document.querySelectorAll('video'))
+                                      .filter(v => v.duration > 0 && v.getBoundingClientRect().width > 200);
+                                    if (!vs.length) return null;
+                                    vs.sort((a, b) => {
+                                        const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect();
+                                        return rb.width * rb.height - ra.width * ra.height;
+                                    });
+                                    const r = vs[0].getBoundingClientRect();
+                                    if (r.width < 200 || r.height < 200) return null;
+                                    return { x: Math.max(0, r.x), y: Math.max(0, r.y),
+                                             w: Math.min(r.width, window.innerWidth - Math.max(0, r.x)),
+                                             h: Math.min(r.height, window.innerHeight - Math.max(0, r.y)) };
+                                }""")
+                                if box:
+                                    clip = {"x": box["x"], "y": box["y"], "width": box["w"], "height": box["h"]}
+                                    f.write_bytes(await page.screenshot(type="jpeg", quality=80, clip=clip))
+                                else:
+                                    f.write_bytes(await page.screenshot(type="jpeg", quality=80))
+                            except Exception as e:
+                                log(f"[card-open] 帧 {i} 截图也失败：{str(e)[:100]}")
+                        try:
+                            if f.exists() and f.stat().st_size > 2000:
+                                h = hashlib.md5(f.read_bytes()).hexdigest()
+                                if h in seen_hash:      # 同一画面（静止镜头/慢动作）→ 去重，别浪费视觉额度
+                                    log(f"[card-open] 帧 {i} 与前面重复，跳过（t={t}s）")
+                                    f.unlink(missing_ok=True)
+                                    continue
+                                seen_hash.add(h)
+                                result["frames"].append(str(f))
+                                log(f"[card-open] 帧 {i}: {f.name}（{f.stat().st_size}B, t={t}s）")
+                            elif f.exists():
+                                f.unlink(missing_ok=True)
+                        except Exception as e:
+                            log(f"[card-open] 帧 {i} 收尾失败：{str(e)[:100]}")
+                else:
+                    result["error"] = "弹窗里没有 video 元素（视频可能被删/需要登录）"
+                    log("[card-open] " + result["error"])
+                # 关弹窗（Esc 一般就够；不行再点遮罩）
+                try:
+                    await page.keyboard.press("Escape")
+                    await asyncio.sleep(0.6)
+                except Exception:
+                    pass
+        except Exception as e:
+            result["error"] = str(e)[:200]
+            log(f"✗ card-open 失败：{result['error']}")
+        finally:
+            await browser.close()
+
+    payload = json.dumps(result, ensure_ascii=False)
+    print(payload)
+    if out_dir and out_dir != "-":
+        try:
+            (out / "card-open.json").write_text(payload, encoding="utf-8")
+        except Exception:
+            pass
+    return 0 if result["frames"] or result["vid"] else 1
+
+
 def main():
     ap = argparse.ArgumentParser(description="抖音网页版互动工具")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -1377,6 +1582,14 @@ def main():
     p_frames.add_argument("--n", type=int, default=3, help="帧数（1~6）")
     p_frames.add_argument("--headed", action="store_true")
 
+    p_card = sub.add_parser("card-open", help="点开私信里最新分享卡片，拿视频 id 并逐帧采样（看懂分享的视频）")
+    p_card.add_argument("--cookie", default=DEFAULT_COOKIE)
+    p_card.add_argument("--sec-uid", required=True, help="会话对方 sec_uid")
+    p_card.add_argument("--name", default="", help="会话显示名（日志用）")
+    p_card.add_argument("--out", required=True, help="帧图输出目录")
+    p_card.add_argument("--n", type=int, default=4, help="帧数（1~6）")
+    p_card.add_argument("--headed", action="store_true")
+    p_card.add_argument("--headless", action="store_true", default=True)
     p_dmlist = sub.add_parser("dm-list", help="读私信会话列表")
     p_dmlist.add_argument("--cookie", default=DEFAULT_COOKIE)
     p_dmlist.add_argument("--out", default="-")
@@ -1420,6 +1633,8 @@ def main():
         sys.exit(asyncio.run(cmd_self_info(args.cookie, args.out)))
     elif args.cmd == "frames":
         sys.exit(asyncio.run(cmd_frames(args.cookie, args.vid, args.out, args.n, args.headed)))
+    elif args.cmd == "card-open":
+        sys.exit(asyncio.run(cmd_card_open(args.cookie, args.sec_uid, args.out, args.name, args.headless, args.n)))
 
 
 if __name__ == "__main__":
