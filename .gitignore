@@ -7,3 +7,7 @@ node_modules/
 
 # 预览产物（node scripts/build-preview.mjs 生成）
 preview/
+
+# Python 编译缓存（测试/自检会生成，别进仓库）
+__pycache__/
+*.pyc
