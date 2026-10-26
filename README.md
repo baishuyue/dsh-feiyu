@@ -269,17 +269,34 @@ QQ 收到消息 → 摇中 voice_chance → lib/tts.mjs POST 9880/tts
 - 参考图按文案情绪自动挑：`sticker-refs/ref-{哭,举手,得意,微笑}.jpg`
 - 发送前 `pickSticker()` 过滤 `px-`；她没写标记时 `autoTag()` 按内容补标签（认不出只在开心/无语/比心里选）
 
-### 4）做视频 —— 投稿包（她策划，你点发布）
+### 4）做视频 —— 真剪辑的片子（她策划，你点发布）
 
 ```
-produce ["主题"]
- ① DeepSeek 出脚本/分镜
- ② 硅基 Qwen-Image-Edit 逐镜配图（锁她的形象）
- ③ GPT-SoVITS 念旁白（她的音色）
- ④ ffmpeg 图片序列 + 音频 → video.mp4
- ⑤ 落地 ~/.feiyu-ai/douyin-posts/<日期-标题>/{img-*.jpg, narration.wav, video.mp4, 文案}
- ⑥ 停在这里 —— 她不能自己发，等你在面板点发布
+produce ["主题"] [--platform bili|douyin] [--frames 1|2] [--bgm auto|none] [--dry]
+  ① DeepSeek 出脚本/分镜（每幕：动作 + 台词 + 景别）
+  ② 硅基 Qwen-Image-Edit 逐幕 2 帧配图（锁她的形象，同场景换个动作/表情）
+  ③ GPT-SoVITS 逐句念台词 → 量出每句真实时长，时间轴是算出来的，不猜
+  ④ ffmpeg 真剪辑：片头卡 → 各幕运镜（推/拉/摇/移）+ 幕内双帧交叉淡入 + 幕间转场
+     + 逐句 ASS 字幕烧制 + 本地合成 BGM（侧链避让人声）+ loudnorm 统一响度 → 1080p
+  ⑤ 封面单独一张；落地 ~/.feiyu-ai/{bili,douyin}-posts/<日期-标题>/
+     {img-*.jpg, voice-*.wav, subs.ass, video.mp4, cover.jpg, meta.json, 投稿说明.md}
+  ⑥ 停在这里 —— 她不能自己发，等你在面板点发布
 ```
+
+**B站首条锁**：第一条只能做「介绍自己 + 今天第一天来B站 + 以后这个账号归她运营 + 自由发挥」。
+剧本出来会被复查（缺哪条就重写，三次不成就不做），做完仍然锁着（`ready`）；你发完跑
+`produce --debut-posted BV号` 才算解锁，之后 B站 投稿随便拍。抖音不受这个锁限制。
+
+### 5）她 B站 跟谁说了什么 —— 社交流水
+
+```
+social [--days 3] [--kind 回评] [--invisible] [--md] [--push] [--json] [--backfill]
+```
+
+她评论/回评/弹幕/动态/点赞/投币/关注/投稿都落进 `~/.feiyu-ai/bili-social.jsonl`，
+每条标着"有没有 @ 你"。`social` 先列**没 @ 你**的那些（那才是你漏掉的部分）；
+`socialDigest` 每天 23:30（≥3 条才推）自动推一条摘要到你 QQ；`--backfill` 能把
+老的散文台账 `bili-outbox.md` 历史灌进流水（幂等，实测补了 91 条）。
 
 ### 汇总：一次"完全自由"里她可能跑的全链路
 
@@ -289,7 +306,7 @@ produce ["主题"]
    ├─ 写小说片段（web roam 的写作模式 → 记忆）
    ├─ 刷B站/抖音（bili-watch --free / watch --free → 评论走额度+风控闸）
    ├─ 抖音评论区经营（engage：扫自己作品 → cid 精确回复）
-   ├─ 做视频投稿包（produce：策划→配图→旁白→成片，等你发布）
+   ├─ 做视频（produce：策划→配图→配音→真剪辑成片，等你发布）
    ├─ 唱歌/语音（sing / voice → 发 QQ）
    └─ 给自己约下一次（selfwake 23:40 --note "把小说收尾"）
         ↓ 到点
