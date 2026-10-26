@@ -23,6 +23,13 @@ import { sing } from '../lib/sing.mjs'
 import { tickMood } from '../lib/mood.mjs'
 import { generateStickerImage } from '../lib/imggen.mjs'
 import { availableTags } from '../lib/stickers.mjs'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
+
+// 图片下载必须异步：execFileSync 会把事件循环钉住最多 35 秒，期间 /health 不通、群里所有
+// 消息都排队。10-26 修：这条路径原来调的是**没导入**的 execFileSync，ReferenceError 被空
+// catch 吞掉 → QQ 里发的图片永远进不了视觉理解，只剩一句占位。
+const execFileAsync = promisify(execFile)
 
 const LOG_FILE = dataPath('qq-server.log')
 
@@ -192,7 +199,7 @@ export async function run(argv = []) {
             const dl = path.join(dataPath('qq-img'), `img-${Date.now()}-${Math.floor(Math.random() * 1e4)}.jpg`)
             fs.mkdirSync(path.dirname(dl), { recursive: true })
             const exe = fs.existsSync('C:/Windows/System32/curl.exe') ? 'C:/Windows/System32/curl.exe' : 'curl'
-            execFileSync(exe, ['-sS', '-L', '-m', '30', '-A', 'Mozilla/5.0', '-o', dl, images[0]], { timeout: 35000, windowsHide: true })
+            await execFileAsync(exe, ['-sS', '-L', '-m', '30', '-A', 'Mozilla/5.0', '-o', dl, images[0]], { timeout: 35000, windowsHide: true })
             if (fs.existsSync(dl) && fs.statSync(dl).size > 2000) {
               const desc = await describeFrames([dl], { query: '这是 QQ 聊天里对方发来的图片。一两句话说明：图里是什么/谁、在干什么、如果是表情包或梗图说出它的梗和情绪。' })
               imageDesc = desc ? `【她发来的图片：${desc.slice(0, 120)}】` : '【她发来一张图片，但我没看清】'

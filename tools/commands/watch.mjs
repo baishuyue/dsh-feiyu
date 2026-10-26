@@ -213,9 +213,12 @@ export async function run(argv = []) {
         const ownerName = String(cfg.douyin?.owner?.name || cfg.owner?.name || '').trim()
         const ownerSecUid = String(cfg.douyin?.owner?.sec_uid || '').trim()
         let ok = false
-        if (douyinDry(cfg)) {
+        // 10-26 修：干跑以前把 ok 置 true，然后照样走下面的 shareQuotaRecord ——
+        // 演练吃真额度（与"干跑不占真额度"的注释正好相反）。现在用一个显式标志分账。
+        const dryShare = douyinDry(cfg)
+        if (dryShare) {
           console.log(`  【干跑 ✓】本要在抖音私信分享给「${ownerName || '主人'}」：${text.split('\n')[0]}…`)
-          ok = true   // 干跑不占真额度，但记录一下决策
+          ok = true   // 干跑不占真额度，也不写"已分享"记忆
         } else {
           if ((via === 'douyin' || via === 'both') && ownerName) {
             // ① 原生分享卡片（手机上可点开、和你手动分享一样的），随后补一句附言
@@ -245,11 +248,15 @@ export async function run(argv = []) {
           }
         }
         if (ok) {
-          shareQuotaRecord(cfg)
-          memory.addLore('兴趣', `抖音《${String(v.desc).slice(0, 30)}》——分享给了主人`)
-          // 分享附言写进私信会话记忆（10-25 修"对话割裂"：主人回复分享时，上下文里必须有这条线）
-          try { memory.remember('douyin', 'douyin-dm:owner', String(cfg.douyin?.owner?.name || ''), 'assistant', `（分享了视频：《${String(v.desc).slice(0, 40)}》 ${url}）${line ? '\n我的评论：' + line : ''}`) } catch {}
-          log('  📨 已分享给主人（抖音私信）')
+          if (!dryShare) {
+            shareQuotaRecord(cfg)
+            memory.addLore('兴趣', `抖音《${String(v.desc).slice(0, 30)}》——分享给了主人`)
+            // 分享附言写进私信会话记忆（10-25 修"对话割裂"：主人回复分享时，上下文里必须有这条线）
+            try { memory.remember('douyin', 'douyin-dm:owner', String(cfg.douyin?.owner?.name || ''), 'assistant', `（分享了视频：《${String(v.desc).slice(0, 40)}》 ${url}）${line ? '\n我的评论：' + line : ''}`) } catch {}
+            log('  📨 已分享给主人（抖音私信）')
+          } else {
+            log('  【干跑 ✓】分享决策已记录（不占额度、不写"已分享"记忆）')
+          }
         }
         else log('  ✗ 分享主人失败（没配 douyin.owner.name 或 NapCat 没起）')
       } else {

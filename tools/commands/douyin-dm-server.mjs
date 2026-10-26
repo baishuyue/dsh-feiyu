@@ -170,7 +170,9 @@ export async function run(argv = []) {
             const dl = path.join(dataPath('douyin-img'), `dm-${Date.now()}.jpg`)
             fs.mkdirSync(path.dirname(dl), { recursive: true })
             const exe = fs.existsSync('C:/Windows/System32/curl.exe') ? 'C:/Windows/System32/curl.exe' : 'curl'
-            execFileSync(exe, ['-sS', '-L', '-m', '30', '-A', 'Mozilla/5.0', '-o', dl, pick.img], { timeout: 35000, windowsHide: true })
+            // 10-26 修：这里以前调的是 execFileSync —— 而本文件根本没导入它（只导了 execFile），
+            // ReferenceError 被外层空 catch 吞掉 → 抖音私信里的图片永远只是「【发来一张图片】」。
+            await execFileAsync(exe, ['-sS', '-L', '-m', '30', '-A', 'Mozilla/5.0', '-o', dl, pick.img], { timeout: 35000, windowsHide: true })
             if (fs.existsSync(dl) && fs.statSync(dl).size > 2000) {
               const desc = await describeFrames([dl], { query: '这是抖音私信里对方发来的图片。一两句话说明：图里是什么/谁、什么状态、如果是梗图说出梗。' })
               text = desc ? `【图片：${desc.slice(0, 120)}】` : '【发来一张图片，我没看清】'

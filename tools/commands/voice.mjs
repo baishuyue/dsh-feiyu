@@ -134,7 +134,8 @@ export async function run(argv = []) {
     if (!v) { console.error('没这个音色'); process.exit(1) }
     // 直接改配置文件（config() 是只读视图）；路径统一走 paths.mjs，
     // 认 $FEIYU_CONFIG / $DSH_HOME —— 以前读 config().configPath（不存在的字段）再硬编码 USERPROFILE。
-    const cfgFile = configPath()
+    // configPath 在 paths.mjs 里导出的是**字符串常量**，当成函数调用必然 TypeError —— 10-26 修
+    const cfgFile = configPath
     const j = JSON.parse(fs.readFileSync(cfgFile, 'utf8'))
     // 参考文本语言要跟音频一致（英文参考配 zh 会文本-音频错位，克隆质量崩）——粗判 ASCII 占比
     const asciiRatio = (v.text.match(/[\x20-\x7E]/g) || []).length / Math.max(1, v.text.length)

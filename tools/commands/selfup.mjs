@@ -33,7 +33,9 @@ function doBackup() {
   }
   copyDir(src, path.join(dest, 'dsh-feiyu'))
   // 配置 + 人设也快照
-  try { fs.copyFileSync(configPath(), path.join(dest, 'feiyu.config.json')) } catch {}
+  // configPath 是字符串常量（paths.mjs），不是函数 —— 以前写成 configPath() 抛 TypeError，
+  // 又被 try 吞掉 → 每份备份都悄悄少一个配置文件（10-26 修）
+  try { fs.copyFileSync(configPath, path.join(dest, 'feiyu.config.json')) } catch {}
   try { fs.copyFileSync(dataPath('persona.md'), path.join(dest, 'persona.md')) } catch {}
   // 只留最近 10 份
   const olds = fs.readdirSync(BACKUP_ROOT()).sort().reverse().slice(10)

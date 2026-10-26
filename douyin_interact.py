@@ -293,16 +293,18 @@ async def cmd_comment(cookie_file: str, vid: str, message: str, dry: bool, use_c
             await page.goto(f"https://www.douyin.com/video/{vid}", wait_until="domcontentloaded", timeout=60000)
         await asyncio.sleep(5)
         # 先点开评论编辑框（抖音是 Draft.js 编辑器，占位符「留下你的精彩评论吧」点了才出现 contenteditable）
-        try:
-            await page.locator('text=留下你的精彩评论吧').first.click(timeout=8000)
-        except Exception:
+        # 2026-10-26 补：编辑框已经展开时不要再去点占位符 —— 会被 DraftEditor 挡住而超时
+        if await page.locator('.public-DraftEditor-content[contenteditable="true"]').count() == 0:
             try:
-                await page.locator('.comment-title, text=全部评论').first.click(timeout=8000)
+                await page.locator('text=留下你的精彩评论吧').first.click(timeout=8000)
             except Exception:
-                log("✗ 找不到评论占位符（可能被风控或页面结构变了）")
-                if not use_cdp:
-                    await browser.close()
-                return 1
+                try:
+                    await page.locator('.comment-title, text=全部评论').first.click(timeout=8000)
+                except Exception:
+                    log("✗ 找不到评论占位符（可能被风控或页面结构变了）")
+                    if not use_cdp:
+                        await browser.close()
+                    return 1
         await asyncio.sleep(1)
         # Draft.js 输入框：public-DraftEditor-content
         box = page.locator('.public-DraftEditor-content[contenteditable="true"]').first
@@ -341,12 +343,45 @@ async def cmd_comment(cookie_file: str, vid: str, message: str, dry: bool, use_c
             await _human_type(box, message)
         await asyncio.sleep(1)
         # 发布按钮：右侧容器的发送图标（SVG span，无文字）
-        send = page.locator('.commentInput-right-ct span:has(svg)').last
+        # 2026-10-26 修：原来用 `.last`，而最后一个 span 是 display:none 的隐藏节点（0x0），
+        # 点击必然 8 秒超时（当天第二次评论就死在这）。现在只挑「可见 + 尺寸正常」的图标，
+        # 取最右边那个当发送键；都点不到就回车发送。
+        sent = False
         try:
-            await send.click(timeout=8000)
-        except Exception:
-            send = page.locator('text="发布"').last
-            await send.click(timeout=8000)
+            icons = page.locator('.commentInput-right-ct span:has(svg)')
+            n = await icons.count()
+            cands = []
+            for i in range(n):
+                el = icons.nth(i)
+                try:
+                    if not await el.is_visible():
+                        continue
+                    bb = await el.bounding_box()
+                except Exception:
+                    continue
+                if bb and bb['width'] >= 8 and bb['height'] >= 8:
+                    cands.append((bb['x'], i))
+            cands.sort()
+            if cands:
+                await icons.nth(cands[-1][1]).click(timeout=8000)
+                sent = True
+                log(f"[comment] 用发送图标（可见、最右，共 {len(cands)} 个候选）")
+        except Exception as e:
+            log(f"[comment] 发送图标点击失败：{e.__class__.__name__}")
+        if not sent:
+            for sel in ['text="发布"', 'button:has-text("发布")']:
+                try:
+                    el = page.locator(sel).last
+                    if await el.count() and await el.is_visible():
+                        await el.click(timeout=5000)
+                        sent = True
+                        log(f"[comment] 用文字按钮 {sel}")
+                        break
+                except Exception:
+                    pass
+        if not sent:
+            await box.press('Enter')
+            log("[comment] 图标都点不到，改用回车发送")
         await asyncio.sleep(3)
         # 回读验证发送结果（输入框清空 = 发送成功；未清空 = 可能被风控拦下）
         try:
@@ -459,8 +494,23 @@ async def cmd_reply(cookie_file: str, vid: str, cid: str, message: str, dry: boo
         else:
             await _human_type(box, message)
         await asyncio.sleep(1)
+        # 发送前挂上"发布接口"监听 —— 唯一可信的成功信号（10-25：只看输入框空了会假成功，
+        # 判定成功但页面/接口都没有这条回复的情况实测出现过）
+        pub = {"ok": False, "info": ""}
+
+        async def on_pub(resp):
+            try:
+                if "comment/publish" in resp.url:
+                    d = json.loads(await resp.text())
+                    sc = d.get("status_code")
+                    cid_new = ((d.get("comment") or {}).get("cid")) or ""
+                    pub["ok"] = sc == 0 and bool(cid_new)
+                    pub["info"] = f"status_code={sc} 新cid={cid_new} msg={str(d.get('status_msg') or '')[:60]}"
+            except Exception:
+                pass
+
+        page.on("response", on_pub)
         # 发送：回车优先（抖音评论框 Enter 直接发），不行再点右侧「发送」按钮
-        sent = False
         try:
             await page.keyboard.press('Enter')
             await asyncio.sleep(3)
@@ -470,7 +520,7 @@ async def cmd_reply(cookie_file: str, vid: str, cid: str, message: str, dry: boo
             left = (await page.locator('.public-DraftEditor-content[contenteditable="true"]').first.inner_text() or '').strip()
         except Exception:
             left = ''
-        if left:
+        if left and not pub["ok"]:
             for sel in ['.commentInput-right-ct span:has(svg)', 'span:has-text("发送")', 'text="评论"']:
                 try:
                     await page.locator(sel).last.click(timeout=5000)
@@ -478,23 +528,16 @@ async def cmd_reply(cookie_file: str, vid: str, cid: str, message: str, dry: boo
                     break
                 except Exception:
                     continue
-        # 回读验证：页面上要真的能搜到这句话（10-25：以前只看"输入框空了"就报成功，
-        # 实际一条都没发出去，白白以为测通了）
-        ok = False
-        try:
-            key = message.strip()[:12]
-            ok = await page.get_by_text(key, exact=False).count() > 0
-        except Exception:
-            ok = False
-        if ok:
-            log(f"[reply] ✅ 已回复 cid={cid}：{'@' + at_user + ' ' if at_user else ''}{message}")
+        page.remove_listener("response", on_pub)
+        if pub["ok"]:
+            log(f"[reply] ✅ 已回复 cid={cid}：{'@' + at_user + ' ' if at_user else ''}{message}（{pub['info']}）")
         else:
             shot = str(Path.home() / 'AppData/Local/Temp' / f"reply-fail-{cid}.png")
             try:
                 await page.screenshot(path=shot)
             except Exception:
                 shot = '(截图失败)'
-            log(f"[reply] ✗ 回复没出现在页面上（可能被风控/输入框不是这条评论的）：截图 {shot}")
+            log(f"[reply] ✗ 发布接口没确认成功：{pub['info'] or '（没抓到 comment/publish 响应）'} 截图 {shot}")
             if not use_cdp:
                 await browser.close()
             return 1
