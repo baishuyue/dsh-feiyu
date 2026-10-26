@@ -35,6 +35,19 @@ export const DEFAULTS = {
   share: { enabled: true, via: 'comment', minScore: 13 },   // via: comment | dm
   // 额度（0 = 不限，随便玩；克制是活下来的前提，但这是你的鱼）
   quota: { shareDaily: 3, sameVideoDays: 7 },
+  // 账本（10-26 新增）：让她自己看得到"饭钱"和额度 —— 以前她只能反复问主人。
+  // 用量来自 DSH 会话日志（真实数字），折算价可在 price 里按实际账单改。
+  // dailyBudget > 0 时她会按"今天超没超预算"说话；0 = 不设预算，只报花了多少。
+  ledger: {
+    enabled: true,
+    dailyBudget: 3,                     // 元/天，0 = 不设预算
+    mineWorkspace: 'feiyu-work',        // 哪个工作区的会话算"她自己吃的"（她的是 ~/.dsh/feiyu-work）
+    price: { inputPerM: 2, cachePerM: 0.2, outputPerM: 3 },   // 元/百万 token（按 DeepSeek 档位估，可改）
+    balanceUrl: '',                     // 填 https://api.deepseek.com/user/balance 且 apiKey 有效才查余额
+    apiKey: '',
+    balanceTimeoutMs: 8000,
+    promptInQQ: true,                   // 聊天时把账本一行塞进提示语（她用不着问主人）
+  },
   // 风控闸门（来自 dafeiyu 骨架 ops/guard.py 的设计）
   guard: {
     dryRun: true,       // ⚠️ 默认干跑：只打印不真发。观察一周后再改 false

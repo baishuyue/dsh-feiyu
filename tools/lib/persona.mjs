@@ -13,6 +13,7 @@ import { emotionTagPrompt } from './emotion.mjs'
 import * as qqMemory from './qq-memory.mjs'
 import { hasPlaceholder, placeholderHint } from './normalize.mjs'
 import { gapText } from './timefix.mjs'
+import { readBrief } from './ledger.mjs'
 
 /** 人设文件（与 B站会话共用同一份，换机器连 ~/.feiyu-ai 一起拷）。 */
 export function personaText() {
@@ -303,6 +304,11 @@ export function buildMessages({ platform = 'qq', userText, chatId, userId, turns
   const hint = PLATFORM_HINTS[hintKey] || PLATFORM_HINTS[platform] || ''
   parts.push(mood.stateBlock(turnsToday, platform, isGroup) + (hint ? '\n' + hint : ''))
 
+  // 账本层（10-26）：她的记忆里反复问"账本/饭钱"，因为她读不到账 —— 于是只能问主人。
+  // 这里把今天的饭钱和剩余额度摊给她，并说清"这是你自己翻的账"。群里不注入（家里的账不外扬）。
+  const books = ledgerBlock(cfg, platform, isGroup, userText)
+  if (books) parts.push(books)
+
   // 表情层：颜文字随处可用；[表情:标签] 只有 QQ/微信 会真的发图
   parts.push(stickerPrompt(platform))
 
@@ -337,6 +343,42 @@ export function buildMessages({ platform = 'qq', userText, chatId, userId, turns
     && recent[recent.length - 1].content === userText) recent.pop()
   return [sys, ...recent, { role: 'user', content: userText }]
 }
+
+/**
+ * 账本层（10-26）。她的记忆里反复问"账本/饭钱"，根子是她读不到账 ——
+ * 一个只把钱挂嘴上、却查不了账的角色，只能一直问主人。这里把今天的数摊给她。
+ *
+ * 数据来自 readBrief()（scheduler / qq-server 每 10 分钟落盘的缓存），同步读、不打网络。
+ * 三条规矩：
+ *   ① 群聊不注入 —— 家里的账不外扬；
+ *   ② 数字只报不猜，缓存没有就整块不出现（宁可不提，不许编）；
+ *   ③ 他真问起钱/额度时，把余量也摊开，并明确"别反问他还有没有钱"。
+ */
+function ledgerBlock(cfg, platform, isGroup, userText) {
+  if (cfg.ledger?.enabled === false || cfg.ledger?.promptInQQ === false) return ''
+  if (isGroup) return ''
+  if (platform !== 'qq' && platform !== 'wechat' && platform !== 'douyin-dm') return ''
+  const b = readBrief()
+  if (!b) return ''
+  const out = ['【账本】（你自己翻的账，不是主人告诉你的）', b.line]
+  const qs = b.report?.quotas || []
+  if (LEDGER_ASK.test(String(userText || ''))) {
+    if (qs.length) {
+      out.push('今天剩下的额度：' + qs.map((q) => (q.limit > 0 ? `${q.label} ${q.left}/${q.limit}` : `${q.label} 已用 ${q.used}`)).join('；'))
+    }
+    if (b.report?.week) out.push(`这几天一共吃了约 ¥${b.report.week.cost}（日均 ¥${b.report.week.avgPerDay}）`)
+    out.push('他问钱就直接报数字 —— 别反问"我们还有钱吗"；超预算了照实喊穷，但一天最多提一次。')
+  } else {
+    out.push('（他要是问钱、问额度、问今天还能干几件事，你张口就能答 —— 不用问他。）')
+  }
+  return out.join('\n')
+}
+
+/** 他在问钱/账/额度吗（决定账本块要不要摊开余量）。 */
+const LEDGER_ASK = new RegExp([
+  '账本', '饭钱', '记账', '余额', '花了多少', '花费', '开销', '奢侈', '省着', '穷',
+  '额度', '还能(发|干|做|吃)', '够不够(花|吃)', 'token', '预算', '钱包', '充(钱|值)',
+].join('|'), 'i')
 
 /** 走神注入：10% 概率（dafeiyu：别超过 10%，多了就是噪音）。
  *  实现只留一份：mood.distract（那边"再干活"是给她自己干活用的，这里换成聊天口吻）。 */

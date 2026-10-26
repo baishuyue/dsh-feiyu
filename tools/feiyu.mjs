@@ -24,6 +24,7 @@ const COMMANDS = {
   debrief: '看懂一条视频（元信息+字幕+热评+简介）',
   comment: '发评论（--share = 分享 @ 主人）',
   quota: '额度账本（check/record/show）',
+  ledger: '账本：今天吃了多少饭钱/还能吃多少/今天还能干几件事（她自己查，不用问主人）',
   diary: '两本日记（--book owner|private）',
   mem: '三层记忆（remember/fact/lore/recall/old/stats）',
   'qq-server': 'QQ 常驻聊天服务（NapCat OneBot v11，实时秒回）',

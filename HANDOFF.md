@@ -30,12 +30,12 @@ dsh-feiyu/
 │   └── node-runtime.js     探测 DSH 自带 node
 ├── client.js               面板（13 张卡片，深合并镜像）
 ├── tools/                  工具链（spawn 真 node，改完即时生效）
-│   ├── feiyu.mjs           CLI 分发（24 命令）
+│   ├── feiyu.mjs           CLI 分发（25 命令）
 │   ├── commands/           act/bili-watch/comment/debrief/diary/douyin/douyin-dm-server/
-│   │                       feed/mem/nav/produce/qq-server/quota/qzone/replies/report/
+│   │                       feed/ledger/mem/nav/produce/qq-server/quota/qzone/replies/report/
 │   │                       review/selftest/selfup/sing/sticker/vision/voice/watch/web
 │   └── lib/                bili-api/bili-write/config/cred/guard/llm/lock/mood/memory/
-│                           night-plan/notify/paths/persona/qq-memory/rvc/share-policy/
+│                           ledger(+ledger_usage.py)/night-plan/notify/paths/persona/qq-memory/rvc/share-policy/
 │                           sing/stickers/tts/vision/imggen(含 editImage)/outbox
 ├── douyin_interact.py      镜像副本（实际运行 D:/social-auto-upload/，改 D 盘后 cp 回来）
 └── test/                   7 套测试（client-smoke/render/stickers/memory/qq-human/imggen/vision）
@@ -146,8 +146,16 @@ dsh-feiyu/
 | `voice` | ref_audio_path/prompt_text/prompt_lang | bingjiao1 病娇/zh | 说话音色三件套 |
 | `rvc` | root/python/ffmpeg | D盘路径 | 唱歌系统 |
 | `llm` | api_key/base_url/model | DeepSeek | 实时推理 |
+| `ledger` | dailyBudget/price.*/mineWorkspace/promptInQQ | 3 元 / 2·0.2·3 / feiyu-work / true | 她的账本：日预算、token 单价（元/百万）、哪块算"她自己吃的"、聊天时是否注入 |
 
 **额度哲学**：所有 dailyMax **0 = 不限**；账本按天自动清零；账本文件 quota.json / bili-actions.json / douyin-{share,comment,produce}.json / imggen.json。
+
+**账本（`feiyu ledger`，10-26）**：她记忆里反复问"账本饭钱"，根子不是她记性差，是**她读不到账** —— 只把钱挂嘴上、账本只有主人能看，那她只能一直问。现在三件事摊开给她：
+- **用量**：DSH 会话日志 `~/.dsh/sessions/<工作区>/<会话>/session.v4.jsonl.zstd` 里 `type=assistant/message` 的 `data.usage`（`inputTokens/outputTokens/cacheReadTokens/totalTokens`，且 `total = input + output + cache`）。她的是 `~/.dsh/feiyu-work` 那个工作区，和主人分开算。
+- **饭钱**：token × `ledger.price`（默认 2 / 0.2 / 3 元每百万，标 ≈，按实际账单改）。
+- **额度**：今天还剩几条分享/回评/表情包/抖音动作。
+- 查不到就**明说查不到**（余额要 `ledger.balanceUrl`+`apiKey` 才查，官方 `/user/balance` 对现在这把 key 返回 401 —— 宁可不报，不许编一个 ¥0）。
+- 提示语两条通路都注入：【账本】块进她的唤醒（`lib/scheduler.js` 的 `ledgerLines`）+ 进 QQ/微信/抖音私信聊天（`persona.mjs` 的 `ledgerBlock`，**群聊不注入**）。缓存 `~/.feiyu-ai/cache/ledger-brief.json`，tick 每 10 分钟刷新（python 扫一次 1.3 秒，不能塞进提示语同步路径）。
 
 ---
 
@@ -243,6 +251,8 @@ locks/                  自由进程单实例锁
     ⑦合格段存 `D:\GPT-SoVITS\models\<名字>\<名字>.wav + .txt`，`feiyu voice use --name <名字>` 切换（即时生效，不用重启）
 29. **新音色的连带动作**：换完参考段必须 `feiyu voice emo build --force` 重造 8 套情绪参考段（旧情绪段是旧音色的，混用会出现"两种人"）。10-26 病娇音色的 8 套：撒娇 5.52 / 生气 5.17 / 委屈 4.21 / 开心 11.22 / 困 5.11 / 温柔 4.02 / 惊讶 5.05 / 害羞 4.23（起伏，半音）。备份/回滚：`voice use --name yinlang`
 30. **合成结果也要复听校验**：短句（"饭吃了没？锅里给你留着呢。"）在旧音色上只出 **1.36 秒**、ASR 复听是「後裔給你留著吧」（22% 匹配）—— 模型真的漏字了，光看时长看不出来。判断合格与否：`字数/时长` 落在该情绪的 `rate` 窗口内 + ASR 逐字比对 ≥95%
+31. **她自己查得到的才有闭环**：她反复问"账本/饭钱"不是记性问题，是**读不到账**（钱只有主人看得见 → 只能问）。凡是"她嘴上念叨却拿不到"的东西，都要做成她能读的（`feiyu ledger`）+ 提示语自动注入，而不是指望她记住。新增这类能力时问一句：**她自己能不能查？** 查不到就得明说查不到（余额不通就写"看不到"，不许编 ¥0）
+32. **账本口径三件套**：① 用量取 DSH 会话日志 `assistant/message.data.usage`，`total = input + output + cache`（缓存命中单算，别再叠加）；② 她的量按工作区 `~/.dsh/feiyu-work` 认，和主人分开；③ 单价走 `ledger.price`（元/百万），报数一律带 ≈。会话日志是**每行一个 zstd 帧**，node 的 `zstdDecompressSync` 只解第一帧（后面 `prefix_unknown`），必须用 python `zstandard.stream_reader` 读穿
 17. **git**：user baishuyue / `206720720+baishuyue@users.noreply.github.com`；推送走 Clash 7897（`env -u http_proxy … git -c http.proxy=… push`）
 
 ---

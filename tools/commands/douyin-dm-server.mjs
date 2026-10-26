@@ -14,6 +14,7 @@ import path from 'node:path'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { config } from '../lib/config.mjs'
+import { startBriefRefresher } from '../lib/ledger.mjs'
 import * as persona from '../lib/persona.mjs'
 import * as llm from '../lib/llm.mjs'
 import * as guard from '../lib/guard.mjs'
@@ -71,6 +72,8 @@ function errTail(e) {
 
 export async function run(argv = []) {
   const cfg = config()
+  // 账本：每 10 分钟刷一版（persona 的【账本】块读这份缓存，同步、不打网络）
+  if (cfg.ledger?.enabled !== false) startBriefRefresher(10, (m) => console.log('[feiyu] ' + m))
   const ownerName = String(cfg.douyin?.owner?.name || '').trim()
   const secUid = String(cfg.douyin?.owner?.sec_uid || '').trim()
   if (!secUid) { log('[douyin-dm] 未配置 douyin.owner.sec_uid，无法陪聊'); process.exit(1) }

@@ -144,6 +144,30 @@ export async function run(argv = []) {
     }
   } catch (e) { add('情绪参考段', true, '跳过（' + String(e.message).slice(0, 40) + '）') }
 
+  // 账本（10-26）：她自己查饭钱的那条路必须通 —— 会话日志能读、python 侧能解多帧 zstandard、
+  // 缓存是新的。这条挂了，她就会退回去反复问主人"我们还有钱吗"（那就又断圈了）。
+  try {
+    const L = await import('../lib/ledger.mjs')
+    const py = L.pythonPath()
+    if (!fs.existsSync(py)) {
+      add('账本', false, `找不到 python（${py}）—— 账本查不了，她会一直问主人饭钱`)
+    } else {
+      const u = await L.usage({})
+      const days = Array.isArray(u.days) ? u.days.length : 0
+      const b = L.readBrief()
+      const total = u.lifetime?.mine?.total ?? 0
+      if (!days) {
+        add('账本', false, '会话日志里没读到任何用量（python 侧 zstandard 环境没装好？pip install zstandard）')
+      } else if (!b) {
+        add('账本', true, `${days} 天记录（她累计 ${(total / 1e4).toFixed(1)} 万 token）；摘要缓存还没生成，下次唤醒会自动刷`)
+      } else if (b.stale) {
+        add('账本', true, `${days} 天记录；摘要缓存 ${Math.round((Date.now() - b.at) / 60000)} 分钟前的（tick 每 10 分钟刷）`)
+      } else {
+        add('账本', true, `${days} 天记录；${b.line.slice(0, 60)}`)
+      }
+    }
+  } catch (e) { add('账本', false, '查账失败：' + String(e.message).slice(0, 80)) }
+
   // ⑭ 抖音互动（douyin_interact.py + patchright 环境）
   let dyOk = false
   try { fs.accessSync('D:/social-auto-upload/douyin_interact.py'); fs.accessSync('D:/social-auto-upload/.venv/Scripts/python.exe'); dyOk = true } catch {}

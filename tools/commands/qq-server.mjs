@@ -11,6 +11,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { dataPath } from '../lib/paths.mjs'
 import { config } from '../lib/config.mjs'
+import { startBriefRefresher } from '../lib/ledger.mjs'
 import * as guard from '../lib/guard.mjs'
 import * as memory from '../lib/memory.mjs'
 import * as qqMemory from '../lib/qq-memory.mjs'
@@ -124,6 +125,8 @@ export function parseMessage(message, selfId) {
 
 export async function run(argv = []) {
   const cfg = config()
+  // 账本：每 10 分钟刷一版（persona 的【账本】块读这份缓存，同步、不打网络）
+  if (cfg.ledger?.enabled !== false) startBriefRefresher(10, (m) => console.log('[feiyu] ' + m))
   const QQ = cfg.qq ?? {}
   if (!QQ.enabled) { logErr('✗ qq.enabled=false —— 先在 feiyu.config.json 开 qq.enabled'); process.exit(1) }
   if (!llm.apiKey()) { logErr('✗ 没有 LLM API key（设环境变量 DEEPSEEK_API_KEY，或填 llm.api_key）'); process.exit(1) }
