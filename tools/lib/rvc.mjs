@@ -110,7 +110,11 @@ export async function genDataset({ name, sentences, refAudio, promptText, log = 
     const out = path.join(dir, `line-${String(i).padStart(3, '0')}.wav`)
     if (fs.existsSync(out) && fs.statSync(out).size > 20000) { ok++; continue }   // 断点续跑
     try {
-      const f = await synth(lines[i], out, refAudio ? { ref_audio_path: refAudio, prompt_text: promptText || '', prompt_lang: 'zh' } : {})
+      // RVC 数据集动辄几百句：关掉择优（这里是"喂给训练的数据"，音色一致性比语调更重要）
+      const f = await synth(lines[i], out, {
+        pick: 'first', candidates: 1,
+        ...(refAudio ? { ref_audio_path: refAudio, prompt_text: promptText || '', prompt_lang: 'zh' } : {}),
+      })
       if (fs.existsSync(f)) ok++
       log(`  [${i + 1}/${lines.length}] ✓ ${lines[i].slice(0, 20)}`)
     } catch (e) {

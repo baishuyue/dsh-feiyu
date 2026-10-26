@@ -157,7 +157,9 @@ export async function sing(theme = '', mode = 'rap') {
   const voices = []
   let sr = 0
   for (const line of lyrics) {
-    const f = await synth(line)
+    // 唱歌逐句：**关掉择优**（一首歌几十句，择优要 3 倍合成 + 每句一次打分，等于白等几分钟）。
+    // 而且 melody 模式会用 WORLD 声码器把每句音高重新拉到旋律上，句内的细微语调本来就被覆盖了。
+    const f = await synth(line, undefined, { pick: 'first', candidates: 1 })
     // 旋律模式：每句 TTS 后用 WORLD 声码器调到旋律上
     if (mode === 'melody' && melodyNotes) {
       try {
