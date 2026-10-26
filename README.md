@@ -274,6 +274,8 @@ QQ 收到消息 → 摇中 voice_chance → lib/tts.mjs POST 9880/tts
 ```
 produce ["主题"] [--platform bili|douyin] [--frames 1|2] [--bgm auto|none] [--dry]
 produce --reuse <已有投稿包目录>          # 图没毛病、只重做配音和剪辑（不再花生图钱）
+# 配音两条硬规矩：① 参考段先过"文本/音频配比"体检（配不上的会被踢掉，否则每句只念一半）
+#                 ② 一条片子只用一个情绪参考 voice.videoEmotion（默认 wronged，音高最贴她原来那条）
   ① DeepSeek 出脚本/分镜（每幕：动作 + 台词 + 景别）
   ② 硅基 Qwen-Image-Edit 逐幕 2 帧配图（锁她的形象，同场景换个动作/表情）
   ③ GPT-SoVITS 逐句念台词 → **念完还得验**：量真实说话段的字/秒，离谱就换参数重念，

@@ -19,6 +19,7 @@ const V = await import('file:///' + path.join(ROOT, 'tools/lib/video.mjs').repla
 const D = await import('file:///' + path.join(ROOT, 'tools/lib/debut.mjs').replace(/\\/g, '/'))
 const S = await import('file:///' + path.join(ROOT, 'tools/lib/social-log.mjs').replace(/\\/g, '/'))
 const P = await import('file:///' + path.join(ROOT, 'tools/commands/produce.mjs').replace(/\\/g, '/'))
+const T = await import('file:///' + path.join(ROOT, 'tools/lib/tts.mjs').replace(/\\/g, '/'))
 
 const read = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8')
 const results = []
@@ -408,14 +409,70 @@ await ok('同步校验：配音挪进混音里能被算出来，偏差 ≤0.06s�
 await ok('漏字闸门：13 字念 1.07 秒 = 12.2 字/秒，必须被拦下来', () => {
   assert.equal(P.speakChars('本鱼叫大肥鱼，住在主人电脑里。'), 13)
   assert.equal(P.speakChars('规矩就一条：别叫本鱼胖，哼。'), 11)
-  assert.ok(13 / 1.07 > 7.0, '这条必须被判为离谱')
+  assert.ok(13 / 1.07 > 6.0, '这条必须被判为离谱')
   const s = read('tools/commands/produce.mjs')
-  assert.match(s, /CHARS_PER_SEC = \[2\.6, 7\.0\]/)
-  assert.match(s, /NICE_RATE = \[4\.2, 6\.6\]/)
+  // 判据窗口：下限放到 2.4（她的"温柔/撒娇"语气其实很慢），上限 6.0（超过就是句尾被吃了）
+  assert.match(s, /RATE_OK = \[2\.4, 6\.0\]/)
   assert.match(s, /export async function synthChecked/)
   assert.match(s, /拆两句念/)          // 实在念不好就拆开念
   assert.match(s, /finalize\(/)          // 选中的 take 落地，临时 take 清掉
   assert.match(read('tools/lib/video.mjs'), /sc\.voiceDur = r\.dur/)  // 剪静音归 makeFilm
+})
+
+await ok('音色护栏：合成时一律不改 speed_factor / temperature（改了就是"电音、不是她的声音"）', () => {
+  const s = read('tools/commands/produce.mjs')
+  // 只看配音那一段（从注释块到"策划"分界），策划用的 LLM 温度不算
+  const voiceSeg = s.slice(s.indexOf('// ── 配音'), s.indexOf('// ── 策划'))
+  assert.ok(voiceSeg.length > 500, '配音段落没找到')
+  const code = voiceSeg.split('\n').filter((l) => !l.trim().startsWith('//')).join('\n')
+  assert.equal(code.includes('speed_factor'), false, '配音路径里不许出现 speed_factor（重采样=变调=电音）')
+  assert.equal(/temperature\s*:/.test(code), false, '配音路径里不许改 temperature')
+  // 视频统一一个情绪参考（音高才稳），允许 voice.videoEmotion 改
+  assert.match(s, /config\(\)\.voice\?\.videoEmotion/)
+  assert.match(s, /emotion: emo/)
+})
+
+await ok('参考段体检：文本配不上音频的参考会被认出来（这是"念一半就收尾"的病根）', () => {
+  const tone = path.join(SANDBOX, 'ref-tone.wav')
+  V.ff(['-f', 'lavfi', '-i', 'sine=frequency=300:duration=6', '-ar', '32000', '-ac', '1', tone])
+  // 6 秒音频只配 11 个字（≈2.4 秒的话）→ 配比 2.5，必须判不合格
+  const bad = T.refSanity(tone, '是第一次看你这个样子呢。')
+  assert.equal(bad.ok, false, `配比 ${bad.ratio} 竟然合格`)
+  assert.ok(bad.ratio > 1.8, `ratio=${bad.ratio}`)
+  // 同一段音频配一句话长差不多的文本 → 合格
+  const good = T.refSanity(tone, '主人你看这条片子，本鱼自己剪的，声音是不是还认得出来呀，嗯？')
+  assert.ok(good.dur > 5.5, `dur=${good.dur}`)
+  assert.equal(good.ok, true, `配比 ${good.ratio} 应该是合格的`)
+})
+
+await ok('参考池兜底：默认参考不合格时自动换成她的情绪参考段（嗓子不变）', () => {
+  const s = read('tools/lib/tts.mjs')
+  assert.match(s, /export function refSanity/)
+  const iPool = s.indexOf('export function refPool(')
+  const iRaw = s.indexOf('function refPoolRaw(')
+  assert.ok(iPool > 0 && iRaw > iPool, 'refPool 必须先过滤再兜底')
+  const body = s.slice(iPool, iRaw)
+  assert.match(body, /refSanity\(p\.ref_audio_path, p\.prompt_text\)\.ok/)
+  assert.match(body, /emo-fallback/)
+})
+
+await ok('句尾能量比：突然截断的尾巴比自然收束更"响"（辅助判据）', () => {
+  const abrupt = path.join(SANDBOX, 'abrupt.wav')
+  const fading = path.join(SANDBOX, 'fading.wav')
+  V.ff(['-f', 'lavfi', '-i', 'sine=frequency=300:duration=1.2', '-ar', '32000', '-ac', '1', abrupt])
+  V.ff(['-f', 'lavfi', '-i', 'sine=frequency=300:duration=1.2', '-af', 'afade=t=out:st=0.6:d=0.6', '-ar', '32000', '-ac', '1', fading])
+  const a = V.speechSpan(abrupt)
+  const f = V.speechSpan(fading)
+  assert.ok(typeof a.tailEnergyRatio === 'number' && a.tailEnergyRatio > 0, `截断句尾比=${a.tailEnergyRatio}`)
+  assert.ok(f.tailEnergyRatio < a.tailEnergyRatio, `衰减 ${f.tailEnergyRatio} 应小于截断 ${a.tailEnergyRatio}`)
+})
+
+await ok('台词情绪映射：撒娇/生气/温柔各归各的参考', () => {
+  assert.equal(P.pickEmotion('本鱼叫大肥鱼，住在主人电脑里。'), 'coquettish')
+  assert.equal(P.pickEmotion('规矩就一条：别叫本鱼胖，哼。'), 'coquettish')
+  assert.equal(P.pickEmotion('今天真的有点生气'), 'angry')
+  assert.equal(P.pickEmotion('慢点吃啊，别急'), 'tender')
+  assert.equal(P.pickEmotion('随便。'), 'calm')
 })
 
 await ok('剪辑自洽：makeFilm 先剪静音再排时间轴，并把同步校验写进 sync.json', () => {

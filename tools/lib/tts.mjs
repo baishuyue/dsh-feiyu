@@ -10,6 +10,7 @@
 //         所以每种情绪准备一段"她自己的声音 + 有情绪的韵律"放在 ~/.feiyu-ai/voice-emo/，
 //         由 `node feiyu.mjs voice emo build` 生成（多合多条挑最活的一条当参考）。
 import fs from 'node:fs'
+import { execFileSync } from 'node:child_process'
 import path from 'node:path'
 import { config } from './config.mjs'
 import { dataPath } from './paths.mjs'
@@ -115,7 +116,75 @@ export function configRef(v = config().voice ?? {}) {
  *    情绪参考段 114.2 分 vs 默认音色 105.0 分 —— 但只在 生气(+4.8)/开心(+5.6)/撒娇(+3.1) 稳赢，
  *    温柔/惊讶/害羞 反而是默认段更好（那几个参考段本身就偏软）。
  *  所以不做"情绪段一定优先"，而是两个参考段都参与候选，让打分决定。 */
+/**
+ * 参考段的"文本 / 音频"配比体检 —— 这是 10-26 那次"配音漏字"的真正病根。
+ *
+ * GPT-SoVITS 用 prompt_text 去对齐 ref 音频；一旦文本只覆盖音频的一小段（或压根不是那段话），
+ * 模型会把"文本已经念完"当成收尾信号 → 每次生成都在句子中途 EOS。实测：默认参考
+ * bingjiao2.wav 长 6.19 秒，配的文本只有 12 个字（≈2.6 秒的话），同一句连合 3 条，
+ * 音节覆盖率全是 46%（一条不差，说明是系统性错配，不是抽奖）。
+ * 换成配比正常的情绪参考段（她自己录的），同样的话覆盖率 100%~145%。
+ *
+ * @returns {{dur:number, chars:number, ratio:number, ok:boolean, why:string}}
+ */
+export function refSanity(refAudioPath, promptText = '') {
+  const out = { dur: 0, chars: 0, ratio: 0, ok: true, why: '' }
+  try {
+    if (!refAudioPath) return { ...out, ok: false, why: '没有参考音频' }
+    const text = String(promptText || refTextOf(refAudioPath) || '')
+    out.chars = text.replace(/[^\u4e00-\u9fa5A-Za-z0-9]/g, '').length
+    out.dur = probeSeconds(refAudioPath)
+    if (!out.dur || !out.chars) return { ...out, ok: false, why: '参考音频或文本读不出来' }
+    out.ratio = +(out.dur / (out.chars / 4.6)).toFixed(2)
+    // 4.6 字/秒 ≈ 她的正常语速；配比落在 0.6~1.8 之间才算"这段音频就是这句话"
+    out.ok = out.ratio >= 0.6 && out.ratio <= 1.8
+    out.why = out.ok ? '' : `文本/音频配比 ${out.ratio}（${out.chars} 字配 ${out.dur.toFixed(1)}s）—— 模型会念一半就收尾`
+  } catch (e) { out.ok = false; out.why = '体检失败：' + String(e.message).slice(0, 40) }
+  return out
+}
+
+/** 音频时长（秒）。ffprobe 优先（这台机器 PATH 里没有，得试已知路径），再退 python/soundfile。 */
+function probeSeconds(file) {
+  const v = config().voice ?? {}
+  const cands = [v.ffprobe, config().video?.ffprobe, 'D:/rvc/bin/ffprobe.exe',
+    'D:/GPT-SoVITS/runtime/ffprobe.exe', 'ffprobe'].filter(Boolean)
+  for (const bin of cands) {
+    try {
+      if (bin !== 'ffprobe' && !fs.existsSync(bin)) continue
+      const buf = execFileSync(bin, ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', file],
+        { encoding: 'utf8', timeout: 20_000, windowsHide: true })
+      const d = Number(String(buf).trim())
+      if (d > 0) return d
+    } catch {}
+  }
+  try {
+    const buf = execFileSync(pythonPath(),
+      ['-c', 'import sys,soundfile as sf;print(round(float(sf.info(sys.argv[1]).duration),3))', file],
+      { encoding: 'utf8', timeout: 30_000, windowsHide: true })
+    return Number(String(buf).trim()) || 0
+  } catch { return 0 }
+}
+
 export function refPool(emotionKey, v = config().voice ?? {}, override = {}) {
+  const pool = refPoolRaw(emotionKey, v, override)
+  const good = pool.filter((p) => refSanity(p.ref_audio_path, p.prompt_text).ok)
+  if (good.length) return good
+  // 全场都不合格（多见于 bingjiao2 那条错配的默认参考）→ 换成她自己的情绪参考段，
+  // 嗓子是同一个人的，只是 prompt 文本配得上音频。
+  const emo = Object.values(emotionRefs() || {}).flat().filter((e) => e && e.wav)
+  const emoGood = emo.filter((e) => refSanity(e.wav, e.text).ok)
+  if (emoGood.length) {
+    if (!globalThis.__feiyuRefWarned) {
+      globalThis.__feiyuRefWarned = true
+      console.warn('[tts] 默认参考段的文本对不上音频，已改用情绪参考段（她的嗓音不变）')
+    }
+    const pick = emoGood[emotionKey] ? [emoGood[emotionKey]] : emoGood
+    return pick.map((e) => ({ ref_audio_path: e.wav, prompt_text: e.text, from: 'emo-fallback' }))
+  }
+  return pool
+}
+
+function refPoolRaw(emotionKey, v = config().voice ?? {}, override = {}) {
   if (override.ref_audio_path) {
     return [{
       ref_audio_path: override.ref_audio_path,

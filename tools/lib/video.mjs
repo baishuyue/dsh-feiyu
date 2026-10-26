@@ -72,13 +72,26 @@ export function probeDur(file, cfg = config()) {
 //      一成秒；7 句排下来就成了"字幕先出、声音后到"。
 //   ② 同一个模型偶发"提前收尾"（13 个字只念 1.07 秒）→ 字幕还挂着，声音已经没了，
 //      看着就是"漏了很多字"。这两件事必须在剪辑前修掉，靠事后听是来不及的。
-/** 解码成 16k 单声道 Int16（分析用，别拿来做成品）。 */
-function pcm16(file, sr = 16000, cfg = config()) {
-  const buf = execFileSync(ffmpegBin(cfg), ['-v', 'quiet', '-i', file, '-ac', '1', '-ar', String(sr), '-f', 's16le', '-'],
-    { maxBuffer: 256 * 1024 * 1024, windowsHide: true })
-  return { sr, data: new Int16Array(buf.buffer, buf.byteOffset, Math.floor(buf.length / 2)) }
+/** 读音轨的真实采样率（读不到就当 32k —— 她的 TTS 就是 32k）。 */
+function nativeRate(file, cfg = config()) {
+  try {
+    const out = run(ffprobeBin(cfg), ['-v', 'error', '-select_streams', 'a:0', '-show_entries', 'stream=sample_rate', '-of', 'csv=p=0', file])
+    return Number(String(out).trim()) || 32000
+  } catch { return 32000 }
 }
 
+/** 解码成单声道 Int16（默认保持源采样率：修剪后要写回成品，不能降采样）。 */
+function pcm16(file, sr = 0, cfg = config()) {
+  const rate = Number(sr) > 0 ? Number(sr) : nativeRate(file, cfg)
+  const buf = execFileSync(ffmpegBin(cfg), ['-v', 'quiet', '-i', file, '-ac', '1', '-ar', String(rate), '-f', 's16le', '-'],
+    { maxBuffer: 256 * 1024 * 1024, windowsHide: true })
+  return { sr: rate, data: new Int16Array(buf.buffer, buf.byteOffset, Math.floor(buf.length / 2)) }
+}
+
+/** 测试用：直接拿到某条音频的包络（0.01s 窗，按源采样率分析）。 */
+export function envelopeForTest(file, winSec = 0.01, cfg = config()) {
+  return envelopeOf(pcm16(file, 0, cfg), winSec)
+}
 /** 10ms 窗包络（0~1）。 */
 function envelopeOf({ sr, data }, winSec = 0.01) {
   const win = Math.max(1, Math.round(sr * winSec))
@@ -94,10 +107,13 @@ function envelopeOf({ sr, data }, winSec = 0.01) {
 
 /**
  * 量"真正在说话"的那一段（首尾静音按峰值 6% 判）。
- * @returns {{dur:number, on:number, off:number, peak:number, lead:number, tail:number}}
+ * @returns {{dur:number, on:number, off:number, peak:number, lead:number, tail:number, tailEnergyRatio:number}}
+ *   tailEnergyRatio = 最后 80ms 的平均能量 / 整段平均能量。
+ *   被"提前收尾"切掉的句子，句尾正念到一半就没了 → 这个比值反而偏高（>1.2）；
+ *   自然收束的句子尾巴是衰减的（0.3~0.9）。和字/秒一起当"念全没念全"的判据。
  */
 export function speechSpan(file, cfg = config()) {
-  const pcm = pcm16(file, 16000, cfg)
+  const pcm = pcm16(file, 0, cfg)
   const env = envelopeOf(pcm)
   const peak = env.reduce((a, b) => Math.max(a, b), 0)
   const th = peak * 0.06
@@ -105,6 +121,10 @@ export function speechSpan(file, cfg = config()) {
   if (a < 0) a = 0
   let b = env.length - 1
   while (b > a && env[b] <= th) b--
+  const seg = env.slice(a, b + 1)
+  const mean = seg.length ? seg.reduce((x, y) => x + y, 0) / seg.length : 0
+  const tailWin = seg.slice(Math.max(0, seg.length - 8))
+  const tailMean = tailWin.length ? tailWin.reduce((x, y) => x + y, 0) / tailWin.length : 0
   return {
     dur: pcm.data.length / pcm.sr,
     on: a * 0.01,
@@ -112,6 +132,8 @@ export function speechSpan(file, cfg = config()) {
     peak,
     lead: a * 0.01,
     tail: Math.max(0, (env.length - 1 - b) * 0.01),
+    tailEnergyRatio: mean > 0 ? +(tailMean / mean).toFixed(2) : 0,
+    sr: pcm.sr,
   }
 }
 
@@ -120,7 +142,7 @@ export function speechSpan(file, cfg = config()) {
  * @returns {{file:string, dur:number, span:object}} dur = 修剪后的真实语音时长
  */
 export function trimVoice(file, out, cfg = config()) {
-  const pcm = pcm16(file, 16000, cfg)
+  const pcm = pcm16(file, 0, cfg)
   const span = speechSpan(file, cfg)
   const from = Math.max(0, Math.floor((span.on - 0.06) * pcm.sr))
   const to = Math.min(pcm.data.length, Math.ceil((span.off + 0.12) * pcm.sr))
