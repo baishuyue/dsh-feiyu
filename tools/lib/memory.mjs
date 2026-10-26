@@ -220,15 +220,26 @@ export function recallAll(chatId, opts = {}) {
   // 按时间正序，最后的 max 条 → 渲染时再翻成"从新到旧"（跟她读记忆的习惯一致）
   picked.sort((a, b) => Number(a.ts) - Number(b.ts))
   const finalRows = picked.slice(-max)
-  const where = (p) => (p === 'qq' ? 'QQ' : p === 'douyin' ? '抖音' : p === 'bilibili' ? 'B站'
-    : p === 'web' ? '上网' : p === 'wechat' ? '微信' : String(p || '别处'))
+  const where = (r) => {
+    const p = r.platform
+    const base = p === 'qq' ? 'QQ' : p === 'douyin' ? '抖音' : p === 'bilibili' ? 'B站'
+      : p === 'web' ? '上网' : p === 'wechat' ? '微信' : String(p || '别处')
+    return r.isGroup ? base + '群' : base   // 群聊单独标出来：她得知道这句是"群里谁说的"
+  }
   const hhmm = (ts) => {
     const d = new Date(Number(ts))
     return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0')
   }
   const lines = finalRows.slice().reverse().map(r => {
     const text = String(r.text).replace(/\s+/g, ' ').replace(/^[（(]|[）)]$/g, '').slice(0, perRow)
-    return `${hhmm(r.ts)} [${where(r.platform)}] ${r.role === 'user' ? '主人' : '我'}：${text}`
+    // ⚠️ 10-26 修「认贼作父」的根子就在这一行：以前所有 user 行一律渲染成「主人：」，
+    // 于是群友的话进了私聊记忆就变成"主人说的"，她连"叫爸爸"都当成主人说的。
+    // 现在：群聊行的 user 是**群友**，文本自带「昵称：」前缀（qq-server 写入时加的），原样呈现；
+    // 只有真正的一对一私聊行才配得上「主人：」。
+    if (r.role === 'assistant') return `${hhmm(r.ts)} [${where(r)}] 我：${text}`
+    return r.isGroup
+      ? `${hhmm(r.ts)} [${where(r)}] ${text}`
+      : `${hhmm(r.ts)} [${where(r)}] 主人：${text}`
   })
   return { lines, count: lines.length, newest: Number(finalRows.at(-1)?.ts || 0) }
 }

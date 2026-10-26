@@ -350,10 +350,7 @@ export async function run(argv = []) {
 
       // 语音 or 文字（语音失败一律降级文字，内容不丢）
       let sent = false
-      // 群聊默认不发语音（10-26）：语音条是最"私聊"的表达，群里发等于对外直播亲密关系，
-      // 也正是"认贼作父"那次的现场之一。要开就显式配 qq.voiceInGroup: true。
-      const voiceOk = QQ.voice_enabled && (!isGroup || QQ.voiceInGroup === true)
-      if (voiceOk && plain && Math.random() < (Number(QQ.voice_chance) || 0.15)) {
+      if (QQ.voice_enabled && plain && Math.random() < (Number(QQ.voice_chance) || 0.15)) {
         try {
           const audio = await synth(plain)
           const seg = { type: 'record', data: { file: audio } }   // NapCat 自动转 silk
