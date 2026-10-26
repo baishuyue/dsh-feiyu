@@ -271,6 +271,16 @@ ok('唤醒提示里必须带上账本块，并告诉她"这账你自己能查"',
   assert.match(s, /\$\{cli\} ledger/)
 })
 
+ok('账本刷新不能被唤醒闸门挡住（她忙的时候才最需要查账）', () => {
+  const s = read('lib/scheduler.js')
+  // tick 一开头就有 `if (stopped || waking || … ) return`；刷新必须挂在 setInterval 外面
+  assert.match(s, /const tickWithLedger = \(\) => \{[\s\S]{0,160}ledgerTick\(readToolConfig\(\)\)/)
+  assert.match(s, /setInterval\(tickWithLedger, 60_000\)/)
+  // 别在 tick 体内再调一次（会跟着闸门被跳过、还会双跑）
+  const tickBody = s.slice(s.indexOf('async function tick()'), s.indexOf('const tickWithLedger'))
+  assert.doesNotMatch(tickBody, /ledgerTick\(/)
+})
+
 ok('聊天提示里（QQ/微信/抖音私信）带账本，群聊不带', () => {
   const p = read('tools/lib/persona.mjs')
   assert.match(p, /function ledgerBlock/)
