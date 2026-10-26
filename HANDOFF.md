@@ -64,7 +64,7 @@ dsh-feiyu/
 - **音色训练**：feiyu-sunshine（LLM 写稿 59 句 SoVITS 合成，150 轮）→ **feiyu-rose**（《On The Ground》+《Gone》分离干声 7 分钟真歌声直训，bs=4 只要 22 分钟）
 - **翻唱管线**：yt-dlp 搜源 → bs_roformer 分离人声/伴奏 → RVC 分段换声（30s 分段防 OOM）→ ffmpeg 混音 loudnorm → 全链缓存=歌单
 - **作品**：《天黑黑》（sunshine 声）、《我不难过》（rose 声）均已发主人 QQ
-- **说话音色三迁**：sunshine → rose（太糊被否）→ **银狼 yinlang w12**（B站纯人声合集 → 17 窗 SenseVoice 转录打分选段，「战斗体验该优化了，哼就这速度太慢了」傲娇浓度拉满）
+- **说话音色四迁**：sunshine → rose（太糊被否）→ 银狼 yinlang w12（傲娇）→ **病娇 bingjiao1**（10-26：主人嫌"太平淡"，从 B站中文病娇音声 BV1GR4y1h7Kn 采集 → roformer 分人声 → whisper 转写 154 句 → 词级对齐切段 → 二次复听校验，8 个候选只过 2 条，见铁律 28）
 
 ### 下午：自主性大升级
 - **UI 根因修复**：/api/config 深合并（后端+面板镜像，白名单 20 块含 web/personality/freedom）；7 处 `||默认值` 把合法 0 显示成默认的 bug；api() 吞 errors 数组
@@ -143,7 +143,7 @@ dsh-feiyu/
 | `web.selfUpgrade` | enabled | true | 允许改自己代码 |
 | `personality.evolve` | enabled/days | true/2 | 人格进化 |
 | `freedom` | enabled/wakeEveryMin/chance/engageEveryMin | —/75/0.55/120 | 完全自由节奏 |
-| `voice` | ref_audio_path/prompt_text/prompt_lang | 银狼 w12/zh | 说话音色三件套 |
+| `voice` | ref_audio_path/prompt_text/prompt_lang | bingjiao1 病娇/zh | 说话音色三件套 |
 | `rvc` | root/python/ffmpeg | D盘路径 | 唱歌系统 |
 | `llm` | api_key/base_url/model | DeepSeek | 实时推理 |
 
@@ -198,7 +198,7 @@ locks/                  自由进程单实例锁
 | `~/.feiyu-ai/` | 数据目录（换机整体拷走） |
 | `D:/social-auto-upload/douyin_interact.py` | 抖音底层（改这份，cp 回仓库） |
 | `D:/rvc/` | RVC 仓库+venv+bin(ffmpeg) |
-| `D:/GPT-SoVITS/models/` | 说话音色库（yinlang/rose/sunshine_girl） |
+| `D:/GPT-SoVITS/models/` | 说话音色库（bingjiao1~4 病娇 / yinlang / rose / sunshine_girl） |
 | 日志 | qq-server.log / bili-watch.log / watch.log / douyin-dm.log / web-log.md / selfup-log.md |
 
 ---
@@ -233,6 +233,16 @@ locks/                  自由进程单实例锁
 25. **情绪要靠她自己说、参考段定天花板（L1/L2）**：她在回复最前面写 `[[撒娇]]`（`emotion.mjs` 的 9 种），`qq-server` 先剥标签再发（标签绝不能漏给主人；`[表情:开心]`/`[doge]` 这类正经表情码不许被误删），再按情绪取温度/语速/停顿。参考音频就是天花板（yinlang 4.78 → 输出 4.82；sunshine 3.45 → 输出 2.83），所以 `feiyu voice emo build` 造了 8 套情绪参考段（放 `~/.feiyu-ai/voice-emo/`），合成时**情绪段和默认段轮流上候选、由打分决定用谁**（A/B：情绪段合计 114.2 vs 默认 105.0，但只在生气/开心/撒娇稳赢，温柔/惊讶/害羞反而是默认段更好 —— 所以别写死"情绪段优先"）
 26. **一条语音别念一整段**：`splitVoiceParts()` 把回复切成 ≤2 条、每条 ≤60 字（`qq.voice_maxChars` / `qq.voice_parts`），没念完的照常当文字补发。真人发语音本来就这样，长段一次合成也天然更平
 27. **慢情绪别用平静的语速窗口判**：委屈/困本来就落在 3.4~6.0 字/秒，`emotion.mjs` 里每种情绪带 `rate` 窗口，`prosody.py` 按它判合格 —— 否则"合格"这一档会把正常的一条判死，择优退化成硬挑分数
+28. **换音色 = 换参考段的采集流水线（10-26 病娇音色就是这么做出来的）**：现成音色库（yinlang/sunshine/rose）都太"平"，病娇要的是**甜得发飘 + 突然压低**。可复用的采集链路：
+    ①B站搜「病娇 音声」拿 BV（`api.bilibili.com/x/web-interface/search/type?search_type=video&keyword=…`，带 SESSDATA cookie；偶发 412 就换 UA/buvid 重试）
+    ②`yt-dlp --cookies <netscape 文件>` 下音频（**必须魔法头** `# Netscape HTTP Cookie File`），再加 `--ffmpeg-location D:\rvc\bin` 才能转 wav
+    ③**人声分离**：`rvc.separateVocals()`（pymss roformer）—— 音声几乎全长 BGM，不分离没法当参考（11 分钟约 4 分钟/条）
+    ④**转写**：`faster-whisper small`（模型在 `D:\GPT-SoVITS\runtime\fw-models\small`）。**别把文件路径直接丢给 `model.transcribe()`** —— 那条路走 PyAV，当前版本的报 `open() got an unexpected keyword argument 'metadata_errors'`；用 `soundfile` 读成 float32 数组再喂进去
+    ⑤选句：带病娇词（永远/只能/不许/看着我…）+ 单句 4.6~8.8 秒 + 10~26 字
+    ⑥**二次复听校验（铁律 21 的延伸）**：切出来的片段再转写一遍，和期望文本逐字比 —— 只有完全对上的才能当参考段。10-26 八个候选里只有 2 条 100% 一致；`接受→介绍`、`麻绳→围巾/药瓶` 这类同音错字靠人耳分不出，靠二次复听能筛掉
+    ⑦合格段存 `D:\GPT-SoVITS\models\<名字>\<名字>.wav + .txt`，`feiyu voice use --name <名字>` 切换（即时生效，不用重启）
+29. **新音色的连带动作**：换完参考段必须 `feiyu voice emo build --force` 重造 8 套情绪参考段（旧情绪段是旧音色的，混用会出现"两种人"）。10-26 病娇音色的 8 套：撒娇 5.52 / 生气 5.17 / 委屈 4.21 / 开心 11.22 / 困 5.11 / 温柔 4.02 / 惊讶 5.05 / 害羞 4.23（起伏，半音）。备份/回滚：`voice use --name yinlang`
+30. **合成结果也要复听校验**：短句（"饭吃了没？锅里给你留着呢。"）在旧音色上只出 **1.36 秒**、ASR 复听是「後裔給你留著吧」（22% 匹配）—— 模型真的漏字了，光看时长看不出来。判断合格与否：`字数/时长` 落在该情绪的 `rate` 窗口内 + ASR 逐字比对 ≥95%
 17. **git**：user baishuyue / `206720720+baishuyue@users.noreply.github.com`；推送走 Clash 7897（`env -u http_proxy … git -c http.proxy=… push`）
 
 ---
@@ -302,7 +312,7 @@ web-log.md（上网）/ bili-outbox.md（B站发言）/ selfup-log.md（自我�
 | 主人B站/QQ/抖音 | --友利奈绪-（mid 3493288510228945）/ 3082864371 / 朴昌范 |
 | 机器人QQ | 3796002846（皮卡皮卡） |
 | 唱歌音色 | feiyu-rose（当前）· feiyu-sunshine（备） |
-| 说话音色 | yinlang 银狼 w12（傲娇）· 情绪参考段 8 套在 `~/.feiyu-ai/voice-emo/`（撒娇/生气/委屈/困/开心/温柔/惊讶/害羞） |
+| 说话音色 | **bingjiao1 病娇**（10-26 起用）· 候选 bingjiao2/3/4 在 `D:\GPT-SoVITS\models\` · 旧 yinlang 银狼 w12 保留，`voice use --name yinlang` 一键回滚 · 情绪参考段 8 套在 `~/.feiyu-ai/voice-emo/` |
 | 硅基 key | 在 config imageGen.api_key（赠金档：Qwen-Image-Edit-2509 + Qwen3-VL 可用） |
 
 ---
