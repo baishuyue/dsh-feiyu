@@ -119,21 +119,35 @@ export function run(argv = []) {
     const videos = (vidsJson.videos || []).slice(0, 3)
     if (!videos.length) { console.log('没扫到投稿（登录态/主页结构变了？）'); return }
     console.log(`自己的投稿 ${videos.length} 个：${videos.map((v) => v.desc.slice(0, 12)).join(' / ')}`)
-    // ② 各视频的新评论（水位：已见 cid）
+    // ② 各视频的评论（水位：**按 cid**）
+    // 10-26 修「同一个人只能被回一次」：以前水位键是 `vid:用户:文本前24字`，加上 python 侧
+    // 只读一级评论、压根看不见子回复，等于每人只能被回一句。现在按 cid 记（每条评论 cid 唯一），
+    // 对方再回一句就是新 cid → 还能接着聊；配 perUser 日上限防止追着一个人刷屏。
     const WM = dataPath('douyin-engage.json')
-    let wm = { seen: [] }
+    let wm = { seen: [], perUser: {} }
     try { wm = JSON.parse(fs.readFileSync(WM, 'utf8')) } catch {}
+    if (!Array.isArray(wm.seen)) wm.seen = []
+    const today = new Date().toLocaleDateString('sv-SE')
+    if (!wm.perUser || wm.perUser.day !== today) wm.perUser = { day: today, counts: {} }
+    const capPerUserRaw = Number(eg.maxPerUserPerDay ?? 5)
+    const capPerUser = capPerUserRaw > 0 ? capPerUserRaw : Infinity
+    const selfUid = String(secUid || '')
     const news = []
     for (const v of videos) {
       const cj = parseFeedJson(runPy(['comments', '--vid', v.vid], cfg))
       for (const c of (cj.comments || [])) {
-        const key = v.vid + ':' + String(c.user || '') + ':' + String(c.text || '').slice(0, 24)
+        if (!c.text) continue
+        if (selfUid && String(c.user_sec_uid || '') === selfUid) continue   // 自己的回复不是"待办"
+        const key = v.vid + ':' + (c.cid || (String(c.user || '') + ':' + String(c.text).slice(0, 24)))
         if (wm.seen.includes(key)) continue
-        news.push({ vid: v.vid, vdesc: v.desc, user: c.user, text: c.text, cid: c.cid || '', key })
+        news.push({
+          vid: v.vid, vdesc: v.desc, user: c.user, text: c.text, cid: c.cid || '',
+          isReply: !!c.is_reply, parentCid: c.parent_cid || '', key,
+        })
         wm.seen.push(key)
       }
     }
-    wm.seen = wm.seen.slice(-300)
+    wm.seen = wm.seen.slice(-500)
     fs.mkdirSync(path.dirname(WM), { recursive: true })
     // ⚠️ 干跑不写水位（10-25 测试发现的坑）：以前一跑 --dry 就把这些评论标成"已见"，
     // 等真跑时它们全被跳过 —— 测试等于把待办清零。
@@ -149,10 +163,11 @@ export function run(argv = []) {
       const { chat } = await import('../lib/llm.mjs')
       const { buildMessages } = await import('../lib/persona.mjs')
       const built = buildMessages({ platform: 'douyin', userText: '', chatId: 'douyin:engage-self', userId: 'self' })
-      const list = news.slice(0, 10).map((n, i) => `${i + 1}. [${n.vdesc.slice(0, 12)}] ${n.user}：${n.text.slice(0, 50)}`).join('\n')
+      const list = news.slice(0, 10).map((n, i) => `${i + 1}. [${n.vdesc.slice(0, 12)}] ${n.user}${n.isReply ? '（接着上一轮说的）' : ''}：${n.text.slice(0, 50)}`).join('\n')
       const msgs = [
         built[0],
         { role: 'user', content: '【运营】这是你自己抖音作品评论区的新评论。你自己判断：哪几条值得回（提问/夸奖/有意思的接梗；杠精和广告不理）；回复要像作者本人：短、自然、有点自己的态度，别客服腔。'
+          + '注意这是**连续的对话**：同一个人可以聊好几个来回，接着他说的话往下聊（别重复上一轮你说过的），聊干了就别硬接。'
           + `最多回 ${cap === Infinity ? '不限（但别硬凑，能接的才回）' : cap} 条。只输出 JSON：{"replies":[{"index":序号,"text":"回复内容"}]}，都不想回就 {"replies":[]}\n${list}` },
       ]
       let plan = { replies: [] }
@@ -167,15 +182,25 @@ export function run(argv = []) {
         if (!n || !String(r.text || '').trim()) continue
         const replyText = String(r.text).replace(/\[[^\]]{1,8}\]/g, '').trim().slice(0, 60)   // 抖音评论只认 emoji
         if (!replyText) continue
-        console.log(`  ↩ 回 ${n.user}：${replyText}`)
+        // 每人每天上限：能接着聊，但不至于追着同一个人刷屏
+        const uKey = String(n.user || '匿名').slice(0, 40)
+        const used = Number(wm.perUser.counts[uKey] || 0)
+        if (used >= capPerUser) {
+          console.log(`  ⏭ 今天已经回过「${uKey}」${used} 次（douyin.engage.maxPerUserPerDay=${capPerUserRaw}），这条先放着`)
+          continue
+        }
+        console.log(`  ↩ 回 ${n.user}${n.isReply ? '（接着上一轮）' : ''}：${replyText}`)
         if (dry) { console.log('  【干跑 ✓】'); continue }
         try {
-          // 有 cid 就走 cid 精确回复；没有才退回文本前缀定位（纯表情评论靠文本会撞）
-          const out = n.cid
-            ? runPy(['reply', '--vid', n.vid, '--cid', n.cid, '--message', replyText, '--go'], cfg)
-            : runPy(['comment-reply', '--vid', n.vid, '--match', String(n.text).slice(0, 20), '--text', replyText, '--go'], cfg)
+          // 有 cid 就走 cid 精确回复；子回复（isReply）走文本定位 —— 页面上那条回复是嵌在父评论里的，
+          // 只有文本定位能点到它自己的「回复」按钮，publish 才会带 reply_to_reply_id（对方才收得到通知）。
+          const out = n.isReply || !n.cid
+            ? runPy(['comment-reply', '--vid', n.vid, '--match', String(n.text).slice(0, 20), '--text', replyText, '--go'], cfg)
+            : runPy(['reply', '--vid', n.vid, '--cid', n.cid, '--message', replyText, '--go'], cfg)
           console.log(out)
           memory.remember('douyin', `douyin:${n.vid}`, n.user, 'assistant', `（回复了 ${n.user} 的评论「${String(n.text).slice(0, 30)}」：${replyText}）`)
+          wm.perUser.counts[uKey] = used + 1
+          try { fs.writeFileSync(WM, JSON.stringify(wm)) } catch {}   // 每人每天的次数要落盘，不然重启就清零
           done++
           await new Promise((r2) => setTimeout(r2, 60000 + Math.random() * 60000))   // 回复间隔 1~2 分钟防风控
         } catch (e) { console.log('  ✗ 回复失败：' + String(e.message).slice(0, 80)) }

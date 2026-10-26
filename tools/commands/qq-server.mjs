@@ -238,7 +238,7 @@ export async function run(argv = []) {
               if (sent2) {
                 covered = true
                 await send('send_private_msg', { user_id: Number(userId), message: [{ type: 'text', data: { text: `🎵 给你唱《${song.title}》——用我自己的声音哦${song.cache === 'hit' ? '' : '（刚学会的）'}～` } }] })
-                memory.remember('qq', chatId, userId, 'assistant', `（翻唱了《${song.title}》，用她自己的音色）`)
+                memory.remember('qq', chatId, userId, 'assistant', `（翻唱了《${song.title}》，用她自己的音色）`, { isGroup })
                 log(`[qq] 🎤 翻唱已发：《${song.title}》`)
               }
             }
@@ -248,7 +248,7 @@ export async function run(argv = []) {
           const sent2 = await send('send_private_msg', { user_id: Number(userId), message: [{ type: 'record', data: { file: song.file } }] })
           if (sent2) {
             await send('send_private_msg', { user_id: Number(userId), message: [{ type: 'text', data: { text: `🎵《${song.title}》 ${song.bpm}bpm —— ${song.lyrics.join(' / ')}` } }] })
-            memory.remember('qq', chatId, userId, 'assistant', `（唱了《${song.title}》：${song.lyrics.join('/')}）`)
+            memory.remember('qq', chatId, userId, 'assistant', `（唱了《${song.title}》：${song.lyrics.join('/')}）`, { isGroup })
             log(`[qq] 🎵 已唱《${song.title}》(${song.bpm}bpm, ${song.lyrics.length}句)`)
             return
           }
@@ -258,7 +258,7 @@ export async function run(argv = []) {
         }
       }
 
-      memory.remember('qq', chatId, userId, 'user', userText)
+      memory.remember('qq', chatId, userId, 'user', userText, { isGroup })
 
       // 生成回复（三段式 prompt + 走神注入）
       const turns = memory.recent(chatId).length
@@ -324,7 +324,7 @@ export async function run(argv = []) {
       // 干跑：只打印不真发（dafeiyu 铁律：第一周先观察）
       if (config().guard?.dryRun) {
         log(`[qq][干跑] ${isGroup ? '群' + groupId : '私聊' + userId} → ${plain}${stickerFile ? ' [表情图]' : ''}${aiWanted ? ` +AI表情「${tag || caption}」` : ''}`)
-        memory.remember('qq', chatId, userId, 'assistant', plain || out)
+        memory.remember('qq', chatId, userId, 'assistant', plain || out, { isGroup })
 
       // 长期记忆：跟主人私聊时，每 6 条回复把这段对话压成摘要 + 更新主人画像（不阻塞回复）
       try {
@@ -350,7 +350,10 @@ export async function run(argv = []) {
 
       // 语音 or 文字（语音失败一律降级文字，内容不丢）
       let sent = false
-      if (QQ.voice_enabled && plain && Math.random() < (Number(QQ.voice_chance) || 0.15)) {
+      // 群聊默认不发语音（10-26）：语音条是最"私聊"的表达，群里发等于对外直播亲密关系，
+      // 也正是"认贼作父"那次的现场之一。要开就显式配 qq.voiceInGroup: true。
+      const voiceOk = QQ.voice_enabled && (!isGroup || QQ.voiceInGroup === true)
+      if (voiceOk && plain && Math.random() < (Number(QQ.voice_chance) || 0.15)) {
         try {
           const audio = await synth(plain)
           const seg = { type: 'record', data: { file: audio } }   // NapCat 自动转 silk
@@ -383,7 +386,7 @@ export async function run(argv = []) {
       }
       // AI 表情包：生成入库 + 补发（异步，不占回复主线；干跑分支已在上面 return，走不到这）
       if (aiWanted) void aiStickerFollowup({ tag, caption, isGroup, groupId, userId })
-      memory.remember('qq', chatId, userId, 'assistant', plain || out)
+      memory.remember('qq', chatId, userId, 'assistant', plain || out, { isGroup })
 
       // 长期记忆：跟主人私聊时，每 6 条回复把这段对话压成摘要 + 更新主人画像（不阻塞回复）
       try {
@@ -701,7 +704,7 @@ export async function run(argv = []) {
         const ok = await send('send_group_msg', { group_id: Number(gid), message: [{ type: 'text', data: { text: out } }] })
         if (!ok) continue
         guard.commit(chatId, out)
-        memory.remember('qq', chatId, config().identity?.name ?? 'feiyu', 'assistant', out)   // 推送即记忆
+        memory.remember('qq', chatId, config().identity?.name ?? 'feiyu', 'assistant', out, { isGroup: true })   // 推送即记忆
         groupSpeak[gid] = { day, count: Number(g.count) + 1, lastAt: now }
         writeGC()
         log(`[qq] 🗣️ 群${gid} 自主插话：${out.slice(0, 40)}`)

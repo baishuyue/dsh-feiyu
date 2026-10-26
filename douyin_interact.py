@@ -619,7 +619,31 @@ async def cmd_comments(cookie_file: str, vid: str, out_file: str, headed: bool) 
                     "reply_total": c.get("reply_comment_total", 0),
                     "create_time": c.get("create_time", 0),
                     "aweme_id": str(c.get("aweme_id") or vid),
+                    "is_reply": False,
+                    "parent_cid": "",
+                    "reply_to_user": "",
                 })
+                # 10-26 修：一级评论里自带的子回复（reply_comment）也要收。
+                # 以前只读 comments[]，于是"她回过一次之后对方又追问"的那句永远看不见 ——
+                # 表现就是：同一个人只能被回一次（主人 10-26 截图实锤：他说"给我也分一碗"，她一直没搭理）。
+                for rc in (c.get("reply_comment") or []):
+                    try:
+                        ru = rc.get("user") or {}
+                        comments.append({
+                            "cid": str(rc.get("cid") or ""),
+                            "text": (rc.get("text") or "").strip(),
+                            "user": ru.get("nickname", ""),
+                            "user_sec_uid": ru.get("sec_uid", ""),
+                            "digg_count": rc.get("digg_count", 0),
+                            "reply_total": rc.get("reply_comment_total", 0),
+                            "create_time": rc.get("create_time", 0),
+                            "aweme_id": str(rc.get("aweme_id") or vid),
+                            "is_reply": True,
+                            "parent_cid": str(c.get("cid") or ""),
+                            "reply_to_user": ((rc.get("reply_to_user") or {}).get("nickname") or u.get("nickname", "")),
+                        })
+                    except Exception:
+                        continue
             except Exception:
                 continue
 
@@ -982,15 +1006,20 @@ async def cmd_comment_reply(cookie_file: str, vid: str, match_text: str, reply_t
                 n = await items.count()
             target = None
             key = match_text.strip()[:18]
+            best_len = None
             for i in range(min(n, 40)):
                 el = items.nth(i)
                 try:
                     txt = (await el.inner_text(timeout=2500) or "").replace("\n", " ")
                 except Exception:
                     continue
-                if key and key in txt:
-                    target = el
-                    break
+                if not key or key not in txt:
+                    continue
+                # 10-26：取「包含这句话的最内层条目」。子回复是嵌在父评论里的，父条目的 inner_text
+                # 也命中；点父条目的「回复」会把回复挂到一级评论上（对方收不到通知），
+                # 所以挑 inner_text 最短、也就是最具体的那一个 —— 它自己的「回复」按钮才对。
+                if best_len is None or len(txt) < best_len:
+                    target, best_len = el, len(txt)
             if target is None:
                 log(f"✗ 没找到匹配的评论（关键词：{key}）")
                 await browser.close()

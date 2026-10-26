@@ -63,12 +63,15 @@ export function episodeFile(platform) {
 /** 记一条事件。role: user|assistant|event。summary 取前 120 字。
  *  platform 缺省时按 chatId 前缀推断（曾出过 54 条无平台标记的脏数据）。
  *  写入前做占位符归一（normalize.mjs）：裸的 `[分享视频]` 会让模型以为"内容丢了"。 */
-export function remember(platform, chatId, userId, role, text) {
+export function remember(platform, chatId, userId, role, text, extra = {}) {
   const p = String(platform || platformOf(chatId) || 'misc')
   const t = normalizeMemoryText(String(text ?? ''))
   const rec = {
     ts: Date.now(), platform: p, chatId, userId, role,
     text: t, summary: t.slice(0, 120),
+    // isGroup：群聊行。群里的"user"是群友不是主人，混进 recallAll 会被渲染成「主人：…」，
+    // 于是她在私聊里把群友的话当主人的话记（10-26 实锤：把群友"叫爸爸"当成主人说的）。
+    ...(extra.isGroup ? { isGroup: true } : {}),
   }
   const file = episodeFile(p)
   fs.mkdirSync(path.dirname(file), { recursive: true })
@@ -194,6 +197,7 @@ export function recallAll(chatId, opts = {}) {
   const cutoff = now - hours * 3600_000
   const rows = readRows('').filter(r =>
     r.chatId !== chatId
+    && r.isGroup !== true                           // 群聊行不进"最近真实发生的事"：群里说话的是群友，不是主人
     && r.platform !== 'wechat'                       // 微信是替主人干活的工作记录，不进人格记忆
     && (r.role === 'user' || r.role === 'assistant')
     && Number(r.ts) >= cutoff

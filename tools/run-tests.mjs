@@ -18,6 +18,7 @@ const TESTS = [
   'memory-test.mjs',
   'memory-recall-test.mjs',
   'qq-human-test.mjs',
+  'group-persona-test.mjs',
   'imggen-test.mjs',
   'vision-test.mjs',
 ]
