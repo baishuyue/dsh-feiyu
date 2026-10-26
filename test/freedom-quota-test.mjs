@@ -54,11 +54,13 @@ ok('唤醒语不再鼓励躺平', !sched.includes('也可以选择歇着什么�
 ok('唤醒语要求至少跑一个真命令', sched.includes('至少跑一个真命令'))
 ok('唤醒语带上真实额度数字', sched.includes('今天的额度（真实数字，别自己猜）'))
 
-// ⑥ 完全自由必须是总开关：面板点开时连带点亮三个子循环（源码级守卫）
+// ⑥ 完全自由的语义（10-26 主人纠正后定稿）：只摇人 + 只放行她挑的那一件事，
+//    **不再**连带点亮三个循环（那会让自主性消失、也不像活人）。
+//    单件放行的不变量在 focus-one-thing-test.mjs 里测，这里只守住"不许回退成三开"。
 const idx = fs.readFileSync(path.join(REPO, 'lib', 'index.js'), 'utf8')
-ok('完全自由连带 自由上网', /body\.freedom\.enabled === 'boolean'[\s\S]{0,600}web', 'roam'/.test(idx))
-ok('完全自由支持随 DSH 自启', idx.includes('freedom?.startWithDsh === true'))
-ok('自愈覆盖三个循环', idx.includes('自由刷B站进程自愈拉起') && idx.includes('自由刷抖音进程自愈拉起'))
+ok('完全自由不再一键三开', !/body\.freedom\.enabled === 'boolean'[\s\S]{0,600}setSwitch/.test(idx))
+ok('完全自由仍能随 DSH 自启（总开关）', idx.includes('freedom?.startWithDsh === true'))
+ok('自启时不启动任何循环（等她挑）', /startWithDsh === true[\s\S]{0,900}等她自己挑下一件事/.test(idx))
 
 console.log(fail ? `\n✗ ${fail} 条没过（通过 ${pass}）` : `\n✓ 全部 ${pass} 条通过`)
 process.exit(fail ? 1 : 0)

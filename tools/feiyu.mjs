@@ -44,6 +44,7 @@ const COMMANDS = {
   produce: '短视频生产：produce ["主题"]（她策划→配图→她的声音旁白→成片投稿包，投稿点击归主人）',
   vision: '视觉理解：status（看配置）| probe --image <图>（多模态描述，等视觉 key 点亮）',
   selfwake: '她自己定下次几点醒：selfwake 23:40 [--note "…"]｜--show｜--clear',
+  focus: '她决定"接下来这一段时间干什么"：focus web|bilibili|douyin --min 25 ｜focus rest --min 40 ｜focus off ｜focus（看现在在干什么）',
 }
 
 const cmd = process.argv[2]
