@@ -141,7 +141,7 @@ export async function run(argv = []) {
       const msgs = (data && data.messages) || []
       // 只看主人发来的、最新的
       // 全类型（10-25 对齐 QQ）：文字消息 + 图片消息（img 字段，dm-read 带出 URL）
-      const inbound = msgs.filter(m => m.dir === 'in').map(m => ({ text: String(m.text || '').trim(), img: String(m.img || ''), fresh: m.fresh === true })).filter(m => m.text || m.img)
+      const inbound = msgs.filter(m => m.dir === 'in').map(m => ({ text: String(m.text || '').trim(), img: String(m.img || ''), shot: String(m.shot || ''), fresh: m.fresh === true })).filter(m => m.text || m.img || m.shot)
       if (!inbound.length) { failStreak = 0; return }
       // 首次运行：把现有消息全部记为基线（不回），从下一条新消息开始陪聊
       if (!seeded) {
@@ -157,11 +157,14 @@ export async function run(argv = []) {
       // 在水位里了，于是每轮都停在"已处理 → return"上死循环：20:53~21:05 主人连发三条
       //（你在看滑肉视频吗 / 你还在吗 / 太好笑了）一条都没回。
       // 现在：取最新一屏里最新的一条未处理消息（数组头），没有再退到全量数组头。
-      const pendOf = (arr) => arr.filter(m => { const k = norm(m.text || m.img); return k && !handled.includes(k) })
+      const pendOf = (arr) => arr.filter(m => { const k = norm(m.text || m.img || m.shot); return k && !handled.includes(k) })
       const freshPend = pendOf(inbound.filter(m => m.fresh))
       const pick = freshPend.length ? freshPend[0] : (pendOf(inbound)[0] || null)
       if (!pick) { failStreak = 0; return }
       let text = pick.text
+      // ⚠️ 去重键必须用**原始**文本：下面识图会把卡片描述拼进 text，而每次描述措辞都不同，
+      // 拿它当 key 会让同一条卡片每轮都被当成新消息 → 反复回复同一张卡片。
+      const keyBase = String(pick.text || '').trim()
       // 图片消息 → Qwen3-VL 亲眼看（10-25 对齐 QQ 的全类型理解）
       if (pick.img && !text) {
         try {
@@ -182,10 +185,28 @@ export async function run(argv = []) {
         } catch { text = '【发来一张图片】' }
       }
       inboundText = text
-      const key = norm(text || pick.img)
+      // 分享卡片：dm-read 现在会把卡片（封面+标题）截图带回来 —— 让视觉模型真的看一眼。
+      // 10-26 用户投诉：「无法理解我分享的视频，一直叫我念标题给她」。
+      // 根因是卡片正文在 DOM/接口里都拿不到（私信走二进制 WS），而她只能看到 [分享视频]。
+      if (pick.shot) {
+        try {
+          const { visionOn, describeFrames } = await import('../lib/vision.mjs')
+          if (visionOn() && fs.existsSync(pick.shot)) {
+            const desc = await describeFrames([pick.shot], {
+              query: '这是抖音私信里对方分享给我的视频卡片截图。请：①把卡片上的标题文字原样读出来；'
+                + '②用一两句话说明这视频的画面在讲什么（吃的/风景/剧情/教程…）。读不出标题就直说卡片上没字，别编。',
+            })
+            if (desc && desc.trim()) {
+              text = `${text}\n【主人分享的视频卡片：${desc.trim().slice(0, 260)}】`
+              log(`[douyin-dm] 卡片已看懂：${desc.trim().slice(0, 60)}`)
+            }
+          }
+        } catch (e) { log(`[douyin-dm] 卡片识图失败：${String(e).slice(0, 120)}`) }
+      }
+      const key = norm(keyBase || pick.img || pick.shot)
       if (!key || handled.includes(key)) { failStreak = 0; return }
 
-      log(`[douyin-dm] 主人：${text.slice(0, 50)}`)
+      log(`[douyin-dm] 主人：${text.slice(0, 80)}`)
 
       // 先记进对话记忆（platform=douyin · 独立 chatId）：buildMessages 才能带回上下文，
       // 主人连发几句也接得住；这句话以后还会进 recall 的"主动回忆"池。
@@ -193,15 +214,17 @@ export async function run(argv = []) {
 
       // 复用 QQ 那套：人格 + 记忆 + 清洗（douyin-dm 平台提示 = 私聊语气，不是评论区语气）
       const msgsOut = persona.buildMessages({ platform: 'douyin-dm', userText: text, chatId: CHAT_ID, userId: ownerKey, turnsToday: handled.length })
-      // 卡片占位（dm-read 只能拿到 [分享视频]/[分享视频：标题]，有时连标题都没有）：
-      // 以前她会回"你发的这个我看不到内容呀，链接没打开"（10-25 实锤，主人当场无语）。
-      // 方向反了 —— 这是主人发给她的东西，该顺着他的话接，实在不知道就问一句，别喊看不到。
+      // 卡片占位：以前她会回"你发的这个我看不到内容呀"（10-25），后来改成教她"问标题"——
+      // 结果就成了「一直叫我念标题给她」（10-26 用户投诉）。现在有截图就看截图，没截图就顺着话接，
+      // **禁止**向主人索要标题/链接。
       if (/\[分享/.test(text)) {
         const last = msgsOut[msgsOut.length - 1]
-        last.content += '\n\n（提示：主人这条是**分享给你的内容**，你只拿到占位符'
-          + (text.includes('[分享视频：') ? '和一个标题' : '、没有标题') + '。'
-          + '按他说的那句感想（比如"这个看起来好好吃"）自然接一句就行；真想知道细节就直接问"分享的哪个呀，标题给我看看"，'
-          + '**绝对不要**说"看不到内容""链接打不开""我这边显示不出来"这类话。）'
+        const seen = text.includes('分享的视频卡片：')
+        last.content += '\n\n（提示：主人这条是**分享给你的内容**。'
+          + (seen ? '上面【主人分享的视频卡片：…】是你亲眼看过的卡片（标题/画面都读了），就按那个说，别再说不知道是什么。'
+            : '这张卡片我没读到内容。')
+          + '接话方向：顺着他的那句感想聊（比如"这个看起来好好吃"就聊馋），或者随口说一句你的猜测，'
+          + '**绝对不要**说"看不到内容""链接打不开""标题念给我听""发我标题""你分享的哪个"这类向他要东西的话。）'
       } else if (/分享/.test(text)) {
         const last = msgsOut[msgsOut.length - 1]
         last.content += '\n\n（提示：主人提到"分享"，去上文找他刚发来的那条内容，据此接话。）'

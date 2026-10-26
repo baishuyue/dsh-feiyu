@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """抖音网页版(douyin.com)互动工具 —— 登录 / 刷feed / 发评论。
 
@@ -765,16 +765,49 @@ async def _read_dm_messages(page):
                 if (!t) continue;
                 // 分享卡片：douyin 渲染成 "[分享视频]" 占位 —— 从卡片里把标题挖出来拼上，
                 // 不然她永远不知道对方分享的是什么（10-25 实锤：主人回"这个看起来好好吃"，她看不懂）
-                if (t.indexOf('[分享') >= 0) {
+                let cover = '', rect = null;
+                // 10-26 关键：卡片在 DOM 里长这样（实测 dump）：
+                //   <div class="MessageItemShareAwemecontainer"><img class="...awemeContainer"(封面)>
+                //   <img class="...authorAvatar"><p class="MessageItemShareA...">作者名</p></div>
+                // innerText 只有**作者名**（"消失的四次元口袋""传奇老马"），既没有 [分享 也没有标题 ——
+                // 所以按 [分享 文字匹配永远抓不到卡片，她只能读到一个莫名其妙的人名。
+                // 改成按结构识别：有 ShareAweme 容器就按卡片处理，并截封面图给视觉模型。
+                const shareEl = content.querySelector('[class*="ShareAweme"], [class*="shareAweme"], [class*="AwemeCard"]');
+                if (shareEl) {
+          const inner = (shareEl.innerText || '').replace(/\\n/g, ' ').trim().slice(0, 60);
+          if (t.indexOf('[分享') < 0) t = '[分享的视频' + (inner ? '：' + inner : '') + ']';
+          const coverEl = shareEl.querySelector('img[class*="awemeContainer"], img[src*="cover"], img');
+          if (coverEl && (coverEl.src || '').startsWith('http')) {
+            cover = coverEl.src;
+            const r = coverEl.getBoundingClientRect();
+            if (r.width >= 40 && r.height >= 40 && r.top > 0 && r.bottom < window.innerHeight) {
+              rect = { x: Math.max(0, r.x - 6), y: Math.max(0, r.y - 6),
+                       w: Math.min(560, r.width + 12), h: Math.min(780, r.height + 170) };
+            }
+          }
+        }
+        if (t.indexOf('[分享') >= 0) {
           const cardRoot = content.closest('[class*="messageBox"]') || content.parentElement || content;
           const card = cardRoot.querySelector('a[href*="/video/"], a[href*="/note/"], [class*="cardTitle"], [class*="shareCard"], [class*="share"] img');
           const extraTitle = card ? (card.innerText || '').trim().split('\\n').filter(Boolean).slice(0, 2).join(' ').slice(0, 60) : '';
           const rawHref = card ? String(card.getAttribute('href') || '') : '';
           const href = rawHref ? (rawHref.indexOf('http') === 0 ? rawHref : 'https://www.douyin.com' + rawHref) : '';
-          const tag = '[分享视频' + (extraTitle ? '：' + extraTitle : '') + (href ? ' ' + href : '') + ']';
-          const b = t.indexOf('[分享');
-          const e2 = t.indexOf(']', b);
-          if (e2 > b) t = t.slice(0, b) + tag + t.slice(e2 + 1);
+          // 已经有 [分享的视频：…] 的别覆盖成 [分享视频]（会丢掉作者名）
+          if (t.indexOf('[分享的视频') < 0) {
+            const tag = '[分享视频' + (extraTitle ? '：' + extraTitle : '') + (href ? ' ' + href : '') + ']';
+            const b = t.indexOf('[分享');
+            const e2 = t.indexOf(']', b);
+            if (e2 > b) t = t.slice(0, b) + tag + t.slice(e2 + 1);
+          }
+          const coverEl2 = cardRoot.querySelector('img');
+          if (!cover && coverEl2 && (coverEl2.src || '').startsWith('http') && coverEl2.clientWidth >= 40) {
+            cover = coverEl2.src;
+            const r2 = coverEl2.getBoundingClientRect();
+            if (r2.width > 40 && r2.height > 40 && r2.top > 0 && r2.bottom < window.innerHeight) {
+              rect = { x: Math.max(0, r2.x - 6), y: Math.max(0, r2.y - 6),
+                       w: Math.min(520, r2.width + 12), h: Math.min(760, r2.height + 150) };
+            }
+          }
         }
                 // 系统占位卡/游戏邀请卡没有对话价值
                 if (/暂不支持该消息类型|邀请你一起|点击加入|接受邀请/.test(t)) continue;
@@ -782,13 +815,36 @@ async def _read_dm_messages(page):
                 if (seen.has(key)) continue;
                 seen.add(key);
                 const box = content.closest('[class*="messageBox"]') || content.parentElement;
-                out.push({ dir: (box && box.querySelector('[class*="isFromMe"]')) ? 'out' : 'in', text: t, img: imgSrc });
+                out.push({ dir: (box && box.querySelector('[class*="isFromMe"]')) ? 'out' : 'in', text: t, img: imgSrc, cover: cover, rect: rect });
             }
             return out;
         }""")
 
     # 第一遍：默认视图（最新在底部，别动）
     first = await _extract()
+    # 分享卡片截图（10-26）：卡片正文在 DOM/接口里都拿不到，但封面+标题在屏幕上。
+    # ⚠️ 必须在**第一遍之后、滚动之前**截 —— 滚一下虚拟列表就把最新消息移出视野了。
+    shots = 0
+    for m in first:
+        if not m.get("rect"):
+            continue
+        try:
+            r = m["rect"]
+            clip = {"x": float(r["x"]), "y": float(r["y"]), "width": float(r["w"]), "height": float(r["h"])}
+            vp = page.viewport_size or {"width": 1280, "height": 800}
+            # 裁进视口，越界会让 Playwright 直接报错
+            clip["width"] = max(40.0, min(clip["width"], vp["width"] - clip["x"]))
+            clip["height"] = max(40.0, min(clip["height"], vp["height"] - clip["y"]))
+            d = Path(tempfile.gettempdir()) / "feiyu-dm-card"
+            d.mkdir(parents=True, exist_ok=True)
+            f = d / f"card-{int(time.time() * 1000)}-{shots}.jpg"
+            f.write_bytes(await page.screenshot(type="jpeg", quality=80, clip=clip))
+            if f.exists() and f.stat().st_size > 1500:
+                m["shot"] = str(f)
+                shots += 1
+                log(f"[dm-read] 分享卡片已截图：{f.name}（{f.stat().st_size}B）")
+        except Exception as e:
+            log(f"[dm-read] 卡片截图失败：{str(e)[:120]}")
     # 第二遍：向上滚加载旧消息（合并去重，旧的在前）
     for _ in range(3):
         await page.mouse.wheel(0, -1500)
@@ -807,6 +863,12 @@ async def _read_dm_messages(page):
         # 末尾常常是早就回过的旧消息，导致新消息永远轮不到）。
         m["fresh"] = k in fresh_keys
         merged.append(m)
+    # 截图只在第一遍（未滚动那屏）拿得到，而合并时 second 先入为主 —— 把 shot 回填，
+    # 不然刚截的卡片图会被同名旧行覆盖掉（10-26：卡片理解全靠这张图）。
+    shot_of = {m["text"][:50]: m.get("shot") for m in first if m.get("shot")}
+    for m in merged:
+        if not m.get("shot") and shot_of.get(m["text"][:50]):
+            m["shot"] = shot_of[m["text"][:50]]
     return merged[-40:]
 
 

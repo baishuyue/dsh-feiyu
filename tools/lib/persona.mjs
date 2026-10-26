@@ -211,6 +211,15 @@ function dropOwnerMistakes(rows) {
  * 装配完整 messages（system + 最近对话 + 本轮输入）。
  * @param {object} o platform / userText / chatId / userId / turnsToday
  */
+/** 抖音私信里她"看不懂分享卡片"时说的那类话 —— 她自己念过好几遍，会照抄。
+ *  命中就要从上下文里剔掉：向主人索要标题、喊看不到内容。
+ *  ⚠️ 只认这些"要东西/喊瞎"的句式，别把正常聊天误伤（"这个我看不懂"不算）。 */
+const CARD_MISTAKE = /念.{0,6}标题|标题.{0,6}(念给|给(我|你)听|发我)|发我标题|看不到内容|链接打不开|我这边只看到|内容是空的|显示不出来/
+export function dropCardMistakes(rows) {
+  return rows.filter(m => !(m.role === 'assistant' && CARD_MISTAKE.test(m.content)))
+}
+export function cardMistake(text) { return CARD_MISTAKE.test(String(text || '')) }
+
 export function buildMessages({ platform = 'qq', userText, chatId, userId, turnsToday = 0, isGroup = false }) {
   const cfg = config()
   const parts = []
@@ -240,7 +249,12 @@ export function buildMessages({ platform = 'qq', userText, chatId, userId, turns
     // 世界见闻（worldBlock：B站/抖音刷到的+lore+日记尾）QQ/抖音私信都注入 —— 人格连贯的关键。
     // 群聊照旧注入（10-26 主人拍板：群里别的都不变，只要她分得清人）；说出来什么由下面群聊规则管。
     const world = qqMemory.worldBlock()   // 她刷 B站/抖音 带回来的见闻 —— 人格是"我设定的 + 她自己经历的"
-    if (world) parts.push(world)
+    // 这块也会把她"主人念标题给我听听"这种错话翻出来当经历讲（10-26 实测漏点）。
+    // 她自己的错话没有回顾价值，直接剔行；剔空了就不注入。
+    if (world) {
+      const kept = world.split('\n').filter(l => !CARD_MISTAKE.test(l)).join('\n').trim()
+      if (kept) parts.push(kept)
+    }
   }
 
   const recalled = memory.recall(userText)
@@ -257,7 +271,13 @@ export function buildMessages({ platform = 'qq', userText, chatId, userId, turns
     // 群聊里**照旧**注入（主人 10-26 拍板：不许让她"忘了私聊"，只要分得清人）。
     // 分得清靠的是 recallAll 的标签：私聊行是「[QQ] 主人：…」，群聊行是「[QQ群] 昵称：…」，
     // 她一眼能看出哪句是主人说的、哪句是群里谁说的。
-    const lines = all.lines
+    // 抖音私信：回忆块里「我：念标题给我听」这类也要剔（那是她看不懂卡片时的错话，
+    // 留在上下文里等于教她继续说）。只剔她自己（「我：」开头）的行，主人说的不动。
+    let lines = all.lines
+    if (platform === 'douyin-dm') {
+      const clean = lines.filter(l => !(/我：/.test(l) && CARD_MISTAKE.test(l)))
+      if (clean.length !== lines.length) lines = clean
+    }
     if (lines.length) {
       const wroteNovel = lines.some(l => /写了小说|小说片段/.test(l))
       parts.push('【最近真实发生的事】同一份记忆、同一个你 —— 下面是最近的记录，从新到旧'
@@ -294,6 +314,12 @@ export function buildMessages({ platform = 'qq', userText, chatId, userId, turns
   // 群聊：先剔掉她自己叫错人的行（模型会照抄自己，见 dropOwnerMistakes 的注释）
   if (isGroup) {
     const keep = dropOwnerMistakes(recent)
+    if (keep.length !== recent.length) recent = keep
+  }
+  // 抖音私信：剔掉她自己"向主人索要标题 / 喊看不到内容"的旧话（10-26 用户投诉：
+  // 「一直叫我念标题给她」—— 上下文里躺着她自己 4 条示范，模型当然照着念）。
+  if (platform === 'douyin-dm') {
+    const keep = dropCardMistakes(recent)
     if (keep.length !== recent.length) recent = keep
   }
   // 调用方（qq-server / douyin-dm-server）都是先 remember 本轮输入再装配 —— recent 尾部已含

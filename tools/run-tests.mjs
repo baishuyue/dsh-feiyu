@@ -1,10 +1,10 @@
-// run-tests —— 不依赖 npm 的测试跑轮（这台机器上 PATH 里没有 node/npm，
+﻿// run-tests —— 不依赖 npm 的测试跑轮（这台机器上 PATH 里没有 node/npm，
 // `npm test` 跑不了，而她自己改完代码必须验证）。
 //
-//   node tools/run-tests.mjs            # 顺序跑全部 8 套，全绿退出 0
+//   node tools/run-tests.mjs            # 顺序跑全部 10 套，全绿退出 0
 //   node tools/run-tests.mjs memory     # 只跑文件名含 "memory" 的
 //
-// 与 package.json 的 `test` 脚本等价：同样的 8 个文件、同样的顺序、失败即停。
+// 与 package.json 的 `test` 脚本等价：同样的 10 个文件、同样的顺序、失败即停。
 import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -19,6 +19,7 @@ const TESTS = [
   'memory-recall-test.mjs',
   'qq-human-test.mjs',
   'group-persona-test.mjs',
+  'douyin-card-test.mjs',
   'imggen-test.mjs',
   'vision-test.mjs',
 ]
