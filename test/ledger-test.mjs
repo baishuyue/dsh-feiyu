@@ -163,6 +163,50 @@ ok('没配 balanceUrl/apiKey 时余额返回 null（不是 0）', async () => {
   assert.equal(v, null)
 })
 
+ok('余额接口通了：多币种都留下，主数取 CNY（照 dsh-pet 的教训）', async () => {
+  const http = await import('node:http')
+  const srv = http.createServer((req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.end(JSON.stringify({
+      is_available: true,
+      balance_infos: [
+        { currency: 'USD', total_balance: '1.50', granted_balance: '0.50', topped_up_balance: '1.00' },
+        { currency: 'CNY', total_balance: '88.20', granted_balance: '8.20', topped_up_balance: '80.00' },
+      ],
+    }))
+  })
+  await new Promise((r) => srv.listen(0, '127.0.0.1', r))
+  const port = srv.address().port
+  try {
+    const v = await L.balance({ ledger: { balanceUrl: `http://127.0.0.1:${port}/user/balance`, apiKey: 'k' } })
+    assert.ok(v)
+    assert.equal(v.currency, 'CNY')
+    assert.equal(v.total, 88.2)
+    assert.equal(v.wallets.length, 2)                 // 只取首条会让 USD 凭空消失
+    assert.deepEqual(v.wallets.map((w) => w.currency).sort(), ['CNY', 'USD'])
+  } finally {
+    srv.close()
+  }
+})
+
+ok('余额接口挂了/字段缺 → null，不抛也不编', async () => {
+  const http = await import('node:http')
+  const srv = http.createServer((req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.end(JSON.stringify({ is_available: false, balance_infos: [] }))
+  })
+  await new Promise((r) => srv.listen(0, '127.0.0.1', r))
+  const port = srv.address().port
+  try {
+    const v = await L.balance({ ledger: { balanceUrl: `http://127.0.0.1:${port}/x`, apiKey: 'k' } })
+    assert.equal(v, null)
+  } finally {
+    srv.close()
+  }
+  // 连不上（端口关掉）也是 null
+  assert.equal(await L.balance({ ledger: { balanceUrl: 'http://127.0.0.1:1/x', apiKey: 'k' } }), null)
+})
+
 // ── ⑤ 缓存：提示语同步读，不能每次都跑 python ───────────────────────────────
 ok('readBrief 没缓存时返回 null', () => {
   assert.equal(L.readBrief(), null)
@@ -213,9 +257,10 @@ ok('python 侧按 assistant/message 的 usage 记账，且区分她与主人', (
 
 ok('账本模块不写死余额接口，也不把 0 当余额', () => {
   const m = read('tools/lib/ledger.mjs')
-  assert.match(m, /balanceUrl/)                     // 走配置，不硬编码
+  assert.match(m, /balanceUrl/)                       // 走配置，不硬编码
   assert.match(m, /if \(!url \|\| !key\) return null/)
-  assert.match(m, /Number\.isFinite\(total\)/)       // 接口不通/字段缺 → null，不是 0
+  assert.match(m, /Number\.isFinite\(w\.total\)/)     // 接口不通/字段缺 → 过滤掉，不是 0
+  assert.match(m, /balance_infos/)                    // 官方口径：多币种全留
 })
 
 ok('唤醒提示里必须带上账本块，并告诉她"这账你自己能查"', () => {

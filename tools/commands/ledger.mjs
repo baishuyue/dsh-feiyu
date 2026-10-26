@@ -55,6 +55,9 @@ function render(r) {
   line('累计（我）', `${L.fmtTok(r.lifetime.mineTokens)} token ≈ ¥${r.lifetime.mineCost}`)
   if (r.balance) {
     line('钱包余额', `¥${r.balance.total}（${r.balance.currency}）` + (r.runwayDays != null ? ` —— 按现在这样吃还能撑 ${r.runwayDays} 天` : ''))
+    // 多币种就全列出来（只报首条会让别的币种凭空消失）
+    const multi = (r.balance.wallets || []).filter((w) => w.currency !== r.balance.currency)
+    for (const w of multi) line('  · 还有', `${w.total} ${w.currency}`)
   } else {
     line('钱包余额', '看不到（没配 ledger.balanceUrl/apiKey —— 这项得问主人）')
   }

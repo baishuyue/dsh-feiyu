@@ -169,7 +169,13 @@ export function quotas(cfg = config(), today = dayKey(), dir = dataPath()) {
   }))
 }
 
-/** 可选：官方钱包余额（配了 url+key 才查，其它一律返回 null，不编数字）。 */
+/**
+ * 可选：官方钱包余额（配了 url+key 才查，其它一律返回 null，不编数字）。
+ *
+ * 口径照 dsh-pet 的教训：`balance_infos` 里**所有币种都要留下** ——
+ * 只取首条会让后面的币种凭空消失（余额看起来比实际少）。金额原样透传，
+ * 不按"赠送+充值"重算（官方给的 total 就是总数）。
+ */
 export async function balance(cfg = config(), opts = {}) {
   const url = cfg.ledger?.balanceUrl
   const key = cfg.ledger?.apiKey || process.env.DEEPSEEK_API_KEY
@@ -183,9 +189,15 @@ export async function balance(cfg = config(), opts = {}) {
     const j = await r.json()
     const infos = j?.balance_infos
     if (!Array.isArray(infos) || !infos.length) return null
-    const w = infos.find((x) => x?.currency === 'CNY') || infos[0]
-    const total = Number(w?.total_balance)
-    return Number.isFinite(total) ? { currency: w.currency, total, granted: w.granted_balance, toppedUp: w.topped_up_balance } : null
+    const wallets = infos.map((w) => ({
+      currency: String(w?.currency || 'CNY'),
+      total: Number(w?.total_balance),
+      granted: w?.granted_balance ?? null,
+      toppedUp: w?.topped_up_balance ?? null,
+    })).filter((w) => Number.isFinite(w.total))
+    if (!wallets.length) return null
+    const head = wallets.find((w) => w.currency === 'CNY') || wallets[0]
+    return { ...head, wallets }
   } catch {
     return null
   } finally {
