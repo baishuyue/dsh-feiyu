@@ -168,6 +168,42 @@ export async function run(argv = []) {
     }
   } catch (e) { add('账本', false, '查账失败：' + String(e.message).slice(0, 80)) }
 
+  // 视频生产（第 17 轮）：真剪辑靠 ffmpeg 的 xfade/zoompan/subtitles/loudnorm + 中文字体。
+  // 少一样就出不了片 —— 而这台机器上的 ffmpeg 藏在 D:/rvc/bin，PATH 里没有。
+  try {
+    const V = await import('../lib/video.mjs')
+    const ff = V.ffmpegBin()
+    const fps = V.specOf('bili')
+    const fontOk = fs.existsSync(V.fontFile())
+    const filters = (() => {
+      try { return V.run(ff, ['-hide_banner', '-filters']) } catch { return '' }
+    })()
+    const haveAll = ['xfade', 'zoompan', 'subtitles', 'loudnorm', 'sidechaincompress']
+      .filter((f) => !new RegExp(`\\s${f}\\s`).test(filters))
+    if (!fs.existsSync(ff) && ff !== 'ffmpeg') add('视频生产', false, `找不到 ffmpeg（${ff}）—— 成片做不出来`)
+    else if (haveAll.length) add('视频生产', false, `这个 ffmpeg 缺滤镜：${haveAll.join('/')}，剪不出真片子`)
+    else if (!fontOk) add('视频生产', true, 'ffmpeg 就绪；但没找到中文字体，字幕会变方块（配 video.font 指一个 ttf）')
+    else {
+      const { locked, describe } = await import('../lib/debut.mjs')
+      add('视频生产', true, `${ff.split(/[\\/]/).pop()} · ${fps.w}×${fps.h} · 字幕/BGM/转场齐全；${locked() ? describe() : describe()}`)
+    }
+  } catch (e) { add('视频生产', false, '视频模块起不来：' + String(e.message).slice(0, 80)) }
+
+  // B站社交流水（第 17 轮）：她要"在 B站 活着"，主人就得看得见 —— 流水文件得能读、摘要能生成。
+  try {
+    const S = await import('../lib/social-log.mjs')
+    const recs = S.read({ days: 7 })
+    const st = S.stats(recs)
+    const invisible = recs.filter((r) => !r.toOwner).length
+    if (!st.length) {
+      add('B站社交记录', true, '流水还是空的（她还没在 B站 发过言；跑 feiyu social --backfill 可补历史台账）')
+    } else {
+      const today = new Date().toLocaleDateString('sv-SE')
+      const t = st.find((d) => d.day === today)
+      add('B站社交记录', true, `7 天 ${recs.length} 条（没 @ 主人的 ${invisible} 条）；今天 ${t ? S.countLine(t) : '还没动'}`)
+    }
+  } catch (e) { add('B站社交记录', false, '流水读不出：' + String(e.message).slice(0, 80)) }
+
   // ⑭ 抖音互动（douyin_interact.py + patchright 环境）
   let dyOk = false
   try { fs.accessSync('D:/social-auto-upload/douyin_interact.py'); fs.accessSync('D:/social-auto-upload/.venv/Scripts/python.exe'); dyOk = true } catch {}

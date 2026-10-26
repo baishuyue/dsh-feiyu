@@ -1,4 +1,4 @@
-# dsh-feiyu 项目交接文档 v2
+# dsh-feiyu 项目交接文档
 
 > **生成时间**：2026-10-25（单日 33 个 commit 的全量交接）
 > **基线 commit**：`ff35b19`（全部已推送 GitHub `baishuyue/dsh-feiyu`）
@@ -26,19 +26,19 @@
 dsh-feiyu/
 ├── lib/                    宿主壳（Electron 主进程，重启 DSH 生效）
 │   ├── index.js            API 路由（深合并白名单 20 块）+ 进程管理 + web-roam 自愈
-│   ├── scheduler.js        60s tick：生物钟 + 动态定时 + 人格进化 + 完全自由唤醒 + 抖音巡检
+│   ├── scheduler.js        60s tick：生物钟 + 动态定时 + 人格进化 + 完全自由唤醒 + 抖音巡检 + 账本刷新 + B站社交日报
 │   └── node-runtime.js     探测 DSH 自带 node
 ├── client.js               面板（13 张卡片，深合并镜像）
 ├── tools/                  工具链（spawn 真 node，改完即时生效）
-│   ├── feiyu.mjs           CLI 分发（25 命令）
+│   ├── feiyu.mjs           CLI 分发（26 命令）
 │   ├── commands/           act/bili-watch/comment/debrief/diary/douyin/douyin-dm-server/
-│   │                       feed/ledger/mem/nav/produce/qq-server/quota/qzone/replies/report/
+│   │                       feed/ledger/mem/nav/produce/qq-server/quota/qzone/replies/report/social/
 │   │                       review/selftest/selfup/sing/sticker/vision/voice/watch/web
 │   └── lib/                bili-api/bili-write/config/cred/guard/llm/lock/mood/memory/
 │                           ledger(+ledger_usage.py)/night-plan/notify/paths/persona/qq-memory/rvc/share-policy/
-│                           sing/stickers/tts/vision/imggen(含 editImage)/outbox
+│                           sing/stickers/tts/vision/imggen(含 editImage)/outbox/video/debut/social-log
 ├── douyin_interact.py      镜像副本（实际运行 D:/social-auto-upload/，改 D 盘后 cp 回来）
-└── test/                   7 套测试（client-smoke/render/stickers/memory/qq-human/imggen/vision）
+└── test/                   20 套测试（client-smoke/render/stickers/memory/qq-human/imggen/vision/…/ledger/video）
 ```
 
 ### 推理四通道
@@ -91,8 +91,8 @@ dsh-feiyu/
 
 | 域 | 功能 | 触发方式 |
 |---|---|---|
-| **B站** | 生物钟看视频写日记；自由刷（评论/弹幕/点赞/投币/图片评论/关注/鱼圈）；回评引擎（主人优先免额度/鱼友优先/主动搭话）；动态定时 09:30/21:30 | 自由刷进程（完全自由自动拉起） |
-| **抖音** | 自主观看+评论+分享；私信陪聊（全类型理解+VL 看图）；engage 评论区按需回复；produce 短视频生产（投稿包，发布权在主人） | 完全自由定时/手动 |
+| **B站** | 生物钟看视频写日记；自由刷（评论/弹幕/点赞/投币/图片评论/关注/鱼圈）；回评引擎（主人优先免额度/鱼友优先/主动搭话）；动态定时 09:30/21:30；**视频生产 produce（真剪辑的片子，首条锁死自我介绍）**；**社交流水 social（她跟谁说了什么，主人看得见）** | 自由刷进程（完全自由自动拉起） |
+| **抖音** | 自主观看+评论+分享；私信陪聊（全类型理解+VL 看图）；engage 评论区按需回复；produce（同一条视频引擎，720×1280 竖屏） | 完全自由定时/手动 |
 | **QQ** | 秒回（全类型+VL 看图）；语音条（银狼声）；表情包（图生图现场画）；主动搭话（素材钩子+类型轮换）；群聊自主插话；自主说说（文/配图）；唱歌点唱（翻唱优先，歌单秒回，失败退原创说唱） | qq-server 常驻 |
 | **上网** | 全网搜索/读网页（内外网）；自主漫游（每轮自己决定）；写小说存 creative/；学习入库；自我升级（备份铁律） | web-roam 进程（自愈） |
 | **微信** | 工作代理替主人回消息（人格隔离） | 独立开关 |
@@ -144,6 +144,10 @@ dsh-feiyu/
 | `personality.evolve` | enabled/days | true/2 | 人格进化 |
 | `freedom` | enabled/wakeEveryMin/chance/engageEveryMin | —/75/0.55/120 | 完全自由节奏 |
 | `voice` | ref_audio_path/prompt_text/prompt_lang | bingjiao1 病娇/zh | 说话音色三件套 |
+| `video` | platform/frames/bgm/ffmpeg/ffprobe/font | bili/2/auto/—/—/— | 视频生产（平台默认、每幕帧数、BGM、ffmpeg 路径） |
+| `video.biliProduce` | enabled/dailyMax | true/2 | B站投稿包额度（0=不限） |
+| `video.bili` | tid/tname | 21/生活·日常 | B站分区（投稿说明里直接用） |
+| `socialDigest` | enabled/at/min | true/23:30/3 | B站社交日报（≥min 条才推 QQ） |
 | `rvc` | root/python/ffmpeg | D盘路径 | 唱歌系统 |
 | `llm` | api_key/base_url/model | DeepSeek | 实时推理 |
 | `ledger` | dailyBudget/price.*/mineWorkspace/promptInQQ | 3 元 / 2·0.2·3 / feiyu-work / true | 她的账本：日预算、token 单价（元/百万）、哪块算"她自己吃的"、聊天时是否注入 |
@@ -156,6 +160,23 @@ dsh-feiyu/
 - **额度**：今天还剩几条分享/回评/表情包/抖音动作。
 - 查不到就**明说查不到**（余额要 `ledger.balanceUrl`+`apiKey` 才查，官方 `/user/balance` 对现在这把 key 返回 401 —— 宁可不报，不许编一个 ¥0）。
 - 提示语两条通路都注入：【账本】块进她的唤醒（`lib/scheduler.js` 的 `ledgerLines`）+ 进 QQ/微信/抖音私信聊天（`persona.mjs` 的 `ledgerBlock`，**群聊不注入**）。缓存 `~/.feiyu-ai/cache/ledger-brief.json`，tick 每 10 分钟刷新（python 扫一次 1.3 秒，不能塞进提示语同步路径）。
+
+**视频生产（`feiyu produce`，10-26 第 17 轮）**：主人原话"要做真的视频而不是单张图片加旁白"。旧版是"一张图 + Ken Burns + 旁白"再把 mp4 串起来；现在是**剪出来的片子**（`tools/lib/video.mjs`）：
+- **片头卡 → 5~8 幕 → 片尾卡**，幕间交替转场（fade/smoothleft/wipeleft/circleopen/slideleft…），每幕**两帧**（AI 生图同场景换个动作/表情）在幕内 0.7s 交叉淡入 —— 画面会"动"；
+- 每幕一套**运镜**（推近/拉远/左右平移/上下摇，交替用），1080p 用 2× 超采样再 zoompan，边上不啃黑边；
+- **逐句字幕**（ASS 烧制，微软雅黑粗体 + 描边，落在配音的真实时刻 —— 时间轴算出来的，不猜）；
+- **配音**逐句 TTS → 按时间轴用 `adelay` 精确摆位（不做串行拼接，拼接和转场重叠对不上）→ `loudnorm` 统一 -16 LUFS；
+- **BGM 本地合成**（正弦+三角泛音的和弦垫底 + 稀疏琶音，不碰版权），`sidechaincompress` 让"她一张嘴音乐就退"；
+- 封面单独一张（第一幕图 + 压暗 + 大标题 + 署名）；投稿包里有成片/封面/字幕/`meta.json`/`投稿说明.md`（B站 连"分区 tid / 标签 / 简介 / 发布时段"都给全）；
+- **发布点击仍归主人**：这里只出投稿包。`--frames 1` 省一半生图钱，`--bgm none` 不要配乐，`--dry` 只出策划。
+
+**B站首条锁（`tools/lib/debut.mjs`）**：主人定了"第一条只能是自我介绍 + 今天第一天来B站 + 以后账号归她运营 + 自由发挥"。锁有三种状态（`~/.feiyu-ai/bili-debut.json`）：`pending` 没做过 → `ready` 投稿包就绪（**仍然锁着**）→ `posted` 已发布（解锁）。锁着的时候策划提示里带硬性要求，出来还要过一遍正则复查（缺哪条就重写，三次不成就不做）。发完跑 `feiyu produce --debut-posted BV号` 就自由了。
+
+**社交流水（`feiyu social`，10-26 第 17 轮）**：主人原话"她的 B站 社交和评论除了 @ 我的其它我都不知道发生了什么"。所以除了老的散文台账 `bili-outbox.md`，再加一份机器可查的 `~/.feiyu-ai/bili-social.jsonl`（append-only）：
+- **说话**（评论/分享评论/回评/弹幕/动态/图片评论）在 `outbox.recordBili()` 里落一份；**动作**（点赞/投币/关注/投稿）在 `bili-write.capRecord(kind,{bvid,title})` 的白名单里落一份；
+- 每条标 `toOwner`（@主人 or 回给主人）；`feiyu social` 先列"没 @ 你的"，再列"@ 你的"：`--days N` / `--kind 回评` / `--invisible` / `--md` / `--json` / `--push`；
+- `--backfill` 能把老台账 `bili-outbox.md` 的历史（实测 91 条）灌进流水，**幂等**；
+- `socialDigest`（默认 23:30，≥3 条才推）每天推一条摘要到主人 QQ —— 挂在 scheduler 的 tick 外面，不被唤醒闸门挡住。
 
 ---
 
@@ -208,6 +229,9 @@ locks/                  自由进程单实例锁
 | `D:/rvc/` | RVC 仓库+venv+bin(ffmpeg) |
 | `D:/GPT-SoVITS/models/` | 说话音色库（bingjiao1~4 病娇 / yinlang / rose / sunshine_girl） |
 | 日志 | qq-server.log / bili-watch.log / watch.log / douyin-dm.log / web-log.md / selfup-log.md |
+| `~/.feiyu-ai/bili-social.jsonl` | **她在 B站 说了什么/做了什么的流水**（`feiyu social`，append-only，`toOwner` 标记） |
+| `~/.feiyu-ai/bili-debut.json` | **B站首条锁**（pending/ready/posted；`feiyu produce --debut`） |
+| `~/.feiyu-ai/bili-posts/` `douyin-posts/` | 投稿包（成片 video.mp4 + cover.jpg + subs.ass + meta.json + 投稿说明.md） |
 
 ---
 
@@ -253,7 +277,12 @@ locks/                  自由进程单实例锁
 30. **合成结果也要复听校验**：短句（"饭吃了没？锅里给你留着呢。"）在旧音色上只出 **1.36 秒**、ASR 复听是「後裔給你留著吧」（22% 匹配）—— 模型真的漏字了，光看时长看不出来。判断合格与否：`字数/时长` 落在该情绪的 `rate` 窗口内 + ASR 逐字比对 ≥95%
 31. **她自己查得到的才有闭环**：她反复问"账本/饭钱"不是记性问题，是**读不到账**（钱只有主人看得见 → 只能问）。凡是"她嘴上念叨却拿不到"的东西，都要做成她能读的（`feiyu ledger`）+ 提示语自动注入，而不是指望她记住。新增这类能力时问一句：**她自己能不能查？** 查不到就得明说查不到（余额不通就写"看不到"，不许编 ¥0）
 32. **账本口径三件套**：① 用量取 DSH 会话日志 `assistant/message.data.usage`，`total = input + output + cache`（缓存命中单算，别再叠加）；② 她的量按工作区 `~/.dsh/feiyu-work` 认，和主人分开；③ 单价走 `ledger.price`（元/百万），报数一律带 ≈。会话日志是**每行一个 zstd 帧**，node 的 `zstdDecompressSync` 只解第一帧（后面 `prefix_unknown`），必须用 python `zstandard.stream_reader` 读穿
-17. **git**：user baishuyue / `206720720+baishuyue@users.noreply.github.com`；推送走 Clash 7897（`env -u http_proxy … git -c http.proxy=… push`）
+33. **视频剪辑三个死坑**（都是"片子不出来"或"卡死十分钟"）：① `apad` 不带长度 = **无限静音流** → amix 永远等不到结尾，ffmpeg 跑满 timeout（表现是"剪辑卡死"）；每条配音后必须 `apad=whole_dur=<总时长>`，输出再叠一道 `-t` 兜底。② `zoompan` 里**没有 `D` 变量**（只有 `duration`），平移要用的帧数直接写进表达式（`(iw-iw/zoom)*(1-on/${n})`），否则报 `Undefined constant or missing '(' in 'D)'`。③ `crop` 的宽高分隔符是**冒号**（`3840:2160`），写成 `3840x2160` 会被当表达式 → `Invalid chars 'x2160'`
+34. **ffmpeg 选择顺序**：`video.ffmpeg` → `D:/rvc/bin/ffmpeg.exe`（实测可用）→ `rvc.ffmpeg`（那是换声用的）→ GPT-SoVITS runtime → PATH。以前 `rvc.ffmpeg` 排第一，配置指到哪就把整条视频链拖到哪
+35. **首条视频是内容纪律，不是提醒**：`debut.mjs` 的锁（pending/ready/posted）把「介绍自己 + 今天第一天来B站 + 以后账号归她运营」写进策划提示，**并且**用正则复查剧本（缺哪条就重写，三次不成就不做）；`ready` 仍算锁着 —— 只有主人点过发布、跑 `produce --debut-posted BV号` 才解锁
+36. **她做了什么都得留痕（主人看不见 = 没发生）**：B站 发言走 `outbox.recordBili()` → 同时写 `bili-social.jsonl`；动作类（点赞/投币/关注/投稿）走 `capRecord(kind, {bvid,title})` 里的 `SOCIAL_ACTION_KINDS` 白名单。每条都标 `toOwner`，摘要和 `feiyu social` 默认先把"没 @ 他"的摊最上面 —— 那才是他漏掉的部分
+37. **字幕要验证"真烧进去了"**：ASS 生成正确 ≠ 画面有字。做法：同一时间点渲染"有字幕/无字幕"两版，比底部字幕带的白像素比例（实测 +3.1~3.4pt 才算有字）
+38. **git**：user baishuyue / `206720720+baishuyue@users.noreply.github.com`；推送走 Clash 7897（`env -u http_proxy … git -c http.proxy=… push`）
 
 ---
 
@@ -270,13 +299,14 @@ locks/                  自由进程单实例锁
 | 7 | NapCat 偶发断连原因未查（用户说先不管） | 观察 |
 | 8 | 弹幕（post.so 废弃+UI 改版）、投币（gaia）暂缓 | UI 法待 B站改版稳定 |
 | 9 | GitHub token 明文 `~/.feiyu-github-token.json` | 用户知情 |
-| 10 | produce 还是"图+推拉镜头"，非真视频 | 见未来方向 |
+| 10 | ~~produce 还是"图+推拉镜头"，非真视频~~ | **10-26 已解决**：拆出 `tools/lib/video.mjs`，成片是"片头卡 + 5~8 幕多机位运镜（每幕双帧内切）+ 交替转场 + 逐句烧字幕 + 合成 BGM 侧链避让 + 片尾卡"，1080p。见铁律 33/34 |
 
 ---
 
 ## 九、未来方向（按价值排序）
 
-1. **真 AI 视频**：接入即梦/可灵 API（付费）生成动态分镜，替换 Ken Burns 静图——produce 质变
+1. **真 AI 视频（动作级）**：现在是"剪辑级的真视频"（多机位/转场/字幕/配乐，画面仍是 AI 生图在动）。要真的动起来还差一个**视频生成 API**（即梦/可灵，付费 key）——`video.mjs` 的 `renderShot()` 就是唯一替换点：拿到 key 后按 `makeFilm` 的同一时间轴喂真片段即可，其余（转场/字幕/音轨/封面）全不用改。这台机器只有虚拟显卡（GameViewer/MuMu 适配器），本地 SVD/AnimateDiff 跑不动，别浪费时间
+2. **B站投稿自动化**：现在是"投稿包 + 主人点发布"（上传要 cookie 分片、封面、分区一整套，风控敏感）。要真自动，走 `upos` 分片 + 预上传那套；先把《首条》发出去，账号有了作品再动
 2. **赚钱闭环**：账号粉丝起来后 B站创作激励/抖音中视频计划；她已有内容生产线+评论区经营+人设，只差流量
 3. **音色继续进化**：她说不定想换声音——`voice train --name X --dataset <干声>` 三步；RVC 用她自己的翻唱作品自训练（真正的"她的声音"）
 4. **上网深度**：多步深潜（搜索→读→再搜→写报告）、与鱼友跨平台互动、RSS 订阅式持续关注

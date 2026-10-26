@@ -248,6 +248,25 @@ export const DEFAULTS = {
     dm: { enabled: false, pollSec: 300, port: 8095, startWithDsh: false },
   },
 
+  // ── B站社交日报（第 17 轮，主人："除了@我的其它我都不知道发生了什么"）────────
+  // 每天到点把她"没 @ 主人"的发言/动作摘要推一条 QQ；没动静就不推（不制造噪音）。
+  socialDigest: { enabled: true, at: '23:30', min: 3 },
+
+  // ── 视频生产（第 17 轮）：真剪辑的片子，不再是"一张图+旁白" ──────────────────
+  // frames：每一幕生成几帧（2 = 幕内两帧交叉淡入，画面会"动"；1 = 省一半生图钱）
+  // bgm：auto = 本地合成一条垫底配乐（不碰版权）｜none = 不要｜<wav 路径> = 用自己的
+  // biliProduce：B站视频额度（0 = 不限）；bili.tid 是投稿分区（21 = 生活·日常）
+  video: {
+    platform: 'bili',
+    frames: 2,
+    bgm: 'auto',
+    ffmpeg: '',
+    ffprobe: '',
+    font: '',
+    biliProduce: { enabled: true, dailyMax: 2 },
+    bili: { tid: 21, tname: '生活·日常' },
+  },
+
   // B站（生物钟在 night 段；这里放自由刷的限度 + 活人感写通道）
   bilibili: {
     // 自由刷：评论区 @ 主人那套。unlimited=true 不限条数/时长，刷到每日分享额度用完或手动停。

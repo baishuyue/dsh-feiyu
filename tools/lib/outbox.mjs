@@ -10,6 +10,11 @@ const HEADER = '# 大肥鱼 · B站发言台账\n\n> 她在 B站 公开说的每
 
 /** 记一条公开发言。kind: 评论|分享评论|回评|弹幕|动态|图片评论 */
 export function recordBili({ kind, title = '', bvid = '', to = '', text = '', extra = '' }) {
+  // ① 结构化流水（第 17 轮）：主人要能筛、能统计、能收到摘要
+  try {
+    const KIND_MAP = { 评论: 'comment', 分享评论: 'share', 回评: 'reply', 弹幕: 'danmaku', 动态: 'dynamic', 图片评论: 'imgComment' }
+    import('./social-log.mjs').then((s) => s.append({ kind: KIND_MAP[kind] || 'comment', bvid, title, to, text, extra })).catch(() => {})
+  } catch {}
   try {
     const now = new Date()
     const day = now.toLocaleDateString('sv-SE')

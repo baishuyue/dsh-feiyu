@@ -19,14 +19,24 @@ function actCount(kind) {
 }
 /** 0 = 不限（随便玩），>0 = 当日上限。 */
 export function capOk(kind, max) { return !(Number(max) > 0) || actCount(kind) < max }
-export function capRecord(kind) {
+/**
+ * 记一次动作。
+ * @param {string} kind like/coin/follow/danmaku/dyn/reply/imgComment
+ * @param {object} info {bvid,title,text,to,extra} —— 有就顺手记进社交流水（主人要看得见）
+ */
+export function capRecord(kind, info = {}) {
   const j = readActs()
   const fresh = j.day !== dayKey()
   // ⚠️ 展开顺序：旧值必须在前，新值在后 —— 以前写反了（...j 在后把刚 +1 的值又覆盖回去，账本永远 1）
   const next = fresh ? { day: dayKey(), [kind]: 1 } : { ...j, day: dayKey(), [kind]: Number(j[kind] ?? 0) + 1 }
   fs.mkdirSync(path.dirname(ACT_FILE), { recursive: true })
   fs.writeFileSync(ACT_FILE, JSON.stringify(next))
+  // 只说"动作"类（点赞/投币/关注/投稿）；"说话"类由 outbox.recordBili 记，避免一条事记两遍
+  if (SOCIAL_ACTION_KINDS.has(kind)) {
+    import('./social-log.mjs').then((s) => s.append({ kind, ...info, cfg: config() })).catch(() => {})
+  }
 }
+const SOCIAL_ACTION_KINDS = new Set(['like', 'coin', 'follow', 'video'])
 export const actStats = () => { const j = readActs(); return j.day === dayKey() ? j : {} }
 
 // ── 我的评论登记（回评论扫描用）───────────────────────────────────────────
@@ -156,7 +166,7 @@ export async function likeVideo(bvid, { go = false } = {}) {
   // "重复点赞"（code 65006）是幂等结果：已经赞过，当成功处理（不占当日额度）
   const dup = Number(j?.code) === 65006 || /重复/.test(String(j?.message ?? ''))
   const res = { ...okOf(j), ok: Number(j?.code) === 0 || dup }
-  if (res.ok && !dup) capRecord('like')
+  if (res.ok && !dup) capRecord('like', { bvid, title: info.title })
   return { ...res, why: res.ok ? (dup ? '已赞过（幂等）' : '已点赞') : `点赞失败 ${res.message}` }
 }
 
@@ -176,7 +186,7 @@ export async function coinVideo(bvid, { go = false, num = 1 } = {}) {
     return { ok: false, why: '投币暂不可用：B站 gaia 风控闸（接口/页内/UI 三层都拦），去 App 手动投吧' }
   }
   const res = okOf(j)
-  if (res.ok) capRecord('coin')
+  if (res.ok) capRecord('coin', { bvid, title: info.title, extra: num + ' 枚' })
   return { ...res, why: res.ok ? `已投 ${num} 枚` : `投币失败 ${res.message}` }
 }
 
@@ -230,7 +240,9 @@ export async function followUser(mid, { go = false } = {}) {
   if (cfg.enabled !== true) return { ok: false, why: 'bilibili.follow.enabled 是关的' }
   const cred = loadCred()
   const j = await formPost(cred, 'https://api.bilibili.com/x/relation/modify', { fid: String(mid), act: '1', re_src: '11' })
-  return { ...okOf(j), why: okOf(j).ok ? '已关注' : '关注失败 ' + j?.message }
+  const res = okOf(j)
+  if (res.ok) capRecord('follow', { url: 'https://space.bilibili.com/' + mid, title: 'mid ' + mid })
+  return { ...res, why: res.ok ? '已关注' : '关注失败 ' + j?.message }
 }
 
 // ── ⑥ 回评论扫描：别人回复了我的评论 → 交给上层 LLM 生成回复 ──────────────
