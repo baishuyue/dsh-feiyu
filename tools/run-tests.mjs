@@ -1,4 +1,4 @@
-﻿// run-tests —— 不依赖 npm 的测试跑轮（这台机器上 PATH 里没有 node/npm，
+// run-tests —— 不依赖 npm 的测试跑轮（这台机器上 PATH 里没有 node/npm，
 // `npm test` 跑不了，而她自己改完代码必须验证）。
 //
 //   node tools/run-tests.mjs            # 顺序跑全部 17 套，全绿退出 0
@@ -25,6 +25,7 @@ const TESTS = [
   'tts-sanitize-test.mjs',
   'focus-one-thing-test.mjs',
   'tts-reftext-test.mjs',
+  'voice-emotion-test.mjs',
   'web-shell-test.mjs',
   'recall-push-test.mjs',
   'imggen-test.mjs',

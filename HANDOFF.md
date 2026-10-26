@@ -228,6 +228,11 @@ locks/                  自由进程单实例锁
 21. **语音参考文本必须等于参考音频的转写（换音色必换）**：`voice.prompt_text` 和 `voice.ref_audio_path` 说的是两段话时，GPT-SoVITS 会把**参考文本一起念出来** —— 10-26 主人报"语音和视频里反复出现『说好等手伤痊愈了就一起打游戏』"，就是旧音色（银狼）的文本留在配置里、音频却换成了 yinlang。实测同一句 42 字：错文本 30.66 秒 / 对文本 8.62 秒。现在 `tts.mjs` 的 `refTextOf()` 以模型目录里同名 `.txt` 为准（配置是人手填的，容易忘），`selftest` 也会报不一致
 22. **推送 ≠ 对话**：她一次能连推 7 条【B站分享】，`recent()` 若照单全收，她回话时"最近聊过"全是自己的广播，真正的对话被挤出窗口（看起来像记忆错乱）。主动推送写记忆一律带 `{ kind: 'push' }`，`recent()` 在对话条数够（≥ 窗口一半且 ≥3）时把它滤掉；老数据用 `LEGACY_PUSH` 正则兜底
 23. **空壳页要当场报错**：`fetchWeb` 抓到知乎/微博那种"落地页模板"（"知乎，让每一次点击都充满意义…"）时正文为空，她以为读完了、下一轮又读同一页 —— 10-26 同一个知乎链接被读了 11 次。`shellPageReason()` 现在对模板页/登录墙/404/正文 <200 字直接报错，并把该链接从下轮候选里去掉
+24. **语音"没情感"是参数没调 + 抽奖，不是模型不行（三层在 `tts.mjs`）**：实测 F0 起伏（半音，人声参考 4.78）——
+    线上默认参数 **3.02**；只把 `text_split_method` 放成 `cut0` + `temperature 1.35` → **4.82**；但同参数连合 8 条落在 **3.51~5.20**（抽奖）。所以：**L0** = `cut0` + 温度按情绪 1.3~1.5 + **多合几条按 `prosody.py` 打分挑最像人的那条**（`voice.candidates`，默认 3）；`pick:'first'` 等于关掉择优。**不许**靠"放慢语速"提情绪（0.9 速反而更平 3.35）、也不许把温度拉到 1.5 又加大 top_k（崩到 2.99）
+25. **情绪要靠她自己说、参考段定天花板（L1/L2）**：她在回复最前面写 `[[撒娇]]`（`emotion.mjs` 的 9 种），`qq-server` 先剥标签再发（标签绝不能漏给主人；`[表情:开心]`/`[doge]` 这类正经表情码不许被误删），再按情绪取温度/语速/停顿。参考音频就是天花板（yinlang 4.78 → 输出 4.82；sunshine 3.45 → 输出 2.83），所以 `feiyu voice emo build` 造了 8 套情绪参考段（放 `~/.feiyu-ai/voice-emo/`），合成时**情绪段和默认段轮流上候选、由打分决定用谁**（A/B：情绪段合计 114.2 vs 默认 105.0，但只在生气/开心/撒娇稳赢，温柔/惊讶/害羞反而是默认段更好 —— 所以别写死"情绪段优先"）
+26. **一条语音别念一整段**：`splitVoiceParts()` 把回复切成 ≤2 条、每条 ≤60 字（`qq.voice_maxChars` / `qq.voice_parts`），没念完的照常当文字补发。真人发语音本来就这样，长段一次合成也天然更平
+27. **慢情绪别用平静的语速窗口判**：委屈/困本来就落在 3.4~6.0 字/秒，`emotion.mjs` 里每种情绪带 `rate` 窗口，`prosody.py` 按它判合格 —— 否则"合格"这一档会把正常的一条判死，择优退化成硬挑分数
 17. **git**：user baishuyue / `206720720+baishuyue@users.noreply.github.com`；推送走 Clash 7897（`env -u http_proxy … git -c http.proxy=… push`）
 
 ---
@@ -279,6 +284,7 @@ env -u http_proxy -u https_proxy -u HTTP_PROXY -u HTTPS_PROXY git -c http.proxy=
 
 # 常用命令
 "$NODE" tools/feiyu.mjs selftest / voice models / sing songs / sing cover "歌名"
+"$NODE" tools/feiyu.mjs voice emo list / voice emo build [--force] / voice emo test [--emotion 撒娇]
 "$NODE" tools/feiyu.mjs produce "主题" / douyin engage / replies --go
 "$NODE" tools/feiyu.mjs web log / selfup status
 
@@ -296,7 +302,7 @@ web-log.md（上网）/ bili-outbox.md（B站发言）/ selfup-log.md（自我�
 | 主人B站/QQ/抖音 | --友利奈绪-（mid 3493288510228945）/ 3082864371 / 朴昌范 |
 | 机器人QQ | 3796002846（皮卡皮卡） |
 | 唱歌音色 | feiyu-rose（当前）· feiyu-sunshine（备） |
-| 说话音色 | yinlang 银狼 w12（傲娇） |
+| 说话音色 | yinlang 银狼 w12（傲娇）· 情绪参考段 8 套在 `~/.feiyu-ai/voice-emo/`（撒娇/生气/委屈/困/开心/温柔/惊讶/害羞） |
 | 硅基 key | 在 config imageGen.api_key（赠金档：Qwen-Image-Edit-2509 + Qwen3-VL 可用） |
 
 ---

@@ -9,6 +9,7 @@ import { homePath } from './paths.mjs'
 import * as mood from './mood.mjs'
 import * as memory from './memory.mjs'
 import { stickerPrompt } from './stickers.mjs'
+import { emotionTagPrompt } from './emotion.mjs'
 import * as qqMemory from './qq-memory.mjs'
 import { hasPlaceholder, placeholderHint } from './normalize.mjs'
 import { gapText } from './timefix.mjs'
@@ -304,6 +305,13 @@ export function buildMessages({ platform = 'qq', userText, chatId, userId, turns
 
   // 表情层：颜文字随处可用；[表情:标签] 只有 QQ/微信 会真的发图
   parts.push(stickerPrompt(platform))
+
+  // 语气层（10-26）：语音曾经只有"略微的语气变化"—— 除了合成参数，还要她知道"现在是什么情绪"。
+  // 她自己在回复最前面打 [[撒娇]]，qq-server 剥掉标签、拿它挑语气和参考音色。只有能发语音的平台才教。
+  if (cfg.qq?.voice_enabled !== false) {
+    const vp = emotionTagPrompt(platform)
+    if (vp) parts.push(vp)
+  }
 
   // 群聊事实层：**必须最后**（模型对末尾指令权重最高）—— 谁在说话、主人是哪个号、
   // 这轮不许出现「主人」。前面 4700 字的记忆会把开头那条规则淹掉，这一块是兜底的。

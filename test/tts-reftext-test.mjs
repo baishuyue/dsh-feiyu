@@ -54,8 +54,8 @@ ok('空路径 → 空串', refTextOf('') === '')
 const tts = fs.readFileSync(path.join(REPO, 'tools', 'lib', 'tts.mjs'), 'utf8')
 ok('synth 会核对转写', tts.includes('refTextOf(refAudio)') && tts.includes('prompt = truth'))
 ok('参考文本不符会报一声', tts.includes('参考文本与'))
-ok('显式 override 仍然优先', tts.includes('override.prompt_text === undefined'))
-ok('配置里的旧值会被盖掉', tts.includes('if (override.prompt_text === undefined && prompt) body.prompt_text = prompt'))
+ok('显式 override 仍然优先（情绪三层重构后由 refPool 负责）', tts.includes('override.prompt_text ?? refTextOf('))
+ok('配置里的旧值会被盖掉（configRef 用转写当参考文本）', tts.includes('prompt_text: prompt, from: \'config\''))
 
 // ⑤ 顺带守住 GBK 清洗（语音 400 那个坑）
 ok('颜文字仍被洗掉', !sanitizeForTts('好 (・_・;)').includes('・'))

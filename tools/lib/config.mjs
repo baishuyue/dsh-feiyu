@@ -121,6 +121,8 @@ export const DEFAULTS = {
     at_only: true,                           // 群里只被 @ 才回；设 false = 群里所有消息都回（像私聊一样）
     voice_enabled: false,                    // 语音条开关
     voice_chance: 0.15,                      // 回复用语音的概率
+    voice_maxChars: 60,                      // 每条语音最多念多少字（真人发语音不会一口气念一大段）
+    voice_parts: 2,                          // 一条回复最多切几条语音，没念完的走文字
     stickerChance: 0.5,                      // 回复带图片表情的概率（摇中强制带一个，10-25）
     sing: true,                              // 唱歌开关（"唱一首"触发：LLM 写词+她的音色逐句+鼓点混音）
     qzone_enabled: false,                    // 发空间说说开关
@@ -190,6 +192,15 @@ export const DEFAULTS = {
     autoStartSovits: true,
     sovitsCmd: 'D:/GPT-SoVITS/.venv/Scripts/python.exe',
     sovitsScript: 'D:/GPT-SoVITS/api_v2.py',
+    // ---- 情绪三层（10-26：主人说"语音只有略微的语气变化，没有人类情感"）----
+    // L0 参数 + 择优
+    text_split_method: 'cut0',   // 不按标点切碎，保留跨句韵律（实测起伏 3.96 → 4.43）
+    candidates: 3,               // 一条语音合成几条候选、按韵律分挑最好的（1 = 关掉择优）
+    pick: 'best',                // best | first（first 等于关掉择优，快但会抽奖）
+    maxSynthPerMessage: 9,       // 单条消息最多调几次合成（长文本分块 × 候选数，别让它无限涨）
+    chunkChars: 80,              // 超过这么多字先分块再合成
+    chunkGapSec: 0.18,           // 分块之间的停顿（真人说话本来就有停顿）
+    python: '',                  // 韵律打分用的解释器，留空用 sovitsCmd（那边一定有 librosa）
   },
 
   // 抖音（social-auto-upload 发布）

@@ -165,7 +165,110 @@ export async function run(argv = []) {
     return
   }
 
-  console.log('用法：voice list | try --name | tryall | use --name | import --url --name --text')
+  if (sub === 'emo') {
+    // 情绪参考音色库（L2）：参考音频的起伏就是输出的天花板 —— 实测 yinlang（起伏 4.78）带出来的
+    // 语音 4.82；sunshine_girl（3.45）带出来只有 2.83。所以要给每种情绪准备一段"她自己的声音 +
+    // 有情绪的韵律"当参考。做法：用同一句话多合几条（温度调高），按韵律分挑最活的那条存下来。
+    const { EMOTIONS, emotionProfile } = await import('../lib/emotion.mjs')
+    const { scoreWavs } = await import('../lib/prosody.mjs')
+    const tts = await import('../lib/tts.mjs')
+    const act = argv[1] || 'list'
+    const EMO_DIR = tts.EMO_DIR()
+    const MANIFEST = tts.EMO_MANIFEST()
+    const readManifest = () => { try { return JSON.parse(fs.readFileSync(MANIFEST, 'utf8')) } catch { return {} } }
+
+    const CARRIERS = {
+      coquettish: '主人～人家等你等了好久嘛，你再不过来陪我，我可要生气了哦。',
+      angry: '你怎么又不吃饭啊！说过多少次了！本鱼是真的生气了，不管你了！',
+      wronged: '你都不理我……我等了一下午，饭也没吃，你就回我一句"忙"。',
+      happy: '诶！真的吗！那太好了啊，我这就去看看，等我回来跟你讲！',
+      sleepy: '嗯……好困啊，眼皮都抬不起来了，让我再躺一会儿……就一会儿。',
+      tender: '慢点吃啊，别急，锅里还有呢，我给你留着，凉了就不好吃了。',
+      surprise: '啊？你说什么？这事儿我怎么一点都不知道！你再说一遍？',
+      shy: '你别、别这样看我啦，我脸都热了，说不出话了……',
+    }
+
+    if (act === 'list') {
+      const j = readManifest()
+      const keys = Object.keys(j)
+      if (!keys.length) { console.log('还没有情绪参考音色。生成：node feiyu.mjs voice emo build'); return }
+      console.log(`情绪参考音色（${EMO_DIR}）：`)
+      for (const k of keys) {
+        const e = j[k]
+        const label = EMOTIONS[k]?.label || k
+        console.log(`  ${label.padEnd(4)} ${k.padEnd(12)} 起伏 ${String(e.sd ?? '?').padStart(5)}  音域 ${String(e.rng ?? '?').padStart(5)}  「${String(e.text || '').slice(0, 24)}」`)
+      }
+      console.log('试听：node feiyu.mjs voice emo test   重做：voice emo build --force')
+      return
+    }
+
+    if (act === 'test') {
+      const j = readManifest()
+      const probe = arg(argv, '--text') || '主人，我回来啦，今天想吃什么呀？'
+      const only = arg(argv, '--emotion')
+      const keys = Object.keys(j).filter(k => !only || k === only || EMOTIONS[k]?.label === only)
+      if (!keys.length) { console.error('没有可试听的情绪音色（先 voice emo build）'); process.exit(1) }
+      const dir = dataPath('voice', 'emo-test')
+      fs.mkdirSync(dir, { recursive: true })
+      for (const k of keys) {
+        try {
+          const f = await tts.synth(probe, path.join(dir, `${k}-${Date.now()}.wav`), { emotion: k, candidates: 3 })
+          console.log(`✓ ${EMOTIONS[k]?.label || k} → ${f}`)
+        } catch (e) { console.error(`✗ ${EMOTIONS[k]?.label || k} 失败：${e.message}`) }
+      }
+      console.log('目录：' + dir)
+      return
+    }
+
+    if (act === 'build') {
+      const force = argv.includes('--force')
+      const perEmo = Number(arg(argv, '--candidates') || 6)
+      const old = readManifest()
+      const manifest = { ...old }
+      console.log(`生成情绪参考音色：每种情绪合成 ${perEmo} 条候选，挑起伏最大的一条（参考段决定输出天花板）`)
+      for (const [key, line] of Object.entries(CARRIERS)) {
+        const label = EMOTIONS[key]?.label || key
+        if (!force && manifest[key]?.wav && fs.existsSync(manifest[key].wav)) { console.log(`  · ${label} 已有（--force 重做）`); continue }
+        const dir = path.join(EMO_DIR, key)
+        fs.mkdirSync(dir, { recursive: true })
+        const cands = []
+        try {
+          for (let i = 0; i < perEmo; i++) {
+            const f = path.join(dir, `cand-${i}.wav`)
+            // 造参考段要的是"韵律夸张"，温度往上放、不走情绪库（否则自己参考自己）
+            await tts.synth(line, f, {
+              candidates: 1, pick: 'first', temperature: 1.55, text_split_method: 'cut0',
+              ref_audio_path: config().voice?.ref_audio_path, prompt_text: undefined,
+            })
+            cands.push(f)
+          }
+          const scores = scoreWavs(cands.map(f => ({ path: f, chars: line.length })))
+          scores.sort((a, b) => (b.ok ? 1 : 0) - (a.ok ? 1 : 0) || b.score - a.score)
+          const top = scores[0]
+          if (!top) throw new Error('没有候选')
+          const keep = path.join(dir, 'ref.wav')
+          fs.copyFileSync(top.path, keep)
+          fs.writeFileSync(path.join(dir, 'ref.txt'), line, 'utf8')
+          for (const f of cands) if (f !== keep) { try { fs.rmSync(f, { force: true }) } catch {} }
+          manifest[key] = { wav: keep, text: line, sd: top.sd, rng: top.rng, score: top.score, ok: !!top.ok, builtAt: new Date().toISOString() }
+          console.log(`  ✓ ${label.padEnd(4)} 起伏 ${String(top.sd).padStart(5)} 音域 ${String(top.rng).padStart(5)} 分 ${String(top.score).padStart(6)}${top.ok ? '' : '（偏平，可 --force 重做）'}`)
+        } catch (e) {
+          console.log(`  ✗ ${label} 失败：${e.message}`)
+          for (const f of cands) { try { fs.rmSync(f, { force: true }) } catch {} }
+        }
+      }
+      fs.mkdirSync(EMO_DIR, { recursive: true })
+      fs.writeFileSync(MANIFEST, JSON.stringify(manifest, null, 2) + '\n', 'utf8')
+      console.log('清单：' + MANIFEST)
+      console.log('试听：node feiyu.mjs voice emo test')
+      return
+    }
+
+    console.log('用法：voice emo list | build [--force] [--candidates 6] | test [--emotion 撒娇] [--text …]')
+    return
+  }
+
+  console.log('用法：voice list | try --name | tryall | use --name | import --url --name --text | emo list/build/test')
 }
 
 if (process.argv[1] && process.argv[1].endsWith('voice.mjs')) {

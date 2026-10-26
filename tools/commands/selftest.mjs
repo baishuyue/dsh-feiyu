@@ -128,6 +128,22 @@ export async function run(argv = []) {
     else add('语音参考文本', true, `和参考音频对齐：「${(truth || configured).slice(0, 30)}」`)
   } catch (e) { add('语音参考文本', true, '跳过（' + String(e.message).slice(0, 40) + '）') }
 
+  // 情绪参考段（L2）：库在不在、文件有没有丢、起伏够不够 —— 参考段就是输出的天花板
+  try {
+    const { emotionRefs } = await import('../lib/tts.mjs')
+    const lib = emotionRefs()
+    const keys = Object.keys(lib)
+    if (!keys.length) {
+      add('情绪参考段', true, '还没建（可选：node feiyu.mjs voice emo build）—— 现在用默认音色 + 择优')
+    } else {
+      const missing = keys.filter((k) => !lib[k]?.wav || !fs.existsSync(lib[k].wav))
+      const flat = keys.filter((k) => Number(lib[k]?.sd) < 3.6)
+      if (missing.length) add('情绪参考段', false, `这些情绪段的音频丢了：${missing.join('/')} —— 重跑 voice emo build --force`)
+      else if (flat.length) add('情绪参考段', true, `${keys.length} 套可用；偏平的：${flat.join('/')}（会靠默认音色的候选兜底）`)
+      else add('情绪参考段', true, `${keys.length} 套可用：${keys.join('/')}`)
+    }
+  } catch (e) { add('情绪参考段', true, '跳过（' + String(e.message).slice(0, 40) + '）') }
+
   // ⑭ 抖音互动（douyin_interact.py + patchright 环境）
   let dyOk = false
   try { fs.accessSync('D:/social-auto-upload/douyin_interact.py'); fs.accessSync('D:/social-auto-upload/.venv/Scripts/python.exe'); dyOk = true } catch {}

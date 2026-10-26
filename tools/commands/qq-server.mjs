@@ -19,6 +19,7 @@ import { buildMessages, thinkingInstruction, addressesOwner } from '../lib/perso
 import { gapText, mentionsDays, sanitizeDayClaims } from '../lib/timefix.mjs'
 import { splitSticker, pickSticker, FACE_FALLBACK, ensureSelfSticker, autoTag } from '../lib/stickers.mjs'
 import { synth } from '../lib/tts.mjs'
+import { parseEmotionTag, splitVoiceParts, emotionProfile, emotionMenu } from '../lib/emotion.mjs'
 import { sing } from '../lib/sing.mjs'
 import { tickMood } from '../lib/mood.mjs'
 import { generateStickerImage } from '../lib/imggen.mjs'
@@ -336,6 +337,16 @@ export async function run(argv = []) {
       }
       if (!out) return
 
+      // 情绪标签（L1）：她会在回复最前面写 [[撒娇]] / [[情绪:委屈]] 之类，决定语音用哪种语气 + 参考音色。
+      // 标签本身绝不能发给主人 —— 这里就剥掉，同时把情绪记下来给语音用。
+      const emoTagged = parseEmotionTag(out)
+      const emotion = emoTagged.emotion
+      if (emotion) {
+        out = emoTagged.text
+        log(`[qq] 🎭 情绪标签「${emotionProfile(emotion).label}」→ 语音按这个语气合成`)
+        if (!out) return
+      }
+
       // 表情：文字和 [表情:标签] 拆开发（NapCat 图片段）
       let { text: body, tag, caption } = splitSticker(out)
       // 摇中了要发图、但她没写标记 → 按她自己那句话的情绪自动挑一个（10-25：光靠模型自觉，
@@ -383,27 +394,45 @@ export async function run(argv = []) {
       if (!verdict.ok) { logErr(`[qq] 拦下：${verdict.why}`); return }
       guard.commit(chatId, out)
 
-      // 语音 or 文字（语音失败一律降级文字，内容不丢）
-      let sent = false
-      if (QQ.voice_enabled && plain && Math.random() < (Number(QQ.voice_chance) || 0.15)) {
-        try {
-          const audio = await synth(plain)
-          const seg = { type: 'record', data: { file: audio } }   // NapCat 自动转 silk
-          sent = isGroup
-            ? await send('send_group_msg', { group_id: Number(groupId), message: [seg] })
-            : await send('send_private_msg', { user_id: Number(userId), message: [seg] })
-          if (sent) log(`[qq] 已发语音 → ${isGroup ? '群' + groupId : userId}`)
-        } catch (e) {
-          logErr(`[qq] 语音失败，降级文字：${e.message}`)
-          sent = false
-        }
-      }
       const target = isGroup
         ? { api: 'send_group_msg', key: 'group_id', id: Number(groupId) }
         : { api: 'send_private_msg', key: 'user_id', id: Number(userId) }
-      if (!sent) {
+      // 语音 or 文字（语音失败一律降级文字，内容不丢）
+      // 情绪化语音（10-26）：真人发语音从来不是一口气念完一整段 ——
+      //   ①一条回复最多切 2 条语音、每条 ≤60 字（长段一次合成也天然更平）
+      //   ②每条按她的情绪挑参考音色、多合几条挑最像人的那条（见 lib/tts.mjs 的 L0/L2）
+      //   ③没念完的部分照常当文字补发，内容一点不丢
+      let spokeParts = 0
+      let restText = plain
+      if (QQ.voice_enabled && plain && Math.random() < (Number(QQ.voice_chance) || 0.15)) {
+        const plan = splitVoiceParts(plain, {
+          maxChars: Number(QQ.voice_maxChars) || 60,
+          maxParts: Number(QQ.voice_parts) || 2,
+        })
+        for (let i = 0; i < plan.parts.length; i++) {
+          const line = plan.parts[i]
+          if (!line) continue
+          try {
+            const audio = await synth(line, undefined, { emotion })
+            const seg = { type: 'record', data: { file: audio } }   // NapCat 自动转 silk
+            const okOne = await send(target.api, { [target.key]: target.id, message: [seg] })
+            if (!okOne) break
+            spokeParts += 1
+            if (i + 1 < plan.parts.length) await new Promise(r => setTimeout(r, 500 + Math.random() * 700))
+          } catch (e) {
+            logErr(`[qq] 语音失败（剩下转文字）：${e.message}`)
+            break
+          }
+        }
+        if (spokeParts) {
+          restText = plan.rest || ''
+          log(`[qq] 已发 ${spokeParts} 条语音${emotion ? '（' + emotionProfile(emotion).label + '）' : ''}${restText ? '，剩余文字补发' : ''} → ${isGroup ? '群' + groupId : userId}`)
+        }
+      }
+      if (!spokeParts) restText = plain
+      if (restText) {
         // 像人一样分条发：一句一条，间隔几百毫秒到一秒多（不是机械固定）
-        const bubbles = splitBubbles(plain)
+        const bubbles = splitBubbles(restText)
         for (let i = 0; i < bubbles.length; i++) {
           if (i) await new Promise(r => setTimeout(r, 420 + Math.random() * 900))
           await send(target.api, { [target.key]: target.id, message: [{ type: 'text', data: { text: bubbles[i] } }] })
