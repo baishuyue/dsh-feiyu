@@ -66,6 +66,111 @@ export function probeDur(file, cfg = config()) {
   } catch { return 0 }
 }
 
+// ── 配音的"说话段"检测 / 剪静音 / 同步校验 ────────────────────────────────────
+// 为什么非要有这一段（10-26 主人报"字幕和语音没对上、漏了很多字"）：
+//   ① GPT-SoVITS 每条 wav 头尾各带 0.15~0.3s 静音 → 字幕按"wav 时长"排，字幕会比开口早
+//      一成秒；7 句排下来就成了"字幕先出、声音后到"。
+//   ② 同一个模型偶发"提前收尾"（13 个字只念 1.07 秒）→ 字幕还挂着，声音已经没了，
+//      看着就是"漏了很多字"。这两件事必须在剪辑前修掉，靠事后听是来不及的。
+/** 解码成 16k 单声道 Int16（分析用，别拿来做成品）。 */
+function pcm16(file, sr = 16000, cfg = config()) {
+  const buf = execFileSync(ffmpegBin(cfg), ['-v', 'quiet', '-i', file, '-ac', '1', '-ar', String(sr), '-f', 's16le', '-'],
+    { maxBuffer: 256 * 1024 * 1024, windowsHide: true })
+  return { sr, data: new Int16Array(buf.buffer, buf.byteOffset, Math.floor(buf.length / 2)) }
+}
+
+/** 10ms 窗包络（0~1）。 */
+function envelopeOf({ sr, data }, winSec = 0.01) {
+  const win = Math.max(1, Math.round(sr * winSec))
+  const env = []
+  for (let i = 0; i < data.length; i += win) {
+    let s = 0
+    const end = Math.min(i + win, data.length)
+    for (let j = i; j < end; j++) s += data[j] * data[j]
+    env.push(Math.sqrt(s / (end - i)) / 32768)
+  }
+  return env
+}
+
+/**
+ * 量"真正在说话"的那一段（首尾静音按峰值 6% 判）。
+ * @returns {{dur:number, on:number, off:number, peak:number, lead:number, tail:number}}
+ */
+export function speechSpan(file, cfg = config()) {
+  const pcm = pcm16(file, 16000, cfg)
+  const env = envelopeOf(pcm)
+  const peak = env.reduce((a, b) => Math.max(a, b), 0)
+  const th = peak * 0.06
+  let a = env.findIndex((v) => v > th)
+  if (a < 0) a = 0
+  let b = env.length - 1
+  while (b > a && env[b] <= th) b--
+  return {
+    dur: pcm.data.length / pcm.sr,
+    on: a * 0.01,
+    off: b * 0.01,
+    peak,
+    lead: a * 0.01,
+    tail: Math.max(0, (env.length - 1 - b) * 0.01),
+  }
+}
+
+/**
+ * 剪掉首尾静音，让"字幕出现"与"开口"落在同一时刻（前留 60ms 气口，后留 120ms 余音）。
+ * @returns {{file:string, dur:number, span:object}} dur = 修剪后的真实语音时长
+ */
+export function trimVoice(file, out, cfg = config()) {
+  const pcm = pcm16(file, 16000, cfg)
+  const span = speechSpan(file, cfg)
+  const from = Math.max(0, Math.floor((span.on - 0.06) * pcm.sr))
+  const to = Math.min(pcm.data.length, Math.ceil((span.off + 0.12) * pcm.sr))
+  const slice = pcm.data.subarray(from, to)
+  writeWavLocal(out, pcm.sr, slice)
+  return { file: out, dur: slice.length / pcm.sr, span }
+}
+
+/**
+ * 成片同步校验：把每条配音的包络放到成片音轨上滑一遍，找它真正落在哪。
+ * 这是"字幕和语音对不对得上"的机器判据 —— 人耳听一遍只能发现"好像不对"，
+ * 这里给出每句的偏差秒数，超过 0.3s 就该重剪。
+ * @returns {{i:number, expect:number, found:number, delta:number, score:number}[]}
+ */
+export function verifySync({ video, voices, timeline, spec, cfg = config(), winSec = 1.8 }) {
+  const mix = envelopeOf(pcm16(video, 8000, cfg), 0.02)      // 50Hz 包络
+  const out = []
+  for (const v of voices || []) {
+    const i = Number(v.index ?? 0)
+    const expect = Number(timeline.starts[i] ?? 0) + Number(spec.lead ?? 0)
+    let ve = envelopeOf(pcm16(v.file, 8000, cfg), 0.02)
+    // 配音包络裁到"有声段"，避免把静音也算进相关
+    const peak = ve.reduce((a, b) => Math.max(a, b), 0) || 1
+    let a = 0
+    while (a < ve.length && ve[a] < peak * 0.08) a++
+    let b = ve.length - 1
+    while (b > a && ve[b] < peak * 0.08) b--
+    ve = ve.slice(a, b + 1)
+    if (ve.length < 5) { out.push({ i, expect, found: NaN, delta: NaN, score: 0 }); continue }
+    const mean = ve.reduce((x, y) => x + y, 0) / ve.length
+    const vnorm = ve.map((x) => x - mean)
+    const venergy = Math.sqrt(vnorm.reduce((s, x) => s + x * x, 0)) || 1
+    const lo = Math.max(0, Math.round((expect - winSec) * 50))
+    const hi = Math.min(mix.length - ve.length, Math.round((expect + winSec) * 50))
+    let best = { score: -1, at: expect }
+    for (let lag = lo; lag <= hi; lag++) {
+      let dot = 0
+      let msum = 0
+      for (let k = 0; k < vnorm.length; k++) { dot += vnorm[k] * mix[lag + k]; msum += mix[lag + k] }
+      const mmean = msum / vnorm.length
+      let denom = 0
+      for (let k = 0; k < vnorm.length; k++) { const d = mix[lag + k] - mmean; denom += d * d }
+      const score = dot / (venergy * Math.sqrt(denom || 1))
+      if (score > best.score) best = { score, at: lag / 50 }
+    }
+    out.push({ i, expect: +expect.toFixed(2), found: +best.at.toFixed(2), delta: +(best.at - expect).toFixed(2), score: +best.score.toFixed(3) })
+  }
+  return out
+}
+
 // ── 平台规格 ────────────────────────────────────────────────────────────────
 export const PLATFORMS = {
   bili: { key: 'bili', label: 'B站', w: 1920, h: 1080, fps: 30, ov: 0.6, crf: 18, lead: 0.4, tail: 0.9, intro: 3.0, outro: 2.4 },
@@ -431,6 +536,23 @@ export async function makeFilm({ scenes, spec, text = {}, dir, opts = {}, log = 
   const clipsDir = path.join(dir, 'clips')
   fs.mkdirSync(clipsDir, { recursive: true })
 
+  // ⓪ 配音修剪：字幕跟"开口"对齐的前提。GPT-SoVITS 每条 wav 头尾各带 0.15~0.3s 静音，
+  //    不剪掉的话字幕会比声音早出来一成秒，句子一多就明显"对不上"。
+  if (opts.trimVoices !== false) {
+    scenes.forEach((sc, i) => {
+      if (!sc.voice || !fs.existsSync(sc.voice)) return
+      const out = path.join(dir, `voice-${i}.wav`)
+      try {
+        const r = trimVoice(sc.voice, out, cfg)
+        if (r.dur > 0.2) {
+          sc.voice = out
+          sc.voiceDur = r.dur
+          sc.trimmed = { raw: +r.span.dur.toFixed(2), lead: +r.span.lead.toFixed(2), tail: +r.span.tail.toFixed(2) }
+        }
+      } catch (e) { log(`  配音修剪失败（第 ${i + 1} 句，保持原样）：${String(e.message).slice(0, 50)}`) }
+    })
+  }
+
   const timeline = buildTimeline(scenes, spec, { intro: opts.intro, outro: opts.outro })
 
   // ① 片头 / 片尾卡
@@ -508,10 +630,22 @@ export async function makeFilm({ scenes, spec, text = {}, dir, opts = {}, log = 
   const dur = probeDur(final, cfg)
   log(`  成片 ✓ ${dur.toFixed(1)}s · ${(fs.statSync(final).size / 1024 / 1024).toFixed(1)}MB`)
 
+  // ⑧ 同步自检：把每条配音的包络拿到成片音轨上滑一遍，看它到底落在哪一句
+  let sync = []
+  try {
+    sync = verifySync({ video: final, voices, timeline, spec, cfg })
+    const worst = sync.reduce((a, b) => (Math.abs(Number(b.delta) || 0) > Math.abs(Number(a.delta) || 0) ? b : a), { delta: 0, i: -1 })
+    const w = Math.abs(Number(worst.delta) || 0)
+    if (!Number.isFinite(w)) log('  同步校验：这几句没测出来（配音太轻？）')
+    else if (w > 0.3) log(`  ⚠ 音画偏差 ${worst.delta}s（第 ${worst.i + 1} 句）—— 这条建议重剪`)
+    else log(`  同步 ✓ 最大偏差 ${w.toFixed(2)}s`)
+    fs.writeFileSync(path.join(dir, 'sync.json'), JSON.stringify(sync, null, 2))
+  } catch (e) { log('  同步校验跳过：' + String(e.message).slice(0, 60)) }
+
   if (!keep) {
     try { fs.rmSync(clipsDir, { recursive: true, force: true }) } catch {}
   }
-  return { final, timeline, dur, assPath }
+  return { final, timeline, dur, assPath, sync }
 }
 
 /** 依据场景自动挑"情绪/氛围"给 BGM（她累就 calm，开心就 bright）。 */

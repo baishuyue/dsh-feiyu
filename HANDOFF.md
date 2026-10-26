@@ -169,6 +169,10 @@ dsh-feiyu/
 - **BGM 本地合成**（正弦+三角泛音的和弦垫底 + 稀疏琶音，不碰版权），`sidechaincompress` 让"她一张嘴音乐就退"；
 - 封面单独一张（第一幕图 + 压暗 + 大标题 + 署名）；投稿包里有成片/封面/字幕/`meta.json`/`投稿说明.md`（B站 连"分区 tid / 标签 / 简介 / 发布时段"都给全）；
 - **发布点击仍归主人**：这里只出投稿包。`--frames 1` 省一半生图钱，`--bgm none` 不要配乐，`--dry` 只出策划。
+- **配音要验，不能念完就信**（10-26 主人报"字幕和语音没对上、漏了很多字"）：GPT-SoVITS 会给每条 wav 头尾各挂 0.15~0.3s 静音，而且偶发**提前收尾**（13 个字只念 1.07 秒 = 12.2 字/秒，人嘴做不到）。所以 `synthChecked()`（`tools/commands/produce.mjs`）合成完立刻量"真正说话段"的时长算 `字/秒`：`NICE_RATE [4.2,6.6]` 直接收；超出就换 `speed_factor 0.92/0.9 + cut5`、`temperature 1.25/1.35` 重念，最多 6 次；还不行就把句子**拆两半分别念再拼**。全程记 `tries`，凑合的会打 ⚠。
+- **剪静音是字幕对齐的前提**：`video.trimVoice()` 按峰值 6% 判首尾静音，前留 60ms 气口、后留 120ms 余音 → 存 `voice-N.wav`，时间轴用**修剪后的真实语音时长**。`makeFilm` 在 `buildTimeline` **之前**做这件事（顺序反了字幕就会早于声音）。
+- **同步自检**（`video.verifySync()`）：把每条配音的 50Hz 包络拿到成片音轨上滑一遍找最大相关，逐句给 `delta`，写进包的 `sync.json`；`>0.3s` 就报"建议重剪"。实测老片 0.14~0.38s（字幕抢跑），修完 0.01~0.06s。`selftest` 的「视频生产」会带一句"最近一条音画最大偏差"。
+- **`--reuse <包目录>` 重剪**：不重新策划、不重新生图，只重做配音+剪辑（图没毛病时重剪一次不该再花一次生图钱）。老包没 `plan.json` 会自动从 `meta.json` 反推台词表（`rebuiltFromMeta`）。
 
 **B站首条锁（`tools/lib/debut.mjs`）**：主人定了"第一条只能是自我介绍 + 今天第一天来B站 + 以后账号归她运营 + 自由发挥"。锁有三种状态（`~/.feiyu-ai/bili-debut.json`）：`pending` 没做过 → `ready` 投稿包就绪（**仍然锁着**）→ `posted` 已发布（解锁）。锁着的时候策划提示里带硬性要求，出来还要过一遍正则复查（缺哪条就重写，三次不成就不做）。发完跑 `feiyu produce --debut-posted BV号` 就自由了。
 
@@ -282,7 +286,8 @@ locks/                  自由进程单实例锁
 35. **首条视频是内容纪律，不是提醒**：`debut.mjs` 的锁（pending/ready/posted）把「介绍自己 + 今天第一天来B站 + 以后账号归她运营」写进策划提示，**并且**用正则复查剧本（缺哪条就重写，三次不成就不做）；`ready` 仍算锁着 —— 只有主人点过发布、跑 `produce --debut-posted BV号` 才解锁
 36. **她做了什么都得留痕（主人看不见 = 没发生）**：B站 发言走 `outbox.recordBili()` → 同时写 `bili-social.jsonl`；动作类（点赞/投币/关注/投稿）走 `capRecord(kind, {bvid,title})` 里的 `SOCIAL_ACTION_KINDS` 白名单。每条都标 `toOwner`，摘要和 `feiyu social` 默认先把"没 @ 他"的摊最上面 —— 那才是他漏掉的部分
 37. **字幕要验证"真烧进去了"**：ASS 生成正确 ≠ 画面有字。做法：同一时间点渲染"有字幕/无字幕"两版，比底部字幕带的白像素比例（实测 +3.1~3.4pt 才算有字）
-38. **git**：user baishuyue / `206720720+baishuyue@users.noreply.github.com`；推送走 Clash 7897（`env -u http_proxy … git -c http.proxy=… push`）
+38. **git**：user baishuyue / `206720720+baishuyue@users.noreply.github.com`；推送走 Clash 7897（`git -c http.proxy=http://127.0.0.1:7897 push`，先 `HTTPS_PROXY=127.0.0.1:7897` 探一下 GitHub 通不通 —— 通了再推，直连必被 reset）
+39. **配音必须过"字/秒"闸门，静音必须剪掉**（10-26 主人报"字幕和语音没对上、漏了很多字"，实测 7 句里 4 句被模型提前收尾到 8~12 字/秒）：`synthChecked()` 量真实说话段算字/秒，`[4.2,6.6]` 收、超窗换 `speed_factor/ temperature/cut5` 重念、最多 6 次、最后拆句拼；`trimVoice()` 把首尾静音剪掉（前 60ms 后 120ms），`makeFilm` 必须在 `buildTimeline` **之前**剪 —— 顺序反了字幕就抢跑。成片再说 `verifySync()` 逐句量偏差写 `sync.json`，>0.3s 就得重剪。
 
 ---
 

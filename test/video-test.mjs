@@ -355,6 +355,85 @@ await ok('配置：视频与社交日报的默认值都在（0 = 不限 / 23:30 
   assert.match(s, /socialDigest: \{ enabled: true, at: '23:30'/)
 })
 
+// ── ⑨ 配音对齐与漏字（10-26 主人报"字幕和语音没对上、漏了很多字"）────────────────
+// 造一条"0.3s 静音 + 1.0s 正弦 + 0.3s 静音"的 wav 当素材，验三件事：
+//   说话段测得准、剪完头尾干净、成片同步校验能把偏移算出来。
+const toneWav = path.join(SANDBOX, 'tone.wav')
+{
+  const sr = 16000
+  const n = Math.round(sr * 1.6)
+  const pcm = Buffer.alloc(n * 2)
+  for (let i = 0; i < n; i++) {
+    const t = i / sr
+    const live = t >= 0.3 && t < 1.3
+    pcm.writeInt16LE(live ? Math.round(Math.sin(2 * Math.PI * 440 * t) * 12000) : 0, i * 2)
+  }
+  const head = Buffer.alloc(44)
+  head.write('RIFF', 0, 'ascii'); head.writeUInt32LE(36 + n * 2, 4); head.write('WAVE', 8, 'ascii')
+  head.write('fmt ', 12, 'ascii'); head.writeUInt32LE(16, 16); head.writeUInt16LE(1, 20); head.writeUInt16LE(1, 22)
+  head.writeUInt32LE(sr, 24); head.writeUInt32LE(sr * 2, 28); head.writeUInt16LE(2, 32); head.writeUInt16LE(16, 34)
+  head.write('data', 36, 'ascii'); head.writeUInt32LE(n * 2, 40)
+  fs.writeFileSync(toneWav, Buffer.concat([head, pcm]))
+}
+
+await ok('说话段检测：头尾 0.3s 静音被认出来（on≈0.30 / off≈1.30）', () => {
+  const sp = V.speechSpan(toneWav)
+  assert.ok(Math.abs(sp.on - 0.3) <= 0.05, `on=${sp.on}`)
+  assert.ok(Math.abs(sp.off - 1.3) <= 0.05, `off=${sp.off}`)
+  assert.ok(Math.abs(sp.dur - 1.6) <= 0.01, `dur=${sp.dur}`)
+})
+
+await ok('剪静音：剪完约 1.18s（前留 0.06 气口 + 后留 0.12 余音），开口就在开头', () => {
+  const out = path.join(SANDBOX, 'tone.trim.wav')
+  const r = V.trimVoice(toneWav, out)
+  assert.ok(Math.abs(r.dur - 1.18) <= 0.06, `dur=${r.dur}`)
+  const sp = V.speechSpan(out)
+  assert.ok(sp.on <= 0.08, `剪完还有 ${sp.on}s 头静音`)
+  assert.ok(sp.tail <= 0.16, `剪完还有 ${sp.tail}s 尾静音`)
+})
+
+await ok('同步校验：配音挪进混音里能被算出来，偏差 ≤0.06s（能当机器判据用）', () => {
+  const mixFile = path.join(SANDBOX, 'mix.wav')
+  // 混音 = 整个 wav（含 0.3s 头静音）挪到 1.9s → 真正开口落在 1.9+0.3=2.2s
+  V.ff(['-i', toneWav, '-af', 'adelay=1900:all=1,apad=whole_dur=6', '-t', '6', mixFile])
+  const spec = V.specOf('bili')
+  // 期望开口 = starts[0] + lead = 1.8 + 0.4 = 2.2
+  const timeline = { starts: [1.8], intro: 0, outro: 0, ov: 0, durs: [3], clips: [] }
+  const r = V.verifySync({ video: mixFile, voices: [{ file: toneWav, index: 0 }], timeline, spec })
+  assert.equal(r.length, 1)
+  assert.ok(Math.abs(r[0].delta) <= 0.06, `delta=${r[0].delta}（找到 ${r[0].found}，期望 ${r[0].expect}）`)
+  assert.ok(r[0].score > 0.5, `相关系数只有 ${r[0].score}`)
+})
+
+await ok('漏字闸门：13 字念 1.07 秒 = 12.2 字/秒，必须被拦下来', () => {
+  assert.equal(P.speakChars('本鱼叫大肥鱼，住在主人电脑里。'), 13)
+  assert.equal(P.speakChars('规矩就一条：别叫本鱼胖，哼。'), 11)
+  assert.ok(13 / 1.07 > 7.0, '这条必须被判为离谱')
+  const s = read('tools/commands/produce.mjs')
+  assert.match(s, /CHARS_PER_SEC = \[2\.6, 7\.0\]/)
+  assert.match(s, /NICE_RATE = \[4\.2, 6\.6\]/)
+  assert.match(s, /export async function synthChecked/)
+  assert.match(s, /拆两句念/)          // 实在念不好就拆开念
+  assert.match(s, /finalize\(/)          // 选中的 take 落地，临时 take 清掉
+  assert.match(read('tools/lib/video.mjs'), /sc\.voiceDur = r\.dur/)  // 剪静音归 makeFilm
+})
+
+await ok('剪辑自洽：makeFilm 先剪静音再排时间轴，并把同步校验写进 sync.json', () => {
+  const s = read('tools/lib/video.mjs')
+  const iTrim = s.indexOf('trimVoices !== false')
+  const iTimeline = s.indexOf('const timeline = buildTimeline(scenes, spec, { intro: opts.intro')
+  assert.ok(iTrim > 0 && iTimeline > iTrim, '修剪必须在排时间轴之前')
+  assert.match(s, /sync\.json/)
+  assert.match(s, /sync = verifySync\(/)
+})
+
+await ok('重剪模式：--reuse 不重新生图，老包缺 plan.json 时能从 meta 反推', () => {
+  const s = read('tools/commands/produce.mjs')
+  assert.match(s, /--reuse/)
+  assert.match(s, /rebuiltFromMeta: true/)
+  assert.match(s, /画面 ♻ 沿用已有配图/)
+})
+
 // ── 收尾 ────────────────────────────────────────────────────────────────────
 const pass = results.filter((r) => r[0]).length
 for (const [good, name, err] of results) {

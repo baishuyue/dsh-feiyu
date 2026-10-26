@@ -18,6 +18,7 @@ import { config } from '../lib/config.mjs'
 import * as memory from '../lib/memory.mjs'
 import * as llm from '../lib/llm.mjs'
 import { synth } from '../lib/tts.mjs'
+import { concatWav } from '../lib/tts.mjs'
 import { dataPath } from '../lib/paths.mjs'
 import * as debut from '../lib/debut.mjs'
 import * as V from '../lib/video.mjs'
@@ -33,6 +34,96 @@ function hasFlag(argv, k) {
 }
 function probeDurOf(f) {
   try { return V.probeDur(f) } catch { return 0 }
+}
+
+// ── 配音：念一遍不够，得验一遍 ────────────────────────────────────────────────
+// 主人 10-26 报"字幕和语音没对上，漏了很多字"。实测那 7 句里有 4 句被 GPT-SoVITS
+// 提前收尾：13 个字只念 1.07 秒（12.2 字/秒，人嘴做不到），字幕还挂着、声音早没了。
+// 所以这里不是"合成完就用"，而是：量真实说话时长 → 算字/秒 → 不像人话就重合成
+// （换温度/换切分/换建议语速），实在不行把句子拆成两半分别念再拼起来。
+const CHARS_PER_SEC = [2.6, 7.0]     // 中文口播的合理区间（配她的情绪语速窗口，放宽一点）
+const NICE_RATE = [4.2, 6.6]         // 直接收下的"像人话"区间
+
+/** 去掉标点后的"实际要念的字数"。 */
+export function speakChars(line) {
+  return String(line || '').replace(/[^\u4e00-\u9fa5A-Za-z0-9]/g, '').length
+}
+
+/**
+ * 合成 + 校验 + 重试，返回 {file, dur, rate, tries, trimmed}。
+ * dur 是**剪掉首尾静音后的真实语音时长**（字幕就按它对齐）。
+ */
+export async function synthChecked(line, out, { log = console.log } = {}) {
+  const chars = speakChars(line)
+  const want = chars / 5.0                        // 期望时长（5 字/秒 ≈ 她的正常语速）
+  // 提前收尾的元凶多半是"语速太快/整句一口气" → 前几次专挑慢速+细切分去试
+  const tweaks = [
+    {},
+    { speed_factor: 0.92 },
+    { speed_factor: 0.9, text_split_method: 'cut5' },
+    { temperature: 1.25, speed_factor: 0.9 },
+    { temperature: 1.35, text_split_method: 'cut0', repetition_penalty: 1.25 },
+    { speed_factor: 0.85, temperature: 0.95 },
+  ]
+  // 选中的那条落地成 out（留一份原始，排查"为什么这句这么念"时有用），临时 take 一律清掉
+  const finalize = (tmp) => {
+    if (path.resolve(tmp) !== path.resolve(out)) fs.copyFileSync(tmp, out)
+    for (const f of fs.readdirSync(path.dirname(out))) {
+      if (!f.startsWith(path.basename(out) + '.')) continue
+      if (f === path.basename(out)) continue
+      try { fs.rmSync(path.join(path.dirname(out), f), { force: true }) } catch {}
+    }
+    return out
+  }
+  let fallback = null
+  for (const [k, tweak] of tweaks.entries()) {
+    const tmp = `${out}.try${k}.wav`
+    try {
+      await synth(line, tmp, { candidates: 2, ...tweak })
+    } catch (e) {
+      log(`    ✗ 第 ${k + 1} 次合成失败：${String(e.message).slice(0, 40)}`)
+      continue
+    }
+    const sp = V.speechSpan(tmp)
+    const dur = Math.max(0.2, sp.off - sp.on)
+    const rate = chars / dur
+    if (rate >= NICE_RATE[0] && rate <= NICE_RATE[1]) {
+      finalize(tmp)
+      log(`    配音 ✓ ${chars} 字 / ${dur.toFixed(2)}s（${rate.toFixed(1)} 字/秒，第 ${k + 1} 次）`)
+      return { file: out, dur, rate, tries: k + 1, span: sp }
+    }
+    const usable = rate >= CHARS_PER_SEC[0] && rate <= CHARS_PER_SEC[1]
+    if (usable && (!fallback || Math.abs(rate - 5) < Math.abs(fallback.rate - 5))) fallback = { tmp, dur, rate, sp }
+    log(`    配音偏了：${chars} 字 / ${dur.toFixed(2)}s = ${rate.toFixed(1)} 字/秒（第 ${k + 1} 次${usable ? '，先留着' : '，重来'}）`)
+  }
+
+  // 最后一招：拆两半念，再拼起来（提前收尾多是"一句太长/中途断气"引起的）
+  const parts = String(line).split(/(?<=[，。！？、；])/).filter((s) => s.trim())
+  if (parts.length >= 2) {
+    const mid = Math.ceil(parts.length / 2)
+    const a = parts.slice(0, mid).join('')
+    const b = parts.slice(mid).join('')
+    try {
+      const fa = `${out}.a.wav`
+      const fb = `${out}.b.wav`
+      await synth(a, fa, { candidates: 2 })
+      await synth(b, fb, { candidates: 2 })
+      concatWav([fa, fb], out, 0.12)
+      const sp = V.speechSpan(out)
+      const dur = Math.max(0.2, sp.off - sp.on)
+      const rate = chars / dur
+      if (rate >= CHARS_PER_SEC[0] && rate <= CHARS_PER_SEC[1]) {
+        log(`    配音 ✓ ${chars} 字 / ${dur.toFixed(2)}s（拆两句念，${rate.toFixed(1)} 字/秒）`)
+        return { file: finalize(out), dur, rate, tries: tweaks.length + 1, span: sp }
+      }
+      if (!fallback || Math.abs(rate - 5) < Math.abs(fallback.rate - 5)) fallback = { tmp: out, dur, rate, sp }
+      log(`    拆句重念还是偏（${rate.toFixed(1)} 字/秒）`)
+    } catch (e) { log('    ✗ 拆句合成失败：' + String(e.message).slice(0, 40)) }
+  }
+  if (!fallback) throw new Error('配音全部失败')
+  finalize(fallback.tmp)
+  log(`    ⚠ 这条只能凑合（${chars} 字 / ${fallback.dur.toFixed(2)}s，期望 ≈${want.toFixed(1)}s，${fallback.rate.toFixed(1)} 字/秒）`)
+  return { file: out, dur: fallback.dur, rate: fallback.rate, tries: tweaks.length + 1, forced: true, span: fallback.sp }
 }
 
 // ── 策划 ────────────────────────────────────────────────────────────────────
@@ -126,13 +217,53 @@ export async function run(argv = []) {
   }
 
   if (lockedDebut) console.log('🔒 首条还没发：这次只能做「自我介绍 + 第一天来B站 + 账号归我运营」')
-  console.log(`🎬 策划中（${spec.label} ${spec.w}×${spec.h} · ${frames} 帧/幕 · 她的真实兴趣选题）…`)
-  const plan = await makePlan({ topic, platform, lockedDebut })
-  const title = String(plan.title || 'untitled').slice(0, 40)
-  const slug = title.replace(/[\\/:*?"<>|\s]+/g, '').slice(0, 16) || String(Date.now())
-  const dir = path.join(V.postsDir(platform), `${dayKey}-${slug}`)
-  fs.mkdirSync(dir, { recursive: true })
+
+  // --reuse <包目录>：不重新策划、不重新生图，只重做配音和剪辑。
+  // 用途很实在：图没毛病但配音/字幕有问题时，重剪一次不该再花一次生图钱。
+  const reuseDir = argVal(argv, '--reuse', '')
+  let plan
+  let dir
+  let title
+  if (reuseDir) {
+    dir = path.resolve(reuseDir)
+    const planFile = path.join(dir, 'plan.json')
+    const metaFile = path.join(dir, 'meta.json')
+    if (fs.existsSync(planFile)) {
+      plan = JSON.parse(fs.readFileSync(planFile, 'utf8'))
+    } else if (fs.existsSync(metaFile)) {
+      // 老包里没有 plan.json（早期版本只写 meta）—— 用 meta 反推一个够用的策划：
+      // 重剪只用得到 title/台词/标签/简介，画面和分镜原样不动。
+      const m = JSON.parse(fs.readFileSync(metaFile, 'utf8'))
+      plan = {
+        title: m.title || 'untitled',
+        intro: m.intro || m.title || '',
+        tags: m.tags || [],
+        cover: m.title || 'untitled',
+        scenes: (m.scenes || []).map((line) => ({ acting: '', line, shot: '中' })),
+        outro: '明天见',
+        rebuiltFromMeta: true,
+      }
+      console.log('ℹ 这包是老版本（只有 meta.json），已从 meta 反推台词表')
+    } else {
+      console.error(`✗ 这包里既没有 plan.json 也没有 meta.json，没法重剪：${dir}`)
+      process.exit(1)
+    }
+    title = String(plan.title || 'untitled').slice(0, 40)
+    console.log(`♻ 重剪现有投稿包：${path.basename(dir)}`)
+    if (lockedDebut) {
+      const chk = debut.check(plan)
+      if (!chk.ok) { console.error(`✗ 这个包不满足首条要求（缺：${chk.missing.join('、')}），不能当首条`); process.exit(1) }
+    }
+  } else {
+    console.log(`🎬 策划中（${spec.label} ${spec.w}×${spec.h} · ${frames} 帧/幕 · 她的真实兴趣选题）…`)
+    plan = await makePlan({ topic, platform, lockedDebut })
+    title = String(plan.title || 'untitled').slice(0, 40)
+    const slug = title.replace(/[\\/:*?"<>|\s]+/g, '').slice(0, 16) || String(Date.now())
+    dir = path.join(V.postsDir(platform), `${dayKey}-${slug}`)
+    fs.mkdirSync(dir, { recursive: true })
+  }
   console.log(`选题：《${title}》· ${plan.scenes.length} 幕${plan.cover ? ` · 封面「${plan.cover}」` : ''}`)
+  fs.writeFileSync(path.join(dir, 'plan.json'), JSON.stringify(plan, null, 2))
   if (dry) {
     fs.writeFileSync(path.join(dir, 'plan.json'), JSON.stringify(plan, null, 2))
     console.log('（--dry：只出策划，不出片）'); return
@@ -145,25 +276,33 @@ export async function run(argv = []) {
     if (!line) continue
     console.log(`  [${i + 1}/${plan.scenes.length}] ${sc.acting || line}`)
     const img = path.join(dir, `img-${i}.jpg`)
-    try {
-      await shootScene({ acting: sc.acting || line, out: img })
-    } catch (e) {
-      console.log('    ✗ 配图失败（' + String(e.message).slice(0, 40) + '），这幕跳过'); continue
-    }
-    let img2 = ''
-    if (frames === 2) {
-      img2 = path.join(dir, `img-${i}b.jpg`)
+    let img2 = path.join(dir, `img-${i}b.jpg`)
+    if (reuseDir) {
+      // 重剪模式：图是现成的，只用管配音
+      if (!fs.existsSync(img)) { console.log('    ✗ 这幕没有图，跳过'); continue }
+      if (!fs.existsSync(img2) || fs.statSync(img2).size < 1024) img2 = ''
+      console.log('    画面 ♻ 沿用已有配图')
+    } else {
       try {
-        // 同一幕的第二帧：换个动作/表情 —— 幕内交叉淡入，画面就"活"了
-        await shootScene({ acting: `${sc.acting || line}（同一场景，换一个动作或表情，保持构图和光线一致）`, out: img2, seedNote: '这是同一镜头的第二帧。' })
-        if (!fs.existsSync(img2) || fs.statSync(img2).size < 1024) img2 = ''
-      } catch { img2 = '' }
+        await shootScene({ acting: sc.acting || line, out: img })
+      } catch (e) {
+        console.log('    ✗ 配图失败（' + String(e.message).slice(0, 40) + '），这幕跳过'); continue
+      }
+      if (frames === 2) {
+        try {
+          // 同一幕的第二帧：换个动作/表情 —— 幕内交叉淡入，画面就"活"了
+          await shootScene({ acting: `${sc.acting || line}（同一场景，换一个动作或表情，保持构图和光线一致）`, out: img2, seedNote: '这是同一镜头的第二帧。' })
+          if (!fs.existsSync(img2) || fs.statSync(img2).size < 1024) img2 = ''
+        } catch { img2 = '' }
+      } else img2 = ''
     }
     const wav = path.join(dir, `line-${i}.wav`)
-    try { await synth(line, wav) } catch (e) { console.log('    ✗ 配音失败，这幕跳过'); continue }
-    const voiceDur = probeDurOf(wav)
-    if (!voiceDur) { console.log('    ✗ 配音时长读不到，这幕跳过'); continue }
-    scenes.push({ img, img2, voice: wav, voiceDur, line, acting: sc.acting || '' })
+    let voice = null
+    try {
+      voice = await synthChecked(line, wav, { log: console.log })
+    } catch (e) { console.log('    ✗ 配音失败，这幕跳过：' + String(e.message).slice(0, 50)); continue }
+    if (!voice?.dur) { console.log('    ✗ 配音时长读不到，这幕跳过'); continue }
+    scenes.push({ img, img2, voice: voice.file, voiceDur: voice.dur, line, acting: sc.acting || '', rate: +voice.rate.toFixed(2), ttsTries: voice.tries })
   }
   if (scenes.length < 3) { console.error(`✗ 成片的幕数不够（只有 ${scenes.length} 幕），这次不做`); process.exit(1) }
 

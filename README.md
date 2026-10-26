@@ -273,15 +273,23 @@ QQ 收到消息 → 摇中 voice_chance → lib/tts.mjs POST 9880/tts
 
 ```
 produce ["主题"] [--platform bili|douyin] [--frames 1|2] [--bgm auto|none] [--dry]
+produce --reuse <已有投稿包目录>          # 图没毛病、只重做配音和剪辑（不再花生图钱）
   ① DeepSeek 出脚本/分镜（每幕：动作 + 台词 + 景别）
   ② 硅基 Qwen-Image-Edit 逐幕 2 帧配图（锁她的形象，同场景换个动作/表情）
-  ③ GPT-SoVITS 逐句念台词 → 量出每句真实时长，时间轴是算出来的，不猜
+  ③ GPT-SoVITS 逐句念台词 → **念完还得验**：量真实说话段的字/秒，离谱就换参数重念，
+     还不行拆成两句念再拼；最后把首尾静音剪掉 —— 字幕才和"开口"落在同一时刻
   ④ ffmpeg 真剪辑：片头卡 → 各幕运镜（推/拉/摇/移）+ 幕内双帧交叉淡入 + 幕间转场
      + 逐句 ASS 字幕烧制 + 本地合成 BGM（侧链避让人声）+ loudnorm 统一响度 → 1080p
-  ⑤ 封面单独一张；落地 ~/.feiyu-ai/{bili,douyin}-posts/<日期-标题>/
-     {img-*.jpg, voice-*.wav, subs.ass, video.mp4, cover.jpg, meta.json, 投稿说明.md}
-  ⑥ 停在这里 —— 她不能自己发，等你在面板点发布
+  ⑤ 成片再自检一遍音画同步（逐句量偏差写 sync.json，>0.3s 会喊"建议重剪"）
+  ⑥ 封面单独一张；落地 ~/.feiyu-ai/{bili,douyin}-posts/<日期-标题>/
+      {plan.json, img-*.jpg, line-*.wav(原始), voice-*.wav(剪过静音), subtitle.ass,
+       video.mp4, cover.jpg, sync.json, meta.json, 投稿说明.md}
+  ⑦ 停在这里 —— 她不能自己发，等你在面板点发布
 ```
+
+> 10-26 修过一回「字幕和语音没对上、漏了很多字」：模型会把 13 个字念成 1.07 秒（12 字/秒，
+> 人嘴做不到），还会给每条音频头尾挂 0.2~0.3 秒静音。现在前者被"字/秒"闸门拦下重念，后者在
+> 剪辑前剪掉，成片逐句偏差从 0.14~0.38 秒压到 0.01~0.06 秒。
 
 **B站首条锁**：第一条只能做「介绍自己 + 今天第一天来B站 + 以后这个账号归她运营 + 自由发挥」。
 剧本出来会被复查（缺哪条就重写，三次不成就不做），做完仍然锁着（`ready`）；你发完跑

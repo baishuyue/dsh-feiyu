@@ -5,6 +5,7 @@
 //   node feiyu.mjs selftest [--json]
 import fs from 'node:fs'
 import os from 'node:os'
+import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { configPath, dataPath, credentialsPath, WORK_DIR, diaryPath } from '../lib/paths.mjs'
 import { config } from '../lib/config.mjs'
@@ -185,7 +186,20 @@ export async function run(argv = []) {
     else if (!fontOk) add('视频生产', true, 'ffmpeg 就绪；但没找到中文字体，字幕会变方块（配 video.font 指一个 ttf）')
     else {
       const { locked, describe } = await import('../lib/debut.mjs')
-      add('视频生产', true, `${ff.split(/[\\/]/).pop()} · ${fps.w}×${fps.h} · 字幕/BGM/转场齐全；${locked() ? describe() : describe()}`)
+      // 最近一条成片的音画偏差（sync.json 由 makeFilm 逐句算：配音包络对齐到成片音轨上）
+      const syncNote = (() => {
+        try {
+          const root = V.postsDir('bili')
+          const dirs = fs.readdirSync(root).filter((d) => fs.existsSync(path.join(root, d, 'sync.json'))).sort()
+          if (!dirs.length) return ''
+          const last = dirs[dirs.length - 1]
+          const rows = JSON.parse(fs.readFileSync(path.join(root, last, 'sync.json'), 'utf8'))
+          const worst = rows.reduce((a, b) => (Math.abs(Number(b.delta) || 0) > Math.abs(Number(a.delta) || 0) ? b : a), { delta: 0 })
+          const w = Math.abs(Number(worst.delta) || 0)
+          return `；最近一条音画最大偏差 ${w.toFixed(2)}s${w > 0.3 ? ' ⚠ 建议重剪' : ''}`
+        } catch { return '' }
+      })()
+      add('视频生产', true, `${ff.split(/[\\/]/).pop()} · ${fps.w}×${fps.h} · 字幕/BGM/转场齐全${syncNote}；${describe()}`)
     }
   } catch (e) { add('视频生产', false, '视频模块起不来：' + String(e.message).slice(0, 80)) }
 
