@@ -15,7 +15,7 @@ import * as guard from '../lib/guard.mjs'
 import * as memory from '../lib/memory.mjs'
 import * as qqMemory from '../lib/qq-memory.mjs'
 import * as llm from '../lib/llm.mjs'
-import { buildMessages, thinkingInstruction } from '../lib/persona.mjs'
+import { buildMessages, thinkingInstruction, addressesOwner } from '../lib/persona.mjs'
 import { gapText, mentionsDays, sanitizeDayClaims } from '../lib/timefix.mjs'
 import { splitSticker, pickSticker, FACE_FALLBACK, ensureSelfSticker, autoTag } from '../lib/stickers.mjs'
 import { synth } from '../lib/tts.mjs'
@@ -279,6 +279,32 @@ export async function run(argv = []) {
       }
       const answer = await llm.chat(messages)
       let out = guard.clean(answer, config())
+      // 群聊认人硬保险（10-26）：prompt 已经写到"这一轮不许出现主人"，但 11:54 她还是照群友的要求
+      // 说了"主人早上好"。prompt 是软的，嘴是她的 —— 所以这里在出稿后再拦一道。
+      // 只拦"称呼用法"（addressesOwner），她在群里说"我只叫一个人主人"这种正确拒绝不许误伤。
+      // 只拦群聊，私聊不受影响（私聊本来就该叫主人）。
+      if (out && isGroup && String(userId) !== String(config().owner?.qq || '') && addressesOwner(out)) {
+        log(`[qq] ⚠ 群里把「主人」叫给群友（QQ ${userId}）了：「${out.slice(0, 30)}」→ 让她重写`)
+        try {
+          const retry = messages.slice()
+          retry[retry.length - 1] = {
+            role: 'user',
+            content: messages[messages.length - 1].content
+              + `\n\n【重写】你刚才那句「${out.slice(0, 40)}」是在叫对方「主人」，但他只是群友（QQ ${userId}）。`
+              + `重写这一条：一个字都不许出现"主人"。`,
+          }
+          const answer2 = await llm.chat(retry, { temperature: 0.8 })
+          const out2 = guard.clean(answer2, config())
+          if (out2) out = out2
+        } catch (e) { logErr('[qq] 群聊重写失败：' + e.message) }
+        if (addressesOwner(out)) {
+          // 还是叫了：把称呼就地拆掉（只动"主人"这个词，其余保留）
+          const fixed = out.replace(/(^|[，,。！!？?、\s])主人(?=$|[，,。！!？?、\s]|早|好|你|晚|再|睡|我|在)/g, '$1你')
+            .replace(/(晚安|早安|早上好|谢谢|再见|你好)\s*主人/g, '$1你')
+          log(`[qq] 仍旧叫主人 → 就地改掉：「${out.slice(0, 30)}」→「${fixed.slice(0, 30)}」`)
+          out = fixed
+        }
+      }
       // 兜底：真间隔不到一天，话里还冒出"消失四天/好几天没影" → 先让她重写一次，再不行就地掰正
       if (out && ownerGapMs < 24 * 3600_000 && mentionsDays(out)) {
         log(`[qq] 回复里编了天数（真实间隔 ${gapTxt}）：「${out.slice(0, 30)}」→ 让她重写`)
@@ -480,6 +506,9 @@ export async function run(argv = []) {
     log(`[qq] 监听 http://127.0.0.1:${port}/onebot`)
     log(`    NapCat WebUI → 网络配置 → HTTP 上报 → http://127.0.0.1:${port}/onebot（messagePostFormat=array）`)
     log(`    dryRun=${!!config().guard?.dryRun} · at_only=${QQ.at_only !== false} · voice=${!!QQ.voice_enabled} · napcat=${NAPCAT}`)
+    // 群聊认人护栏自检（10-26）：启动就把三件套的状态打出来 —— 换了代码却忘了重启时，
+    // 看这一行就知道跑的是哪一版，不用再猜"到底生效了没有"。
+    log(`    群聊认人护栏：事实块 + 剔旧错话 + 出稿拦截 = 已启用（主人号 ${String(config().owner?.qq || '').slice(0, 3)}***）`)
   })
 
   // ── 主动搭话引擎（B站同款自主性）：主人安静久了，带着由头主动开口 ──────────

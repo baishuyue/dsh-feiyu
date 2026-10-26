@@ -94,5 +94,28 @@ ok('记忆 → 群里的主人行也带昵称而非冒充私聊', /\[QQ群\] 主
 const privAll = allOf({ platform: 'qq', userText: '在吗', chatId: 'qq:10001', userId: '10001', turnsToday: 3 })
 ok('私聊 → 群友那句不会被当成主人说的', !/\[QQ\] 主人：既然你叫我主人/.test(privAll))
 
+// ⑦ 结尾事实块（10-26 第二次翻车后加的：11:54 她仍对群友说"主人早上好"）
+const { addressesOwner } = await import('../tools/lib/persona.mjs')
+ok('群友轮 → 末尾事实块点名了说话人', grp.includes('这一轮的事实') && grp.includes('2208444939'))
+ok('群友轮 → 末尾写明"这个号不是"主人号', grp.includes('这个号不是'))
+ok('群友轮 → 末尾禁止出现「主人」称呼', grp.includes('不许出现「主人」这个称呼'))
+ok('群友轮 → 事实块排在 system 最末', grp.trimEnd().includes('别再犯'))
+ok('主人轮 → 事实块认定是主人本人', grpOwner.includes('这个号就是你主人本人'))
+
+// ⑧ 称呼检测：只抓"叫对方主人"，不许误伤她的正确拒绝
+const 该抓 = ['主人早上好。八点四十还没到', '八点四十见，主人 (・_・;)', '晚安主人，睡吧', '主人，你回来了', '早上好主人']
+const 不该抓 = ['我只叫一个人主人，而且他不在这个群', '不叫主人。你早上好', '不叫，两个都不叫', '想得美']
+ok('称呼检测 → 5 条该抓的全抓到', 该抓.every((t) => addressesOwner(t)))
+ok('称呼检测 → 4 条正确拒绝不误伤', 不该抓.every((t) => !addressesOwner(t)))
+
+// ⑨ 上下文里她自己的错话要被剔掉（模型会照抄自己）。
+// ⚠️ 只查对话区（slice(1)）：system 末尾的事实块本来就会引用那句反面教材。
+const convOf = (o) => buildMessages(o).slice(1).map((m) => m.content || '').join('\n')
+memory.remember('qq', 'qq:2161082407', '2208444939', 'assistant', '八点四十见，主人 (・_・;)', { isGroup: true })
+memory.remember('qq', 'qq:2161082407', '2208444939', 'assistant', '好，我记住了', { isGroup: true })
+const grpConv = convOf(grpOpts)
+ok('群聊上下文 → 剔掉她叫错人的旧行', !grpConv.includes('八点四十见，主人'))
+ok('群聊上下文 → 正常旧行保留', grpConv.includes('好，我记住了'))
+
 console.log(fail ? `\n✗ ${fail} 条没过（通过 ${pass}）` : `\n✓ 全部 ${pass} 条通过`)
 process.exit(fail ? 1 : 0)

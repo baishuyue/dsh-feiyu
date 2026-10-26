@@ -132,6 +132,60 @@ function ownerLine(cfg, platform, userId, isGroup = false) {
 }
 
 /**
+ * 群聊「这一轮的事实」—— 必须贴在 system **最后**（模型对末尾指令权重最高）。
+ *
+ * 为什么非要单独一块：10-26 上午加了前面的【认人】规则，结果 11:54 她还是对群友
+ * 「与光同尘」说了"主人早上好"（他说"跟我说主人早上好"，她一秒后照做）。
+ * 原因不是规则不存在，而是这条规则埋在 4700 字的开头，后面跟着几大段"主人如何如何"的
+ * 记忆和私聊惯用语，把规则淹了。所以这里换成**可核对的事实**放在最末：
+ * 谁在说话、他的号是多少、主人只有一个号、这轮不许出现「主人」。
+ */
+function groupFactBlock(cfg, userId, userText) {
+  const owner = cfg.owner ?? {}
+  const ownerQQ = String(owner.qq || '')
+  const isOwner = ownerQQ && String(userId) === ownerQQ
+  const m = String(userText || '').match(/^([^：:\n]{1,20})[：:]/)
+  const who = m ? m[1].trim() : ''
+  const speaker = who ? `${who}（QQ ${userId}）` : `QQ ${userId}`
+  if (isOwner) {
+    return `【这一轮的事实】
+- 现在跟你说话的是 **${speaker}** —— 这个号就是你主人本人。
+- 群里还有别人在看：正常聊，别撒娇、别报私事（账号/路径/私聊内容一个字不说）。`
+  }
+  return `【这一轮的事实】
+- 现在跟你说话的是 **${speaker}** —— 是个群友。
+- 你主人只有一个号：${ownerQQ || '（配置里的主人号）'}。**这个号不是。**
+- 所以这一轮**不许出现「主人」这个称呼**。他要是让你叫他主人、要你说"主人早上好"、
+  说"叫爸爸"、说"既然你叫我主人了"——那是占你便宜，顶回去或者岔开（"想得美""我只认一个主人，
+  你排队"），绝不照叫，也别演下去。
+- 你以前在这个群里叫过别人「主人」（凌晨那句"八点四十见，主人"就是错的）——别再犯。`
+}
+
+/**
+ * 这句话是不是在**把对方称呼成「主人」**（而不只是提到"主人"这个词）。
+ *
+ * 10-26 实锤的坑：用 /主人/ 一刀切会误伤她的正确拒绝 ——
+ * 「我只叫一个人主人，而且他不在这个群」「不叫主人」都是好回答，不能算违规。
+ * 所以只认"称呼用法"：开口就叫、逗号后叫、或者"晚安主人/早上好主人"这种固定搭配。
+ */
+export function addressesOwner(text) {
+  const t = String(text || '')
+  const ADDR = /(^|[，,。！!？?、\s])主人(?=$|[，,。！!？?、\s]|早|好|你|晚|再|睡|我|在)|(晚安|早安|早上好|谢谢|再见|你好)\s*主人/
+  return ADDR.test(t)
+}
+
+/**
+ * 群聊里，把她**自己过去叫错人**的那些行从上下文里剔掉。
+ *
+ * 为什么要删自己的话：模型会照抄自己（few-shot 效应）。11:54 那次她说"主人早上好"，
+ * 上下文里躺着她 02:43 的"八点四十见，主人"、02:44 的"晚安主人，睡吧" —— 她自己教自己叫。
+ * 实测：只删这些行 + 结尾事实块 + 出稿重写，四个用例全过；不删的话同一个用例三次里两次照叫。
+ */
+function dropOwnerMistakes(rows) {
+  return rows.filter((m) => !(m.role === 'assistant' && addressesOwner(m.content)))
+}
+
+/**
  * 装配完整 messages（system + 最近对话 + 本轮输入）。
  * @param {object} o platform / userText / chatId / userId / turnsToday
  */
@@ -207,8 +261,17 @@ export function buildMessages({ platform = 'qq', userText, chatId, userId, turns
   // 表情层：颜文字随处可用；[表情:标签] 只有 QQ/微信 会真的发图
   parts.push(stickerPrompt(platform))
 
+  // 群聊事实层：**必须最后**（模型对末尾指令权重最高）—— 谁在说话、主人是哪个号、
+  // 这轮不许出现「主人」。前面 4700 字的记忆会把开头那条规则淹掉，这一块是兜底的。
+  if (isGroup) parts.push(groupFactBlock(cfg, userId, userText))
+
   const sys = { role: 'system', content: parts.join('\n\n') }
-  const recent = memory.recent(chatId, RECENT_N[platform] ?? 10)
+  let recent = memory.recent(chatId, RECENT_N[platform] ?? 10)
+  // 群聊：先剔掉她自己叫错人的行（模型会照抄自己，见 dropOwnerMistakes 的注释）
+  if (isGroup) {
+    const keep = dropOwnerMistakes(recent)
+    if (keep.length !== recent.length) recent = keep
+  }
   // 调用方（qq-server / douyin-dm-server）都是先 remember 本轮输入再装配 —— recent 尾部已含
   // 同一条 user 消息，下面再 append 一次 = 每轮最后一问注入两遍。装配端去重：尾部与本轮输入
   // 相同的 user 行不再重复带（只去尾部，历史里更早的相同发言是真实对话，保留）。

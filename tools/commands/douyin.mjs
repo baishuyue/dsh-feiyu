@@ -17,6 +17,7 @@ import { config } from '../lib/config.mjs'
 import { dataPath } from '../lib/paths.mjs'
 import * as memory from '../lib/memory.mjs'
 import { sanitizeFor } from '../lib/stickers.mjs'
+import { acquire } from '../lib/lock.mjs'
 
 function arg(argv, name) {
   const i = argv.indexOf(name)
@@ -38,7 +39,7 @@ function douyinDry(cfg) {
   return cfg.douyin?.dryRun !== false
 }
 
-function runPy(argv, cfg) {
+function runPy(argv, cfg, { soft = false } = {}) {
   const cmd = [scriptPath(cfg), ...argv, '--cookie', cookiePath(cfg)]
   try {
     return execFileSync(pyPath(cfg), cmd, { encoding: 'utf8', timeout: 300000, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
@@ -46,6 +47,8 @@ function runPy(argv, cfg) {
     // 失败时 python 的日志全在 stdout（[reply] ✗ … ），以前只打印 stderr → 空报错，白跑一次
     const out = String(e.stdout ?? '').trim().split('\n').filter(Boolean).slice(-6).join('\n')
     const err = String(e.stderr ?? '').trim().slice(-400)
+    // soft：调用方自己 try/catch（比如批量回复里某一条失败，不该把整轮干掉）
+    if (soft) throw new Error((out || err || ('exit ' + (e.status ?? '?'))).replace(/\s+/g, ' ').slice(0, 160))
     console.error(`✗ 抖音脚本失败（exit ${e.status ?? '?'}）${out ? '\n' + out : ''}${err ? '\n' + err : ''}`)
     process.exit(1)
   }
@@ -108,6 +111,10 @@ export function run(argv = []) {
   if (cmd === 'engage') {
     const eg = cfg.douyin?.engage ?? {}
     if (eg.enabled === false) { console.log('douyin.engage.enabled 是关的'); return }
+    // 单实例锁（10-26）：调度器 120 分钟一跑 + 手动跑，两个 engage 会各拿一份水位互相覆盖 ——
+    // 实测把 douyin-engage.json 写成只剩 2 个键（历史全丢，老评论会被当成新的重答一遍）。
+    const releaseEngage = acquire('douyin-engage')
+    if (!releaseEngage) { console.log('已有一个 douyin engage 在跑，这轮跳过（避免并发送重复回复）'); return }
     // --dry：只跑到"她打算回谁、回什么"就停，绝不发 —— 测试整条链路又不动真账号
     const dry = douyinDry(cfg) || argv.includes('--dry')
     const secUid = argv.includes('--owner')
@@ -135,16 +142,51 @@ export function run(argv = []) {
     const news = []
     for (const v of videos) {
       const cj = parseFeedJson(runPy(['comments', '--vid', v.vid], cfg))
-      for (const c of (cj.comments || [])) {
+      const rows = cj.comments || []
+      // 线程表：一级评论 cid → 它下面所有子回复（按时间正序）。
+      // 光有"最新那句"不够 —— 她会把一级评论当成一个没人理过的新问题重答一遍（10-26 实锤：
+      // 昨天 21:53 已经答过「蟹黄饭好吃吗」，今早 11:46 又答了一次）。所以要把整串对话一起给她。
+      const byParent = new Map()
+      for (const r of rows) {
+        if (!r.is_reply || !r.parent_cid) continue
+        if (!byParent.has(r.parent_cid)) byParent.set(r.parent_cid, [])
+        byParent.get(r.parent_cid).push(r)
+      }
+      for (const arr of byParent.values()) arr.sort((a, b) => Number(a.create_time || 0) - Number(b.create_time || 0))
+      // 她已经在这些串里答过话了 → 串里的一级评论不再是"待回"，只当上下文
+      const answeredParents = new Set()
+      for (const [pid, arr] of byParent) {
+        if (arr.some((r) => selfUid && String(r.user_sec_uid || '') === selfUid)) answeredParents.add(pid)
+      }
+      const selfSeenText = new Set()   // 她自己的回复原文，用于旧水位兼容（见下）
+      for (const r of rows) {
+        if (selfUid && String(r.user_sec_uid || '') === selfUid) selfSeenText.add(String(r.text || '').trim())
+      }
+      for (const c of rows) {
         if (!c.text) continue
         if (selfUid && String(c.user_sec_uid || '') === selfUid) continue   // 自己的回复不是"待办"
-        const key = v.vid + ':' + (c.cid || (String(c.user || '') + ':' + String(c.text).slice(0, 24)))
-        if (wm.seen.includes(key)) continue
+        const isReply = !!c.is_reply
+        // 一级评论：这串她已经答过 → 跳过（否则就是"同一个问题被答第二遍"）
+        if (!isReply && answeredParents.has(String(c.cid))) continue
+        // 水位双键（10-26）：旧的 seen 里是 `vid:用户:文本前24字`，新的是 `vid:cid`。
+        // 只认新键的话，迁移那一刻所有老评论都会被当成新评论重答一遍（11:46 那次重答就是这么来的）。
+        // 两个键都查、都记：代码怎么升级都不会把处理过的东西再翻出来。
+        const textKey = v.vid + ':' + String(c.user || '') + ':' + String(c.text || '').slice(0, 24)
+        const cidKey = v.vid + ':' + (c.cid || textKey)
+        if (wm.seen.includes(cidKey) || wm.seen.includes(textKey) || selfSeenText.has(String(c.text || '').trim())) continue
+        const thread = isReply
+          ? rows.filter((r) => String(r.cid) === String(c.parent_cid) || String(r.parent_cid) === String(c.parent_cid))
+          : []
         news.push({
           vid: v.vid, vdesc: v.desc, user: c.user, text: c.text, cid: c.cid || '',
-          isReply: !!c.is_reply, parentCid: c.parent_cid || '', key,
+          isReply, parentCid: c.parent_cid || '', key: cidKey, textKey,
+          thread: thread.map((r) => ({
+            user: r.user, text: r.text,
+            isMine: !!selfUid && String(r.user_sec_uid || '') === selfUid,
+            isReply: !!r.is_reply,
+          })),
         })
-        wm.seen.push(key)
+        wm.seen.push(cidKey, textKey)
       }
     }
     wm.seen = wm.seen.slice(-500)
@@ -157,18 +199,32 @@ export function run(argv = []) {
     const capRaw = Number(eg.dailyMax ?? 3)
     const cap = capRaw > 0 ? capRaw : Infinity
     console.log(`新评论 ${news.length} 条（最多回 ${cap === Infinity ? '不限' : cap} 条）：`)
-    for (const n of news) console.log('  ·', n.user, '：', n.text.slice(0, 40))
+    for (const n of news) {
+      console.log('  ·', n.user, n.isReply ? '（接上一轮）' : '', '：', n.text.slice(0, 40))
+      if (n.thread && n.thread.length) {
+        console.log('      串：', n.thread.map((t) => (t.isMine ? '你' : t.user) + '「' + String(t.text).slice(0, 16) + '」').join(' → '))
+      }
+    }
     // ③④ LLM 判断 + 执行（异步段）
     ;(async () => {
       const { chat } = await import('../lib/llm.mjs')
       const { buildMessages } = await import('../lib/persona.mjs')
       const built = buildMessages({ platform: 'douyin', userText: '', chatId: 'douyin:engage-self', userId: 'self' })
-      const list = news.slice(0, 10).map((n, i) => `${i + 1}. [${n.vdesc.slice(0, 12)}] ${n.user}${n.isReply ? '（接着上一轮说的）' : ''}：${n.text.slice(0, 50)}`).join('\n')
+      const renderThread = (n) => {
+        if (!n.thread || !n.thread.length) return ''
+        const parts = n.thread.map((t) => {
+          const who = t.isMine ? '你' : (t.user || '对方')
+          return `${who}「${String(t.text || '').replace(/\s+/g, ' ').slice(0, 40)}」`
+        })
+        return '\n   └ 这串已经聊到：' + parts.join(' → ')
+      }
+      const list = news.slice(0, 10).map((n, i) => `${i + 1}. [${n.vdesc.slice(0, 12)}] ${n.user}${n.isReply ? '（接你上一轮说的）' : ''}：${n.text.slice(0, 50)}${renderThread(n)}`).join('\n')
       const msgs = [
         built[0],
         { role: 'user', content: '【运营】这是你自己抖音作品评论区的新评论。你自己判断：哪几条值得回（提问/夸奖/有意思的接梗；杠精和广告不理）；回复要像作者本人：短、自然、有点自己的态度，别客服腔。'
-          + '注意这是**连续的对话**：同一个人可以聊好几个来回，接着他说的话往下聊（别重复上一轮你说过的），聊干了就别硬接。'
-          + `最多回 ${cap === Infinity ? '不限（但别硬凑，能接的才回）' : cap} 条。只输出 JSON：{"replies":[{"index":序号,"text":"回复内容"}]}，都不想回就 {"replies":[]}\n${list}` },
+          + '\n注意这是**连续的对话**，不是一堆孤立的新问题：带「这串已经聊到」的行，说明你和他已经来回聊过几轮 —— '
+          + '接着他这句往下聊，**别把整串重新回答一遍**（那是重复），也别重复你已经说过的句子；聊干了就 {"replies":[]} 不接，别硬凑。'
+          + `\n最多回 ${cap === Infinity ? '不限（但别硬凑，能接的才回）' : cap} 条。只输出 JSON：{"replies":[{"index":序号,"text":"回复内容"}]}，都不想回就 {"replies":[]}\n${list}` },
       ]
       let plan = { replies: [] }
       try {
@@ -194,16 +250,25 @@ export function run(argv = []) {
         try {
           // 有 cid 就走 cid 精确回复；子回复（isReply）走文本定位 —— 页面上那条回复是嵌在父评论里的，
           // 只有文本定位能点到它自己的「回复」按钮，publish 才会带 reply_to_reply_id（对方才收得到通知）。
+          // ⚠️ 注意 match 文本要剥掉 `[微笑]` 这类占位：接口返回的是文字占位，网页上是真 emoji，
+          // 不剥就必然「没找到匹配的评论」（10-26 实测踩到）。
+          const matchKey = String(n.text).replace(/\[[^\]]{1,8}\]/g, '').trim().slice(0, 18) || String(n.text).slice(0, 18)
           const out = n.isReply || !n.cid
-            ? runPy(['comment-reply', '--vid', n.vid, '--match', String(n.text).slice(0, 20), '--text', replyText, '--go'], cfg)
-            : runPy(['reply', '--vid', n.vid, '--cid', n.cid, '--message', replyText, '--go'], cfg)
+            ? runPy(['comment-reply', '--vid', n.vid, '--match', matchKey, '--text', replyText, '--go'], cfg, { soft: true })
+            : runPy(['reply', '--vid', n.vid, '--cid', n.cid, '--message', replyText, '--go'], cfg, { soft: true })
           console.log(out)
           memory.remember('douyin', `douyin:${n.vid}`, n.user, 'assistant', `（回复了 ${n.user} 的评论「${String(n.text).slice(0, 30)}」：${replyText}）`)
           wm.perUser.counts[uKey] = used + 1
           try { fs.writeFileSync(WM, JSON.stringify(wm)) } catch {}   // 每人每天的次数要落盘，不然重启就清零
           done++
           await new Promise((r2) => setTimeout(r2, 60000 + Math.random() * 60000))   // 回复间隔 1~2 分钟防风控
-        } catch (e) { console.log('  ✗ 回复失败：' + String(e.message).slice(0, 80)) }
+        } catch (e) {
+          console.log('  ✗ 回复失败：' + String(e.message).slice(0, 80))
+          // 失败必须把水位退回去（10-26）：水位在进异步段之前就落盘了，
+          // 不退回的话这次失败 = 这条评论永远不再尝试（她再也不会回这个人）。
+          wm.seen = wm.seen.filter((k) => k !== n.key && k !== n.textKey)
+          try { fs.writeFileSync(WM, JSON.stringify(wm)) } catch {}
+        }
       }
       console.log(`回复了 ${done} 条。`)
     })()

@@ -17,6 +17,7 @@ import json
 import os
 import random
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -651,8 +652,36 @@ async def cmd_comments(cookie_file: str, vid: str, out_file: str, headed: bool) 
         try:
             if COMMENT_API_MARK in resp.url and "json" in (resp.headers.get("content-type") or ""):
                 parse_comments(await resp.text())
+            # 10-26：子回复还有**独立接口** /comment/list/reply/。主页只回"最新 2~3 条预览"，
+            # 稍老一点的那句就被挤出预览（"给我也分一碗"就是这么消失的）。展开回复时页面会拉这个接口，
+            # 所以这里一起收 —— 结构同样是 {comments:[...]}，直接复用解析。
+            elif "/comment/list/reply/" in resp.url and "json" in (resp.headers.get("content-type") or ""):
+                parse_comments(await resp.text())
         except Exception:
             pass
+
+    async def expand_replies(page):
+        """把"展开 N 条回复 / 查看更多回复"全点开（10-26）。
+        不展开的话：① 老一点的子回复看不到；② 回复按钮根本不在 DOM 里 → 点不动（Locator.click 超时）。"""
+        clicked = 0
+        for _ in range(3):
+            try:
+                links = page.locator('text=/展开\\s*\\d+\\s*条回复|查看更多回复|展开更多/')
+                n = await links.count()
+            except Exception:
+                n = 0
+            if n == 0:
+                break
+            for i in range(min(n, 8)):
+                try:
+                    await links.nth(i).click(timeout=2500)
+                    clicked += 1
+                    await asyncio.sleep(1.2)
+                except Exception:
+                    continue
+            await asyncio.sleep(1.5)
+        if clicked:
+            log(f"[comments] 展开了 {clicked} 处回复")
 
     async with async_playwright() as pw:
         browser, context = await _launch(pw, headless=not headed)
@@ -665,6 +694,8 @@ async def cmd_comments(cookie_file: str, vid: str, out_file: str, headed: bool) 
         for _ in range(3):
             await page.mouse.wheel(0, 2000)
             await asyncio.sleep(1.5)
+        await expand_replies(page)
+        await asyncio.sleep(2)
         await browser.close()
     # 接口会分页多次回调，同一个 cid 可能来两遍 —— 按 cid 去重（没有 cid 的按文本+作者去重）
     uniq, seen = [], set()
@@ -1004,8 +1035,31 @@ async def cmd_comment_reply(cookie_file: str, vid: str, match_text: str, reply_t
                     await page.mouse.wheel(0, 1500)
                     await asyncio.sleep(1.5)
                 n = await items.count()
+            # 10-26：先把折叠的"展开 N 条回复"点开 —— 子回复不展开时，它自己的「回复」按钮
+            # 压根不在 DOM 里，点它必然 Locator.click 超时（"给我也分一碗"就是这么失败两次的）。
+            for _ in range(3):
+                try:
+                    links = page.locator('text=/展开\\s*\\d+\\s*条回复|查看更多回复|展开更多/')
+                    ln = await links.count()
+                except Exception:
+                    ln = 0
+                if ln == 0:
+                    break
+                for i in range(min(ln, 8)):
+                    try:
+                        await links.nth(i).click(timeout=2500)
+                        await asyncio.sleep(1.2)
+                    except Exception:
+                        continue
+                await asyncio.sleep(1.5)
+            n = await items.count()
             target = None
-            key = match_text.strip()[:18]
+            # ⚠️ 接口返回的评论文本里，emoji 是 `[微笑]` 这种文字占位，网页 DOM 上是真 emoji ——
+            # 不剥掉必然「没找到匹配的评论」（10-26 实测踩到）。两边都剥，再取前缀比对。
+            import re as _re
+            key = _re.sub(r"\[[^\]]{1,8}\]", "", match_text or "").strip()[:18]
+            if not key:
+                key = (match_text or "").strip()[:18]
             best_len = None
             for i in range(min(n, 40)):
                 el = items.nth(i)
@@ -1030,17 +1084,87 @@ async def cmd_comment_reply(cookie_file: str, vid: str, match_text: str, reply_t
                 return 0
             await target.hover(timeout=5000)
             await asyncio.sleep(1)
-            btn = target.locator('div[data-e2e="comment-reply"], [class*="reply"]').first
+            # 10-26 实测的 DOM：「回复」触发器是 <div class="LJU9cDNW">回复</div> —— 类名是哈希的，
+            # 而且**根本没有 data-e2e="comment-reply"**。原来那个选择器等不到元素，必然
+            # Locator.click 超时（连续两次真发失败都是这个原因）。改成三级回落：
+            # data-e2e（老版页面）→ 哈希类名 → 条目内文本严格等于「回复」。
+            btn = None
+            for sel in ('[data-e2e="comment-reply"]', 'div.LJU9cDNW'):
+                try:
+                    cand = target.locator(sel).first
+                    if await cand.count() > 0:
+                        btn = cand
+                        break
+                except Exception:
+                    continue
+            if btn is None:
+                try:
+                    cand = target.get_by_text("回复", exact=True).first
+                    if await cand.count() > 0:
+                        btn = cand
+                except Exception:
+                    pass
+            if btn is None:
+                raise RuntimeError("这条评论上找不到「回复」按钮（DOM 可能又变了）")
             await btn.click(timeout=6000)
             await asyncio.sleep(1.5)
-            editor = page.locator('.editor-kit-container[contenteditable="true"]').last
-            await editor.click(timeout=6000)
-            await editor.type(reply_text, delay=90)
+            # 10-26 实测：评论区点开「回复」后弹出来的是 **DraftJS** 编辑器
+            # <div class="notranslate public-DraftEditor-content" contenteditable="true">
+            # —— 私信那套 .editor-kit-container 在这儿根本不存在，所以原来每次都超时。
+            # 坑中坑：这个节点存在、但 Playwright 有时判定它"不可见"（弹层动画/0 高度），
+            # 用 wait_for(visible) 会白等到超时。所以改成：只等 attached，点它一次（失败就算了），
+            # 然后用**键盘**直接打字 —— DraftJS 弹出来时本来就自己持有焦点。
+            editor = None
+            # 轮询等编辑器出现（10-26）：实测点完「回复」后输入框**要 30~40 秒**才渲染（实测 35s 才出来），
+            # 固定 8s 的 wait_for 必超时；诊断时它已经在了，就是"等太短"。所以每 0.4s 探一次，最长 60s。
+            命中 = None
+            for _try in range(150):
+                for sel in ('div.public-DraftEditor-content[contenteditable="true"]',
+                            '.editor-kit-container[contenteditable="true"]',
+                            '[contenteditable="true"]'):
+                    try:
+                        # ⚠️ 不要用 .last：patchright 这一版里 `page.locator(sel).last.count()`
+                        # 恒为 0，而同一个选择器 `.count()` 是 1 —— 就是这个把回复卡死了 6 次。
+                        # 用 count + nth(cnt-1) 取"最后一个"。
+                        cnt = await page.locator(sel).count()
+                        if _try % 15 == 0:
+                            log(f"[comment-reply] 探测 t={_try * 0.4:.1f}s {sel} → {cnt}")
+                        if cnt > 0:
+                            editor = page.locator(sel).nth(cnt - 1)
+                            命中 = sel
+                            break
+                    except Exception as _e:
+                        if _try % 15 == 0:
+                            log(f"[comment-reply] 探测异常 {sel} → {str(_e)[:100]}")
+                        continue
+                if editor is not None:
+                    break
+                await asyncio.sleep(0.4)
+            if editor is not None:
+                log(f"[comment-reply] 输入框就绪（{命中}，等了约 {_try * 0.4:.1f}s）")
+            if editor is None:
+                try:
+                    cnt = await page.locator('[contenteditable="true"]').count()
+                    shot = str(Path(tempfile.gettempdir()) / "douyin-reply-nofield.png")
+                    await page.screenshot(path=shot)
+                    log(f"[comment-reply] 诊断：contenteditable={cnt} 截图={shot}")
+                except Exception as _e:
+                    log(f"[comment-reply] 诊断失败：{_e}")
+                raise RuntimeError("点开回复后没等到输入框（DraftJS/DM 两套选择器都不匹配）")
+            # 不要 click：这个输入框挂着弹层动画，Playwright 判定"不可稳定点击"就超时（实测 6s 超时）。
+            # 直接把焦点交给它再打字 —— DraftJS 是 contenteditable，聚焦即接管键盘。
+            try:
+                await editor.evaluate("el => { el.focus(); const r = document.createRange(); r.selectNodeContents(el); r.collapse(false); const s = window.getSelection(); s.removeAllRanges(); s.addRange(r); }")
+            except Exception as _e:
+                log(f"[comment-reply] 聚焦失败，改用直接打字：{str(_e)[:80]}")
+            await asyncio.sleep(0.6)
+            await page.keyboard.type(reply_text, delay=90)
+            await asyncio.sleep(0.5)
             await page.keyboard.press("Enter")
             await asyncio.sleep(4)
             log(f"✓ 已回复评论「{key}」：{reply_text[:40]}")
         except Exception as e:
-            log(f"✗ 回复评论失败：{str(e)[:150]}")
+            log(f"✗ 回复评论失败：{str(e)[:400]}")
             try:
                 await browser.close()
             except Exception:
