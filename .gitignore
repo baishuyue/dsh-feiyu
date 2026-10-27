@@ -11,3 +11,6 @@ preview/
 # Python 编译缓存（测试/自检会生成，别进仓库）
 __pycache__/
 *.pyc
+
+# 一次性脚本（别进仓库）
+tmp-*.mjs
