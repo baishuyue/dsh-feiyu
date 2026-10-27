@@ -393,6 +393,30 @@ await ok('剪静音：剪完约 1.18s（前留 0.06 气口 + 后留 0.12 余音�
   assert.ok(sp.tail <= 0.16, `剪完还有 ${sp.tail}s 尾静音`)
 })
 
+await ok('剪静音不能毁音质：输出必须是原声的波形，不是 ±1 的方波（10-27 真凶）', () => {
+  // 这是主人报了一周的"电音机械音"的根：writeWavLocal 把 Int16Array 当 float 压成 ±1 再乘 32767，
+  // 整条配音只剩 3 个取值（-32767 / 0 / +32767）—— 满幅方波，听起来就是电音。
+  const out = path.join(SANDBOX, 'tone.trim2.wav')
+  V.trimVoice(toneWav, out)
+  const b = fs.readFileSync(out)
+  const set = new Set()
+  for (let k = 44; k + 1 < b.length; k += 2) set.add(b.readInt16LE(k))
+  assert.ok(set.size > 200, `不同取值只有 ${set.size} 个 —— 又被量化成方波了`)
+  // 峰值不能顶到满幅（±1 方波必然满幅）
+  let peak = 0
+  for (let k = 44; k + 1 < b.length; k += 2) peak = Math.max(peak, Math.abs(b.readInt16LE(k)))
+  assert.ok(peak < 32000, `峰值 ${peak} 顶到满幅了`)
+})
+
+await ok('只重做音轨：makeFilm 支持 reuseVisual，且时间轴对不上会自动重渲染', () => {
+  const s = read('tools/lib/video.mjs')
+  assert.match(s, /opts\.reuseVisual/)
+  assert.match(s, /Math\.abs\(probeDur\(visualFile, cfg\) - timeline\.total\) <= 0\.2/)
+  const p = read('tools/commands/produce.mjs')
+  assert.match(p, /reuseVisual: reAudio/)
+  assert.match(p, /hasFlag\(argv, '--reaudio'\)/)
+})
+
 await ok('同步校验：配音挪进混音里能被算出来，偏差 ≤0.06s（能当机器判据用）', () => {
   const mixFile = path.join(SANDBOX, 'mix.wav')
   // 混音 = 整个 wav（含 0.3s 头静音）挪到 1.9s → 真正开口落在 1.9+0.3=2.2s
@@ -419,14 +443,17 @@ await ok('漏字闸门：13 字念 1.07 秒 = 12.2 字/秒，必须被拦下来'
   assert.match(read('tools/lib/video.mjs'), /sc\.voiceDur = r\.dur/)  // 剪静音归 makeFilm
 })
 
-await ok('音色护栏：合成时一律不改 speed_factor / temperature（改了就是"电音、不是她的声音"）', () => {
+await ok('音色护栏：配音把 speed_factor 钉死 1.0、温度钉死 1.0（改一点就是变调/电音）', () => {
   const s = read('tools/commands/produce.mjs')
   // 只看配音那一段（从注释块到"策划"分界），策划用的 LLM 温度不算
   const voiceSeg = s.slice(s.indexOf('// ── 配音'), s.indexOf('// ── 策划'))
   assert.ok(voiceSeg.length > 500, '配音段落没找到')
   const code = voiceSeg.split('\n').filter((l) => !l.trim().startsWith('//')).join('\n')
-  assert.equal(code.includes('speed_factor'), false, '配音路径里不许出现 speed_factor（重采样=变调=电音）')
-  assert.equal(/temperature\s*:/.test(code), false, '配音路径里不许改 temperature')
+  // 10-27 之前这里是"别出现 speed_factor"——其实 slowdown 从情绪档案偷偷进来（wronged 0.95），
+  // 那就是 5% 重采样 = 降 0.9 个半音 = "不是她的声音"。现在改成**显式钉死**：
+  assert.match(code, /speed_factor:\s*1\.0/, '配音必须显式钉 speed_factor: 1.0')
+  assert.equal(/prof\.speed|prof\.temperature/.test(code), false, '不许让情绪档案改语速/温度')
+  assert.match(code, /videoTemperature \?\? 1\.0/, '温度默认必须是模型自己的 1.0')
   // 视频统一一个情绪参考（音高才稳），允许 voice.videoEmotion 改
   assert.match(s, /config\(\)\.voice\?\.videoEmotion/)
   assert.match(s, /emotion: emo/)
@@ -445,6 +472,21 @@ await ok('参考段体检：文本配不上音频的参考会被认出来（这�
   assert.equal(good.ok, true, `配比 ${good.ratio} 应该是合格的`)
 })
 
+await ok('参考段体检（10-27 修正）：留白不算进配比 —— 音声剪出来的参考段不能被误杀', () => {
+  const padded = path.join(SANDBOX, 'ref-padded.wav')
+  // 3.6s 静音 + 2.55s 有声 ≈ bingjiao2.wav 的真实形状（6.19s 里 3.64s 是静音）
+  V.ff(['-f', 'lavfi', '-i', 'sine=frequency=300:duration=2.55', '-af', 'adelay=3600|3600',
+    '-t', '6.2', '-ar', '32000', '-ac', '1', padded])
+  // 11 个字配 2.55s 的语音段 = 正常语速 → 必须合格（旧算法按整段 6.19s 算会判 2.59 不合格）
+  const r = T.refSanity(padded, '是第一次看你这个样子呢。')
+  assert.equal(r.ok, true, `配比 ${r.ratio}（语音段 ${r.speech}s）不该判不合格`)
+  assert.ok(r.speech > 2.2 && r.speech < 3.0, `语音段量成了 ${r.speech}s，静音没剪掉`)
+  assert.ok(r.ratioFile > 1.8, `整段配比 ${r.ratioFile} 才是旧算法的坑`)
+  // 但闸门不能因此变瞎：同一段音频配 4 个字的文本 → 语音段太长，照样拦下来
+  const short = T.refSanity(padded, '本鱼来啦')
+  assert.equal(short.ok, false, `配比 ${short.ratio} 应该不合格`)
+})
+
 await ok('参考池兜底：默认参考不合格时自动换成她的情绪参考段（嗓子不变）', () => {
   const s = read('tools/lib/tts.mjs')
   assert.match(s, /export function refSanity/)
@@ -454,6 +496,10 @@ await ok('参考池兜底：默认参考不合格时自动换成她的情绪参�
   const body = s.slice(iPool, iRaw)
   assert.match(body, /refSanity\(p\.ref_audio_path, p\.prompt_text\)\.ok/)
   assert.match(body, /emo-fallback/)
+  // 一句话一个音色：候选共用一条参考段，不许多条轮换
+  assert.match(body, /return \[good\[0\]\]/, '合格的参考段只留第一条')
+  assert.match(body, /bestEmotionRef\(/, '兜底也只挑一条')
+  assert.equal(body.includes('.flat()'), false, '不许把整库 8 条都丢进候选池')
 })
 
 await ok('句尾能量比：突然截断的尾巴比自然收束更"响"（辅助判据）', () => {
@@ -489,6 +535,91 @@ await ok('重剪模式：--reuse 不重新生图，老包缺 plan.json 时能从
   assert.match(s, /--reuse/)
   assert.match(s, /rebuiltFromMeta: true/)
   assert.match(s, /画面 ♻ 沿用已有配图/)
+})
+
+const R = await import('../tools/lib/refclean.mjs')
+await ok('参考段清洗（10-27）：中间的 2s 死空气被挤掉，首尾静音不留，文本跟着走', () => {
+  const src = path.join(SANDBOX, 'ref-hole.wav')
+  // 构造：0.3s 静音 + 0.5s 说话 + 2.0s 死空气 + 0.5s 说话 + 0.3s 静音（用 concat 拼，别用 filter 图）
+  const seg = (name, dur, args) => {
+    const f = path.join(SANDBOX, name)
+    V.ff([...args, '-t', String(dur), '-ar', '32000', '-ac', '1', f])
+    return f
+  }
+  const parts = [
+    seg('s1.wav', 0.3, ['-f', 'lavfi', '-i', 'anullsrc=r=32000:cl=mono']),
+    seg('a.wav', 0.5, ['-f', 'lavfi', '-i', 'sine=frequency=240:duration=0.5']),
+    seg('g.wav', 2.0, ['-f', 'lavfi', '-i', 'anullsrc=r=32000:cl=mono']),
+    seg('b.wav', 0.5, ['-f', 'lavfi', '-i', 'sine=frequency=240:duration=0.5']),
+    seg('s2.wav', 0.3, ['-f', 'lavfi', '-i', 'anullsrc=r=32000:cl=mono']),
+  ]
+  const list = path.join(SANDBOX, 'ref-hole.txt')
+  fs.writeFileSync(list, parts.map((f) => `file '${f.replace(/\\/g, '/')}'`).join('\n'), 'utf8')
+  V.ff(['-f', 'concat', '-safe', '0', '-i', list, '-ar', '32000', '-ac', '1', src])
+  fs.writeFileSync(src.replace(/\.wav$/, '.txt'), '这是一句话', 'utf8')
+  const plan = R.planPieces(src)
+  assert.ok(plan.removed > 1.5, `挤掉的死空气只有 ${plan.removed}s`)
+  const r = R.compactRef(src)
+  assert.ok(r.dur >= 3.0, `清洗后只有 ${r.dur}s（api_v2 要求 ≥3 秒）`)
+  assert.equal(r.text, '这是一句话')
+  const sp = V.speechSpan(r.file)
+  assert.ok(sp.on <= 0.1, `清洗后还有 ${sp.on}s 头静音`)
+})
+
+await ok('静态响度：只加固定增益，时长一点不变（不做动态压缩）', () => {
+  const g = V.staticGainTo(toneWav, -16)
+  assert.ok(Number.isFinite(g.lufs), `量不到 LUFS：${JSON.stringify(g)}`)
+  assert.ok(Math.abs(g.gainDb) <= 12, `增益离谱：${g.gainDb}dB`)
+  const before = V.speechSpan(toneWav).dur
+  const out = path.join(SANDBOX, 'tone.gain.wav')
+  V.applyGain(toneWav, -6, out)
+  assert.ok(Math.abs(V.speechSpan(out).dur - before) < 0.02, '加增益后时长变了')
+})
+
+await ok('人声总线不吃 loudnorm（10-27：动态归一会把人声"泵"出机器味）', () => {
+  const s = read('tools/lib/video.mjs')
+  const iCompose = s.indexOf('export function composeAudio')
+  const body = s.slice(iCompose, s.indexOf('export function mux', iCompose))
+  // 只看真正拼进滤镜串的部分，注释里提到 loudnorm（说明为什么不用）不算
+  const code = body.split('\n').filter((l) => !l.trim().startsWith('//') && !l.trim().startsWith('*')).join('\n')
+  assert.equal(/loudnorm/.test(code), false, 'composeAudio 里还有 loudnorm')
+  assert.match(code, /sidechaincompress/)
+})
+
+await ok('视频配音钉死"原声"：温度默认 1.0、语速 1.0、按保真选而不是按起伏选', () => {
+  const s = read('tools/commands/produce.mjs')
+  assert.match(s, /videoTemperature \?\? 1\.0/)
+  assert.match(s, /speed_factor: 1\.0/)
+  assert.match(s, /fidelity: true/)
+  assert.equal(/speed_factor: (?!1\.0)\d/.test(s), false, 'produce 里出现非 1.0 的语速')
+  assert.match(s, /tuneRegister/)
+  assert.match(s, /judgeSpeech\(tmp, speakChars\(sc\.line\)\)/)
+})
+
+await ok('音区锚不能用参考段：tuneRegister 取本片中位，且只在偏离 >1.2 半音时才重念', () => {
+  const s = read('tools/commands/produce.mjs')
+  const i = s.indexOf('export async function tuneRegister')
+  const body = s.slice(i, s.indexOf('/** 数音节', i))
+  assert.match(body, /anchor = med\(regs\)/)
+  assert.equal(/ref_register|refRegister/.test(body), false, '别拿参考段当锚（它比正常说话高 7 个半音）')
+  assert.match(body, /span = 1\.2/)
+  // 糙音也要管：HNR<2dB 重念，且绝不接受 HNR<1.0 的替换
+  assert.match(body, /hnrMin = 2\.0/)
+  assert.match(body, /hn < 1\.0/)
+})
+
+await ok('配音抽到满意的就锁住：--keep-voices 沿用现有 wav，不合格才重念', () => {
+  const s = read('tools/commands/produce.mjs')
+  assert.match(s, /keepVoices/)
+  assert.match(s, /沿用已有（/)
+  assert.match(s, /RATE_OK\[0\] <= rate && rate <= RATE_OK\[1\]/)
+})
+
+await ok('额度只管新剪：--reuse / --keep-voices / --force 不吃当日额度', () => {
+  const s = read('tools/commands/produce.mjs')
+  assert.match(s, /const rebake = hasFlag\(argv, '--force'\) \|\| hasFlag\(argv, '--reuse'\) \|\| hasFlag\(argv, '--keep-voices'\)/)
+  // --reuse 后面紧跟开关时不能被当成目录（10-27 踩过：目录变成 "--keep-voices"）
+  assert.match(s, /String\(v\)\.startsWith\('--'\) \? d : v/)
 })
 
 // ── 收尾 ────────────────────────────────────────────────────────────────────

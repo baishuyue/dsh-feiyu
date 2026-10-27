@@ -131,11 +131,16 @@ dsh-feiyu/
 | `qq.groupChat` | recentSec/minQuietSec/minGapMin/dailyMax/chance | 600/20/15/0/0.15 | 群插话（话题在场/不抢话/间隔/额度/概率） |
 | `qq.qzoneAuto` | dailyMax/minGapMin/chance/imageChance | 0/120/0.15/0.5 | 自主说说 |
 | `douyin` | shareDaily/commentDaily | 0/0 | 分享/评论额度（0=不限） |
-| `douyin` | atMention | true | 评论带 @（注意风控） |
-| `douyin.engage` | enabled/dailyMax | true/0 | 评论区按需回复 |
+| `douyin` | atMention | true | 评论带 @（注意风控）；别人视频下要 @ 还得再开 `atMentionOnOthers` |
+| `douyin.atMentionOnOthers` | bool | false | 在**别人的视频**下也 @ 主人（默认关：人家看不懂） |
+| `comment.styles` | auto/text/emoji/kaomoji/sticker/emojiPack/image/voice | true/.6/.12/.12/.12/.1/.04/0 | 评论"形态"概率表：文字/加emoji/加颜文字/表情包图/官方表情/图片/语音（B站 自动去掉后两项；抖音语音目前只能走私信 mp4 语音条，评论区无录音入口，故默认 0） |
+| `douyin.engage` | enabled/dailyMax/maxPerUserPerDay | true/0/5 | 评论区回复：**任何类型的评论都回**（文字/表情包/图片/只有表情），每人每天上限防刷屏 |
 | `douyin.produce` | enabled/dailyMax | true/0 | 视频生产额度 |
 | `douyin.dm` | enabled/pollSec/port | —/300/8095 | 私信陪聊（8090 被 Wondershare 占） |
 | `bilibili` | danmaku/dynamic/react/imageComment/replies/fishCircle/follow | 各自 enabled+dailyMax | 活人感写通道（额度 0=不限） |
+| `bilibili.ownBvids` | 数组 | `[]` | 自己投稿的 BV 号（**会校验归属**；填错会被跳过并告警） |
+| `bilibili.useSpaceList` | bool | false | 是否允许用 space 接口补投稿列表（默认关：该接口必 412，且会熔断整条通道） |
+| `bilibili.replies` | enabled/dailyMax/ownWorks/ownMax/image | true/0/true/5/true | ⓪ 回自己作品下的评论（任何类型）+ ①回别人对我的回复 + ②主动搭话；`image` = 允许带图回评（传图床后走 `pictures`） |
 | `bilibili.freeRoam` | enabled/unlimited/maxVideos/maxMinutes/restMin | — | B站自由刷 |
 | `imageGen` | provider/api_key/model/refImage/dailyMax | siliconflow/…/Qwen-Image-Edit-2509/…/30 | 表情包与配图（refImage=形象锚） |
 | `vision` | provider/base_url/model/api_key | openai/硅基/Qwen3-VL-8B | 视觉理解 |
@@ -143,7 +148,7 @@ dsh-feiyu/
 | `web.selfUpgrade` | enabled | true | 允许改自己代码 |
 | `personality.evolve` | enabled/days | true/2 | 人格进化 |
 | `freedom` | enabled/wakeEveryMin/chance/engageEveryMin | —/75/0.55/120 | 完全自由节奏 |
-| `voice` | ref_audio_path/prompt_text/prompt_lang | bingjiao1 病娇/zh | 说话音色三件套 |
+| `voice` | ref_audio_path/prompt_text/prompt_lang/videoEmotion/fidelity | bingjiao2-clean / zh / calm / true | 说话音色三件套 + 视频配音用哪种情绪（calm = 基础音色）+ 候选按"不抖不噪"挑（false 退回按起伏挑） |
 | `video` | platform/frames/bgm/ffmpeg/ffprobe/font | bili/2/auto/—/—/— | 视频生产（平台默认、每幕帧数、BGM、ffmpeg 路径） |
 | `video.biliProduce` | enabled/dailyMax | true/2 | B站投稿包额度（0=不限） |
 | `video.bili` | tid/tname | 21/生活·日常 | B站分区（投稿说明里直接用） |
@@ -266,7 +271,7 @@ locks/                  自由进程单实例锁
 23. **空壳页要当场报错**：`fetchWeb` 抓到知乎/微博那种"落地页模板"（"知乎，让每一次点击都充满意义…"）时正文为空，她以为读完了、下一轮又读同一页 —— 10-26 同一个知乎链接被读了 11 次。`shellPageReason()` 现在对模板页/登录墙/404/正文 <200 字直接报错，并把该链接从下轮候选里去掉
 24. **语音"没情感"是参数没调 + 抽奖，不是模型不行（三层在 `tts.mjs`）**：实测 F0 起伏（半音，人声参考 4.78）——
     线上默认参数 **3.02**；只把 `text_split_method` 放成 `cut0` + `temperature 1.35` → **4.82**；但同参数连合 8 条落在 **3.51~5.20**（抽奖）。所以：**L0** = `cut0` + 温度按情绪 1.3~1.5 + **多合几条按 `prosody.py` 打分挑最像人的那条**（`voice.candidates`，默认 3）；`pick:'first'` 等于关掉择优。**不许**靠"放慢语速"提情绪（0.9 速反而更平 3.35）、也不许把温度拉到 1.5 又加大 top_k（崩到 2.99）
-25. **情绪要靠她自己说、参考段定天花板（L1/L2）**：她在回复最前面写 `[[撒娇]]`（`emotion.mjs` 的 9 种），`qq-server` 先剥标签再发（标签绝不能漏给主人；`[表情:开心]`/`[doge]` 这类正经表情码不许被误删），再按情绪取温度/语速/停顿。参考音频就是天花板（yinlang 4.78 → 输出 4.82；sunshine 3.45 → 输出 2.83），所以 `feiyu voice emo build` 造了 8 套情绪参考段（放 `~/.feiyu-ai/voice-emo/`），合成时**情绪段和默认段轮流上候选、由打分决定用谁**（A/B：情绪段合计 114.2 vs 默认 105.0，但只在生气/开心/撒娇稳赢，温柔/惊讶/害羞反而是默认段更好 —— 所以别写死"情绪段优先"）
+25. **情绪要靠她自己说、参考段定天花板（L1/L2）**：她在回复最前面写 `[[撒娇]]`（`emotion.mjs` 的 9 种），`qq-server` 先剥标签再发（标签绝不能漏给主人；`[表情:开心]`/`[doge]` 这类正经表情码不许被误删），再按情绪取温度/语速/停顿。参考音频就是天花板（yinlang 4.78 → 输出 4.82；sunshine 3.45 → 输出 2.83），所以 `feiyu voice emo build` 造了 8 套情绪参考段（放 `~/.feiyu-ai/voice-emo/`）。**10-27 修正**：以前让"情绪段和默认段轮流上候选、由打分决定用谁"，实际效果是同一句里音色乱跳（数组拿字符串当下标取 → 永远退回全库 8 条）—— 现在改成**一句话只用一个参考段**，没标情绪就用基础音色，见铁律 39
 26. **一条语音别念一整段**：`splitVoiceParts()` 把回复切成 ≤2 条、每条 ≤60 字（`qq.voice_maxChars` / `qq.voice_parts`），没念完的照常当文字补发。真人发语音本来就这样，长段一次合成也天然更平
 27. **慢情绪别用平静的语速窗口判**：委屈/困本来就落在 3.4~6.0 字/秒，`emotion.mjs` 里每种情绪带 `rate` 窗口，`prosody.py` 按它判合格 —— 否则"合格"这一档会把正常的一条判死，择优退化成硬挑分数
 28. **换音色 = 换参考段的采集流水线（10-26 病娇音色就是这么做出来的）**：现成音色库（yinlang/sunshine/rose）都太"平"，病娇要的是**甜得发飘 + 突然压低**。可复用的采集链路：
@@ -287,13 +292,82 @@ locks/                  自由进程单实例锁
 36. **她做了什么都得留痕（主人看不见 = 没发生）**：B站 发言走 `outbox.recordBili()` → 同时写 `bili-social.jsonl`；动作类（点赞/投币/关注/投稿）走 `capRecord(kind, {bvid,title})` 里的 `SOCIAL_ACTION_KINDS` 白名单。每条都标 `toOwner`，摘要和 `feiyu social` 默认先把"没 @ 他"的摊最上面 —— 那才是他漏掉的部分
 37. **字幕要验证"真烧进去了"**：ASS 生成正确 ≠ 画面有字。做法：同一时间点渲染"有字幕/无字幕"两版，比底部字幕带的白像素比例（实测 +3.1~3.4pt 才算有字）
 38. **git**：user baishuyue / `206720720+baishuyue@users.noreply.github.com`；推送走 Clash 7897（`git -c http.proxy=http://127.0.0.1:7897 push`，先 `HTTPS_PROXY=127.0.0.1:7897` 探一下 GitHub 通不通 —— 通了再推，直连必被 reset）
-39. **配音要先验"参考段配不配得上音频"，再验"念全没念全"**（10-26 主人两轮反馈：先"漏了很多字"，我改参数救场 → 又变成"电音、不是原来的声音，还漏"）。
-    真病根是**参考音频的 prompt_text 和音频对不上**：默认参考 `models/bingjiao2/bingjiao2.wav` 长 6.19 秒，配的文本只有 12 个字（≈2.6 秒的话），配比 2.59 —— 模型把"文本念完"当收尾信号，同一句连合 3 条，音节覆盖率**每次都是 46%**（不是抽奖，是系统性错配）。换成她自己的情绪参考段（配比 1.06~1.64），同样的话覆盖率 100%~145%、第一次批量就过。所以：
-    - `tts.refSanity(ref, text)` 量配比（= 时长 ÷ 字数/4.6），不在 0.6~1.8 就踢出参考池；池子空了自动换成 `~/.feiyu-ai/voice-emo/` 里配比合格的段（同一个嗓子，只是文本配得上音频）。
-    - **视频配音不许中途改音色参数**：`speed_factor` 是重采样（改了=变调=电音），`temperature` 影响发音稳定性但不是解药（0.7/1.0/1.3 都见过残的）。现在配音只做一件事——多合几条、按"念全"挑，实在不行拆两句念再拼。
-    - 判据：字/秒落在 `[2.4, 6.0]`（她的温柔档本来就只有 2.6~3.5 字/秒，上限放到 6.0 之外一律当"句尾被吃了"）；辅以"句尾能量比"（截断的尾巴 >1.2，自然收束 0.3~0.9）和"音节覆盖"（数包络峰 ≈ 数念了几个字）。
-    - **一条片子只用一个情绪参考**（`voice.videoEmotion`，默认 `wronged`）：每句换参考会让音高在 175~290Hz 之间乱跳（实测 tender→286Hz、wronged→249Hz、她原来那条 244Hz）；统一之后 7 句 F0 极差 3.9%，才像同一个人。
-    - `trimVoice()` 必须**按源采样率**剪（她的 TTS 是 32kHz；降到 16k 写回成品就是"闷、假、不像她"），前留 60ms 气口、后留 120ms 余音，且要在 `buildTimeline` **之前**剪 —— 顺序反了字幕就抢跑。成片再 `verifySync()` 逐句量偏差写 `sync.json`。
+39. **「电音机械音」的总根在 `writeWavLocal`：它把整条配音写成了 ±1 的方波**（10-27 主人拿着 `line-*.wav` 和 `voice-*.wav` 对出来才发现）
+    - 现场证据：`line-0.wav` 有 9469 个不同取值，`voice-0.wav` **只有 3 个（-32767 / 0 / +32767）**，峰值 -12.00dBFS、RMS -12.28dBFS（RMS≈峰值 = 满幅方波）。主人原话「刚开始的音是对的，后面不知道做了什么操作把原来的改毁了」—— 准确：模型给的 `line-*.wav` 一直是对的，进剪辑第一步 `trimVoice → writeWavLocal` 就被毁了。
+    - 机制：`pcm16()` 解码出来是 **Int16Array**（±32768），`writeWavLocal` 却按 float 处理 —— `Math.max(-1, Math.min(1, data[i]))` 把每个样本压成 ±1，再 `×32767`。整条配音变成 1bit 方波，随后 `staticGainTo` 还测出"已经 0 LUFS"，反手给了 -12dB，于是方波被降到 ±8231。**10-20 起报的每一次"电音"都是它**，之前查的温度/择优/死空气全是次要因素（它们只让"本来就被毁掉的声音"略有不同）。
+    - 修法：`writeWavLocal` 按类型分支 —— `Int16Array` 原样写，float 才按 ±1 缩放。修完 `voice-*.wav` 与 `line-*.wav` 的不同取值数完全一致（9469/9746/10166…），频谱 >8k 占比也一致（14.24% → 13.99%），只是整体 +1~3dB 到 -16 LUFS。
+    - 回归测试（`test/video-test.mjs`）：剪静音后的 wav 必须有 >200 个不同取值、峰值不可顶满幅。**这条测试比什么都重要** —— 它一眼就能抓住"配音被量化"。
+    - 教训：`line-*.wav`（模型原声）和 `voice-*.wav`（进剪辑的）必须逐条对得上；主人报"电音"时先 `ffprobe` + 数不同取值，别再从参数里找原因。
+    - `--reaudio`：只重做音轨、画面沿用 `visual.mp4`（改配音/响度/BGM 但画面没动时用，省十几分钟）；时间轴与 `visual.mp4` 时长差 >0.2s 会自动退回完整重渲染。
+40. **"不是她的声音"另外还有五个来源，全在配音链上（10-27 第二轮，逐个实测否掉）**
+    - **① 参考文本没盖住音频**：`bingjiao2.wav` 6.19s 里真正有声 2.03s，音频说的是「是第一次看你这个样子呢，哦对了」，`.txt` 只写了「…这个样子呢。」—— 少结尾 3 个字。文本比音频早说完 → 模型把"文本念完"当收尾信号。同一句连合 6 条：旧文本 **0/6 念全**（9.6~13.7 字/秒），补全 **6/6 念全**（3.9~5.7）。工具 `feiyu voice refcheck`（faster-whisper 转写 + 比字数；模型走本地 `D:/GPT-SoVITS/runtime/fw-models/small`，别让它去 HF 下载）。
+    - **② 参考音频中间夹着 2.88s 死空气**（10-27 主因）：全片只用这一条参考时，模型的条件被静音段带偏 —— 同一句话的合成结果和参考的 24 段对数谱相似度只有 **0.703**；把死空气挤掉、完整句拼成 3.1~3.5s 再合成 → **0.996~0.999**、HNR 4.0→5.2dB、抖动 0.267→0.233。工具 `feiyu voice refclean [--use]`（`lib/refclean.mjs`：10ms 包络，≤0.35s 的停顿当句内气口保留，更长的挤成 0.12s，首尾剪掉，不足 3 秒补尾部静音 —— api_v2 硬要求 ≥3s）。`voice use` 会优先用 `<名字>-clean.wav`。
+    - **③ 情绪档案偷偷改 speed_factor**：`synth(line, tmp, {emotion})` 会把 `prof.speed` 塞进 `speed_factor`（wronged 0.95 / sleepy 0.90 / happy 1.05）—— **那是重采样，0.95 = 整体降 0.9 个半音**。10-26 的片子用的正是 `videoEmotion: wronged`，所以"变调"从第一天就在。现在视频配音**显式钉死** `speed_factor: 1.0` + `temperature: videoTemperature ?? 1.0`，测试里当护栏查。
+    - **④ 择优偏向"最抖的那条"**：`prosody.py` 的原始打分是 `rng*0.5 + sd*1.2 + rms*3`，即**音域越宽、F0 起伏越大分越高**；三条候选里赢的几乎总是颤得最厉害的一条。10-25 抖音那几条（主人认可的）恰恰**没有择优**：一次一条、温度 1.0、音频 32k 单声道只做轻处理。现在视频走保真模式（`fidelity: true`）：只按"音区离锚多近 / 抖不抖 / 噪不噪"选，起伏大不给加分。
+      - 顺带修掉一个**静默失效**：`prosody.mjs` 调 python 时没钉 `PYTHONIOENCODING=utf-8`，中文路径下 python 吐 GBK → `JSON.parse` 炸 → 打分器整体降级成"全部 0 分、用第一条"。也就是说 10-26 那套"择优"**一次都没真正生效过**。现在钉了 UTF-8，失败会 `⚠` 打一行出来。
+    - **⑤ 整片音区漂 + 单句抽到糙音**：同一参考连合同一句话，主音高能漂 4.7 半音（233Hz 对 308Hz），HNR 能抽到 0.5~5.5dB —— 听感就是"两句像两个人"和"这句有电音"。`produce` 现在多一道 `tuneRegister()`：量 7 句的音区（半音）和 HNR，取**本片中位音区**当锚（不能拿参考段当锚 —— 它是一句情绪很高的音声，比正常说话高 7 个半音，拿它锚整片反而更散），偏离 >1.2 半音或 HNR <2dB 的句子重念，最多 6 次，按 `min(音区差,3)*0.6 + 缺的 dB*2.0` 挑最靠锚又不糙的，且**绝不接受 HNR<1.0 的替换**（实测拿 0.5dB 的糙音换 1.3 半音的音区，人耳一票否决）。修完：音区极差 **2.30→1.47 半音**（241~264Hz，和她抖音那几条的 234~270Hz 同一档），最低 HNR 从 0.5 抬到 1.8~2.2dB。
+    - **聊天线也换成保真择优**（10-27）：`synthDetailed` 默认 `fidelity`（`voice.fidelity=false` 可退回老行为），但**不传音区锚** —— 聊天只比"抖不抖、噪不噪"，不会因为参考段是一句高音而把日常说话往上拽。视频线额外带 `registerRef: true` 才启用音区锚。实测聊天一句 25 字：5.2 字/秒、HNR 5.1dB、12s（3 条候选 + 两次打分）。
+    - **配音是抽奖，抽到满意的别再抽**：`produce --reuse <包目录> --keep-voices` 会把现有的 `line-*.wav` 直接拿来用（只重跑音区/糙音复检 + 重剪），改字幕、换 BGM、调转场时不用重念。注意参数顺序：`--reuse` 的值必须紧跟它后面，`--keep-voices` 另放（`argVal` 现在不会把 `--xxx` 当取值）。重剪/不重念/**--force** 都不吃当日额度 —— 额度管"今天新剪几条"，不管"把同一条修好"。
+    - **⑥ 人声总线别挂 loudnorm**：单遍 loudnorm 挂在有大量静音的配音总线上，会在静音里猛补 gain、说话时再压回去 —— 人声被"泵"过就是机器味。改成每条配音**量一次 LUFS、只加一个固定 dB**（`video.mjs` 的 `staticGainTo/applyGain`），总线只 `amix`，混完再侧链 + 末端限幅。抖音那条成片是 32k 单声道 69kbps 也没这事；现在成片钉 **48k 双声道 192k**（`-ar 48000 -ac 2`），不然 aac 会落成 96k 单声道。
+    - `tts.refSanity(ref, text)` 的配比改成**用"真正有声的累加时长"算**（`voicedSeconds()`：10ms 窗能量 > 峰值 6%），窗口 **0.5~1.8**。旧算法用整段文件时长，被留白骗了：bingjiao1/2/3/4 + yinlang 五条全被误判"不合格"，基础音色直接从语音链上消失。
+    - **一句话一个参考段**（否掉"情绪段+默认段一起上、打分择用"）：同一句的候选各用一条参考，择优就变成"挑哪个音色顺耳"。现在 `refPool()` 只回**一条**：标了情绪 → 该情绪段；没标（calm）→ 配置里的基础音色。
+    - `voice.videoEmotion` = `calm`（= 基础音色）。老配置写 `wronged` 等于整片都用情绪段。
+    - 判据：字/秒落在 `[2.4, 6.0]`；辅以"句尾能量比"（截断 >1.2，自然收束 0.3~0.9）和"音节覆盖"。
+    - `trimVoice()` 必须**按源采样率**剪（她的 TTS 是 32kHz；降到 16k 写回成品就是"闷、假、不像她"），前留 60ms 气口、后留 120ms 余音，且要在 `buildTimeline` **之前**剪。成片再 `verifySync()` 逐句量偏差写 `sync.json`。
+
+41. **评论"只回了主人的"真凶：`if (!c.text) continue` 把表情包评论整条丢掉了**（10-27 主人报的）
+    - 现场：主人翻抖音评论区发现「她只回我的文字评论，别人发表情包的一律没反应」。`douyin_interact.py` 的 `parse_comments` 只存 `text`，纯贴纸评论 `text` 是 `""`，`douyin.mjs engage` 里一句 `if (!c.text) continue` 就把整条评论当"没内容"扔掉 —— 不是她不想回，是那条评论**根本没进候选列表**。
+    - 第二个坑叠在上面：`comment-reply` 用**评论文本前缀**定位 DOM，表情包评论没有文本 → `key` 为空串 → `if (!key or key not in txt)` 会命中**任何一条**评论（等于乱点别人的评论去回复）。
+    - 修法：新增 `tools/lib/comment-kind.mjs`（`classifyComment` → `text/emote/sticker/image/empty` + 一句人话 `label` + `stickerFallback` 兜底话术）。抖音 python 侧 `_shape()` 一并给 `kind/label/sticker/has_sticker/images`；`comment-reply` 定位改成三级：`--match` 文本 → `--user` 昵称 → `--index` 序号，且**空 key 不再当通配**。LLM 对"只有图/表情"的评论憋不出话时用兜底话术，保证任何一条都有人理。
+    - ⚠️ 抖音贴纸的 `sticker.display_name` 常常是哈希（`tos-cn-o-0812/ogPyHzADk…`）或干脆没有 —— **"有没有贴纸"必须单独用 `has_sticker` 判断**，只判名字会把整条又判成空评论（当天踩过一次）。
+    - **第三个坑（更隐蔽）：扫到就当"处理过"**。老代码每次扫评论都 `wm.seen.push(cidKey)`，哪怕她**根本没回**（LLM 觉得不值得回、或者被 `news.slice(0,10)` 挤出窗口）。于是一个视频有 20 条新评论时，第 11 条以后被永久静音 —— 这也是"只回了我，别人全没回"的一部分。现在：只有**真回过**才写 `seen`；没回的写进 `wm.tried{cidKey:{n,ts}}`，最多试 3 次、每次隔 20 分钟（顺带避免每轮重复问 LLM）。LLM 窗口从 10 条放宽到 15 条。
+- ⚠️ 抖音 `comments[]` 有时候把子回复也按一级返回（`parent_cid` 空、`reply_total` 只增不减），`answeredParents` 认不出来 → 同一条会被再答一遍。所以 `douyin-engage.json` 多了 `repliedTo{cid:ts}` 台账；B站 侧 `bili-own-engage.json` 同样有 `repliedTo`。
+    - B站 之前**根本没有"回自己作品评论区"这条路**（只有"别人回复了我的评论"）。现在 `replies` 里加了 ⓪ 档：`listOwnVideos()`（config `ownBvids` → `bili-debut.json` / `bili-posts/*/bvid.txt` → space 接口，从稳到险）+ `listCommentsOf(aid)`（`/x/v2/reply`，含楼中楼，**不筛空文本**）+ `postReply(bvid, root, rpid, …, {aid})`。
+    - ⚠️ `/x/space/wbi/arc/search` 对脚本极凶：第一次试就吃 **HTTP 412**，而且 `apiGet` 的熔断是**全局**的（5→10→20 分钟指数退避），一次探测就把正在跑的回评/弹幕全堵住。所以现在：**space 接口默认关**（`bilibili.useSpaceList: true` 才开，且走 `apiGet(..., {soft:true})` —— soft = 可选接口吃风控也不写全局账单）；投稿列表先读 `ownBvids` / `bili-debut.json` / `bili-posts/*​/bvid.txt`；`postReply` 加 `aid` 直传口，省掉一次 `/x/web-interface/view`；aid 查一次就缓存在 `bili-own-engage.json.aidCache`。
+    - ⚠️ **归属校验必须做**（10-27 差点出事）：调试时我往 `ownBvids` 临时塞了个公开视频当样本，链路跑通后才发现 —— 如果那一下是 `--go`，她就会跑去**陌生人的视频**下面评论。现在 `listOwnVideos` 拿 `nav.mid` 比 `videoInfo().ownerMid`，不一致就把这个 BV 丢掉并打一行 `⚠ 跳过 N 个不属于自己的 BV`；缓存条目也必须带 `owner` 才算"验过"，没验过的还要再问一次接口。
+    - 另：`/x/web-interface/view`（原路径）今天稳定返回 **HTTP 412 HTML 风控页**，而 **WBI 版 `/x/web-interface/wbi/view` 正常**（同一秒、同一 cookie）—— 原路径已被墙，别回退用它。
+    - 回归测试 `test/comment-engage-test.mjs`（14 条）：分类器 5 种类型 + "除 empty 外都必须可回" + 抖音不许再有按 `text` 筛评论 + python 必有 `--user/--index` + B站 两接口 + `replies` ⓪ 档 + `produce --debut-posted` 落 `bvid.txt`。
+    - 实测（10-27 13:0x）：哦鲸鲸在《蟹黄铺得比饭还…》下发了个纯表情包 → 被判 `sticker`、按昵称定位、真发出「这个表情包我收下了，改天还你一个」（`parent=7700970001133781800` 挂在贴纸评论下面）；**对方 40 秒后就回了一句「再给你一个」**，13:06 调度器那轮 engage 又自动回了「收下收下，攒着换饭 😴」，`perUser.counts.哦鲸鲸 = 1` —— 非主人评论的完整闭环通了。
+
+42. **「评论区发什么都行」怎么落地：类型概率表 + 三条上传通道 + 语音的真相**（10-27 主人第二条要求）
+    - 主人要的是：文字 / 颜文字 / emoji / 表情包 / 图片都能发（抖音还能发语音），而且**自己作品下**和**刷到的别人视频下**都要能。落地成 `tools/lib/reply-style.mjs`：
+        - `chooseKind({platform, styles})` 按 `config.comment.styles` 掷筛子：`text .6 / emoji .12 / kaomoji .12 / sticker .12 / emojiPack .1 / image .04 / voice 0`。`emoji`、`kaomoji` 两种最终都落在**文字**里（`decorateText` 往句子里塞 emoji 或颜文字），真正的"另一种形态"是 `sticker`（表情包图）/ `emoji-pack`（抖音官方表情面板）/ `image`（普通图）。B站 会被强制剥掉 `emojiPack` 与 `voice`。
+        - ⚠️ 坑：`chooseKind` 配置里键名是驼峰 `emojiPack`，但命令层全按 `'emoji-pack'` 比对（`style === 'emoji-pack'`）→ 一开始**官方表情永远选不中**。现在出口统一转成 kebab-case，`describeKind` 两种拼法都认。
+        - `decorateText` 只在句子**还没有** emoji/颜文字时加料（正则先判），不会叠成一坨。
+        - `pickCommentImage` 按平台扩展名过滤：抖音 `.png/.webp/.jpeg/.pjpeg/.bmp/.jpg`（**不吃 .gif**），B站 `.png/.jpg/.jpeg/.gif/.webp`（**不吃 .bmp**）。没素材就老实退回文字。
+    - 三条上传通道（全部实测过）：
+        1. **抖音图片评论**：`.commentInput-right-ct` 里有隐藏 `input[type=file] accept=".png,.webp,.jpeg,.pjpeg,.bmp,.jpg"`，`set_input_files` 挂上即可。实证：`[image] 已挂图：sf-1568a7125537.jpg（858 KB）` → 服务端回读 `images=1`。
+        2. **抖音官方表情**：右侧第 2 个图标（**不能用"最右"** —— 输入框有字以后最右会变成发送键，一点就提前发出去）。可靠指纹是它的 svg 第一个 path 以 `M27 18a9 9` 开头。面板 `.emoji-card-outer-container` 约 214 张 `<img>`，点一张就插进 Draft.js，编辑器里的占位名会是 `[送花]`/`[发怒]` 这种 —— 所以插完**回读编辑器文本**，命中「发怒/吐/踩/垃圾/打脸…」就清掉重挑，最多 4 次。实证：`[emoji] 已插官方表情第 40/214 张 → [送花]` → 服务端回读 `kind=emote, text=[送花]`。
+        3. **B站 图片评论/回评**：`uploadImage()`（`upload_bfs`, `biz=new_dyn`）先传图床，再 `/x/v2/reply/add` 带 `pictures=[{img_src,img_width,img_height,img_size}]`。`postReply(..., {image})` 现在也支持带图回评，但**要显式开 `bilibili.replies.image: true`**（默认关，防手滑把表情包糊到正经回评上）。
+    - **语音的真相（别被"应该有吧"骗了）**：抖音**网页版评论区没有录音控件**（探了两次：`.commentInput-right-ct` 只有图片 + 表情 2 个图标，整页无 mic/recorder 节点）；**私信**的 `input` 只吃 `.jpg,.jpeg,.png,.gif,.mp4`，也没有录音。所以"她发语音"只能做成**mp4 语音条**：`voiceNoteArgs()` 用 ffmpeg 把她的 TTS wav + 一帧封面合成 `-loop 1 … -c:a aac -shortest` 的竖屏 mp4，再走私信（`douyin voice-note --sec-uid … --text … --go`）。
+        - ⚠️ 私信发文件**必须点确认框的「发送」**：挂上文件后抖音会弹 `div.MsgInputSendFileModalbtns`，里面 `span.MsgInputSendFileModalbtnSure` 才是真发送键；只按回车 = 弹窗挂着、消息没发出去，而老代码还会打印"✅ 已发送"。实证选择器：`[class*="SendFileModal"] :text("发送")`（用过 `.MsgInputSendFileModalbtnSure` 裸类名会超时，类名带 CSS-module 哈希时不可靠）。
+        - 但即便如此，**网页端私信里的 mp4 视频消息在会话列表里读不回来**（连发 4 次、消息气泡数不变、`dm-read` 里也没有）—— 网页端大概率不渲染/不接受视频消息。要真发语音条只有两条路：**手机端自动化**（ADB/Appium 长按录音）或等她有官方开放接口。当前配置 `comment.styles.voice` 默认 **0**，代码里 `voice` 一律降级成文字并打一行说明。
+    - **发错能自己删**：`douyin comment-delete --vid … --match "比个心" [--go]` —— hover 评论 → 点「...」→ 气泡里点「删除评论」。坑：`删除评论` 文案在 DOM 里有 4 个副本（wrapper/portal/tooltip/inner），`last` 常拿到隐藏的，点了没反应；必须遍历、挑**可见且宽度>20** 的那个再点。
+    - **发送防呆**（那天踩出来的）：表情没插进去 + 没文字 + 没图时，老代码照样去点发送 → 空评论发不出去，日志却写"✅ 已发送"。现在发送前先读一次编辑器：`typed` 为空、无缩略图、无图无表情 → 直接返回失败。
+    - ⚠️ `cmd_comment` 里那个 `else:` 分支曾经在 `message` 为空时执行 `_human_type(box, '')`，把编辑器里残留的 `@` 一起提交了 —— 真在她视频下留过一条孤零零的 `@`（已用 `comment-delete` 删掉）。现在改成 `elif message:`。
+    - **刷到的别人视频也能发**：`douyin feed` 现在把 vid 落盘到 `~/.feiyu-ai/douyin-feed.json`；`douyin interact`（feed → 口味过滤 → 读热评 → LLM 写评论）发评论时走**同一套概率表**，`--image` / `--emoji-pack` 直接透传给 python。B站 侧的"别人视频"由 `replies` ② 主动搭话覆盖，同样过 `styleReply`。
+    - 回归测试 `test/reply-style-test.mjs`（19 条）：类型中文名、抖音 4000 次抽样包含四种形态、B站 无官方表情/语音、`auto:false` 只发文字、`voice` 只有显式配了才出、`decorateText` 不叠料、扩展名白名单、语音 mp4 参数、命令层 `--image/--emoji-pack/useUi/pictures/--file` 接线、`comment-delete`、发送防呆。
+    - 实测清单（10-27 14:0x 前后，全部服务端回读确认）：官方表情 `[送花]`（`kind=emote`）、图片评论「比个心」（`images=1`）、私信 mp4 语音条（确认框点了发送，但网页端会话不显示 → 记为平台限制）。
+
+43. **记忆错乱 / 一直问"吃了吗" / 说看番看了两周没看：六个病根，全部改完**（10-27 主人第三条，先诊断后动手）
+    - 主人原话：中午到下午连问很多次吃没吃饭；说去看《可塑性记忆》一直没去；一直专注南京小吃。**先查明，再全改。**
+    - ① **饥饿只涨不落**（`mood.mjs`）：旧 `tickMood` 在 11-12/17-18 点 `hunger += 7`，非饭点只 `-0.5`，还每 tick `value -= 4` → 实际落盘 `{"value":0,"hunger":82}`，于是每轮提示词都在说"满脑子都是吃的""句子压到 15 字"。修法：`hunger` 封顶 `hungerCap=70`；非饭点按次 `-6`；`value` 单次最多 `-1`（饿 >60 才扣），饿 ≤30 且低于 baseline 时 `+2` 回血；`fed(level=20)` 吃到东西直接归 20 并 `value += 8`；跨天软回落用 `day` 字段。饿了时的措辞也从"很饿/追着问"改成"有点饿…别追着问主人吃了没"。
+    - ② **网志钩子读的是文件最底部**：`web-log.md` 是**新的在最上面**，旧代码 `slice(-3)` 取到的是两天前最早的几行 → 每次主动搭话都在说"你自己刚才在网上干的：搜南京小吃"，把她自己也带偏了。修法：`todayWebLines(n)` 按 `## YYYY-MM-DD` 找到当天段落，再取**段内最上面** n 行。
+    - ③ **南京进人格池**：10-24 她刷到《史上最全南京美食攻略》后，把"替主人探南京小吃"连写 25 条近义条目进 `lore.json` 的**价值观池**（每轮注入 6 条），`owner-profile.md` 里也被她自己写成"他馋南京的鸭血粉丝汤…菜单我已背下来"。修法三件套：`addLore` 写入前先分类（`OPS_TAGS`→`ops` 池 / 带日期前缀的干活流水→`work` 池 / 其余才是价值观），再做**主题封顶**（跨条目高频词 ≥4 条只留最新 2 条 + 2-gram 重合同度 ≥0.55 算同一件事，跑到不动为止）；`loreValues()` 只读 `kind==='value'`；`tools/migrate-memory-10-27.mjs --go` 一次把存量收拾干净（172→167 条，价值观池 71→26 条，含"南京"25→3 条）；`tools/fix-owner-profile.mjs --go` 把画像里那句编的馋嘴改掉。
+    - ④ **主人说过的话没人记**：`facts.json` 的 `owner` 桶是空的，所以她"永远不知道"他中午吃了烧鸭。新增 `tools/lib/owner-facts.mjs`：从他的话里抽 `food|doing|plan|mood|media` 五类事实（同 key 只留最新），`learnFromOwner()` 在每条 QQ 消息进来时调用；`promptBlock()` 渲染成【今天已经知道的事】（**"他自己说的，不用再问一遍"**）；`asksKnown(draft)` 在回复出门前做闸门 —— 命中"吃了吗/在干嘛"且已有事实 → 打回重写一次，仍命中就这轮不发（宁可不说，也不问第二遍）。
+    - ⑤ **承诺没有账本**：她"这就去看《可塑性记忆》"说过 7 次、答应 5 次、执行 0 次。新增 `tools/lib/promises.mjs`：`extract/catchFromReply` 从她的回复里认出承诺（"这就/马上/明天…+看去读写查"、"答应/保证/一定"、"看完再讲"），带 `dueAt` 落盘 `promises.json`；`qq-server` 每次主动搭话前先跑 `dueNow()`，用 `binge` 真去看一集（`--go --json --promise <id>`），成了就 `done()`、没材料就 `fail()`（`tries≥2` 顺延 6h），并把结果写进这一条推送的上下文（`didLine`）；`promptBlock()` 让提示词里有【你欠着的事 · 现在就该做】/【你答应过、还没做的】/【这些你真没做成】（教她照实说做不到，不许再空口答应）。
+    - ⑥ **没有"看番"这个能力**：`focus.mjs` 的活动表只有 web/bilibili/douyin，`watch.mjs`/`bili-watch.mjs` 只读标题和热评 —— 她**物理上无法**看完一集。新增 `tools/commands/binge.mjs`：`--search` 搜番、`--show/--bvid --ep N` 看一集、`--list` 查进度、`--go` 落记忆。材料优先级 **弹幕 > 官方字幕**：B站 番剧的 `subtitle` 轨串片率极高（实测看《可塑性记忆》EP1 拿到的是 ED 歌词和人 iPhone16 钢化膜测评），所以 `danmaku.length >= 40` 就**不信字幕轨**，改用弹幕（剥掉"前方高能/打卡/哈哈哈"噪声、去重、按长度取 160 条）+ 热评喂 LLM；LLM 返回 `{understood, plot, feel}`，`understood===true && plot` 且不含"看不到剧情"才算真看完。进度落 `~/.feiyu-ai/binge/<slug>.json`，`--go` 后 `memory.remember('bilibili', 'binge:<slug>', …)` 写进她的记忆。选片也修过三轮：第 1 集优先"标题写着 01/第1集"且时长 15~40 分；第 N 集只认"整部合集（>40 分且分 P ≥ N）"，凑不出就**老实退回第 1 集**并说清楚（不许拿"#14 苏醒"冒充第 2 集）；P1 直接用"正片"，别按标题匹配（"备份1" 里也含 1）。
+    - ⑦ **给她权限，不只给她命令**：`persona.mjs` 新增 `CAPABILITIES`（12 行，`binge/focus/debrief/web/mem/promises/diary/selfup/selfwake`）+ `capabilityBlock()`，明确写"跑法：`node D:/dsh-feiyu/tools/feiyu.mjs <命令>`"，以及**自我改造许可**（`selfup backup` → 改 `tools/` → 跑测试 → `selfup log` 留痕），并钉一句"做不到就照实说，不许只回一句'这就去看'"。
+    - ⑧ **别只让她记得欠着，也让她记得做成了**：`promises.promptBlock()` 多一块【你最近真做成的事】（12 小时内的 `done`，带结果摘要）—— 否则她只有"欠着的"这一个方向，就容易反复许同一个愿；有了这块她可以说"我今天看完了第一集"，而不是再许一遍。实测注入：`· 可塑性记忆：看完了《【4月】可塑性记忆 01【幻樱】》第 1 集`。
+    - 回归：`test/memory-hygiene-test.mjs`（22 条）锁死上面每一项 —— 饥饿封顶/按次衰减/心情不再被砍、`recallAll` 排掉 `kind:'push'`、ops 与干活流水不进价值观池、同主题刷屏折叠到 ≤2 条、事实抽取与"问第二遍"闸门、承诺落账/去重/终态、`focus` 认 `binge`、能力清单里每条命令都真在 `feiyu.mjs` 注册、网志钩子不再 `slice(-3)`。`tools/run-tests.mjs` 现为 **23 套全绿**。
+    - 端到端演练：`tools/drill-promise.mjs` —— 主人说"中午吃了烧鸭/在改插件/推荐看可塑性记忆"→ 事实落库并渲染成【今天已经知道的事】→ 她说"这就去看"自动落账 → 到点执行 `binge` → 真拿到第 1 集剧情（司回收老婆婆的 Giftia / 艾菈寿命只剩不到十年）→ 承诺 `done` → 写进记忆。首次跑还抓出 `--json` 输出前面带一行"→ 选了 BV…"导致 `JSON.parse` 炸的问题（已改成截取第一个 `{`）。
+    - 配置新增：`mood={hungerCap:70,mealGain:7,decayPerTick:6,moodBase:62,hungryMoodPenalty:1}`、`binge={enabled:true,dailyMax:1,minEpisodeMin:15}`（日上限：一天一集是"真看"，一天十集是"刷数据"，`--force` 可破）。`qq.proactive` 收敛为 `{dailyMax:12,minGapMin:25,minQuietMin:20,chance:0.12,typeCooldownMin:120,similarityMax:0.32}`。
+    - ⚠️ 副作用提醒：`config.mjs` 现在容忍 **UTF-8 BOM**（PowerShell `Set-Content -Encoding UTF8` 会写 BOM，曾导致整个 `feiyu.config.json` 静默回落默认值，连 LLM key 都丢了 → `binge` 报 `LLM HTTP 401`）。
+    - 🩸 **同一条线上差点翻的车（必读）**：新写的 `test/memory-hygiene-test.mjs` 第一版用了一个 `paths.mjs` **不认**的环境变量做隔离，`rmSync`/`writeJson` 直接打到**真实** `~/.feiyu-ai`，把 `lore.json`（55 KB / 172 条）写成 132 B、`facts.json`（10 KB）写成 63 B、`episodes.jsonl`（86 KB）写成 226 B，`mood.json`/`promises.json` 也被测试值覆盖。发现方式：`/health` 突然报 `facts:1, lore:1`（真库不可能这么小）。
+        - 铁律：**测试必须在任何 import 之前**把 `USERPROFILE`（和 `DSH_HOME`/`FEIYU_DATA_DIR`）指到 `mkdtempSync` 出来的临时目录 —— `paths.mjs` 在 import 那一刻就把 HOME 定死了。`memory-test` / `recall-push` / `video-test` / `ledger-test` 早就是这么做的，新测试照抄即可。
+        - 顺手把 `paths.mjs` 的 `dataDir` 改成**也认** `FEIYU_DATA_DIR`（以前只认 `USERPROFILE`），少一个踩坑面。
+        - 回捞工具（都支持先看方案、`--go` 才写，且会把坏文件存成 `.wrecked-<stamp>` 留证）：`tools/restore-memory-10-27.mjs`（lore/facts 取最大备份、episodes 取多份备份**并集**，362 行，10-23 20:09 → 10-26 18:02）、`tools/reset-mood-promises-10-27.mjs`（心情复位 + 只留一条"看完可塑性记忆第 1 集"的 done 承诺）。**损失窗口**：根目录 `episodes.jsonl` 10-26 18:02 之后的非 QQ 行（B站/抖音/网页）丢了；`qq/episodes.jsonl` 一直是好的，QQ 侧记忆完整（542→902 行）。
+        - 教训一句话：**"测试会不会写坏真数据"要在写下第一行 rm 之前就想清楚，不是跑完再说。**
 
 ---
 
@@ -310,6 +384,7 @@ locks/                  自由进程单实例锁
 | 7 | NapCat 偶发断连原因未查（用户说先不管） | 观察 |
 | 8 | 弹幕（post.so 废弃+UI 改版）、投币（gaia）暂缓 | UI 法待 B站改版稳定 |
 | 9 | GitHub token 明文 `~/.feiyu-github-token.json` | 用户知情 |
+| 11 | 8 套情绪参考段是用**漏字文本**做出来的（例如 wronged 的音频开头少了「你都不理我……」） | 方向安全（文本比音频长只会偏慢，不会吃句尾），要更干净就 `voice emo build --force` 重做 —— 现在基础参考段已修好，重做会一次到位 |
 | 10 | ~~produce 还是"图+推拉镜头"，非真视频~~ | **10-26 已解决**：拆出 `tools/lib/video.mjs`，成片是"片头卡 + 5~8 幕多机位运镜（每幕双帧内切）+ 交替转场 + 逐句烧字幕 + 合成 BGM 侧链避让 + 片尾卡"，1080p。见铁律 33/34 |
 
 ---
@@ -363,7 +438,7 @@ web-log.md（上网）/ bili-outbox.md（B站发言）/ selfup-log.md（自我�
 | 主人B站/QQ/抖音 | --友利奈绪-（mid 3493288510228945）/ 3082864371 / 朴昌范 |
 | 机器人QQ | 3796002846（皮卡皮卡） |
 | 唱歌音色 | feiyu-rose（当前）· feiyu-sunshine（备） |
-| 说话音色 | **bingjiao1 病娇**（10-26 起用）· 候选 bingjiao2/3/4 在 `D:\GPT-SoVITS\models\` · 旧 yinlang 银狼 w12 保留，`voice use --name yinlang` 一键回滚 · 情绪参考段 8 套在 `~/.feiyu-ai/voice-emo/` |
+| 说话音色 | **bingjiao2 病娇**（10-27 起用，`.txt` 已校正为「是第一次看你这个样子呢，哦对了」，`voice refcheck` 通过）· 候选 bingjiao1/3/4（**bingjiao1 的文本还漏着开头「这是什么」，用前先 refcheck**）· 旧 yinlang 银狼 w12 保留，`voice use --name yinlang` 一键回滚 · 情绪参考段 8 套在 `~/.feiyu-ai/voice-emo/` |
 | 硅基 key | 在 config imageGen.api_key（赠金档：Qwen-Image-Edit-2509 + Qwen3-VL 可用） |
 
 ---

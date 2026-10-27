@@ -16,6 +16,7 @@ import { config } from './config.mjs'
 import { dataPath } from './paths.mjs'
 import { emotionProfile, parseEmotionTag } from './emotion.mjs'
 import { scoreWavs, bestOf } from './prosody.mjs'
+import { voicedSeconds } from './video.mjs'
 
 const PASS_THROUGH = [
   'ref_audio_path', 'prompt_text', 'prompt_lang', 'text_split_method', 'batch_size',
@@ -110,37 +111,59 @@ export function configRef(v = config().voice ?? {}) {
   return { ref_audio_path: refAudio, prompt_text: prompt, from: 'config' }
 }
 
-/** 候选的参考段池：情绪参考段 + 默认音色一起上，谁合出来更像人就用谁。
- *
- *  10-26 A/B（每种情绪 4 条候选取最好，8 种情绪合计）：
- *    情绪参考段 114.2 分 vs 默认音色 105.0 分 —— 但只在 生气(+4.8)/开心(+5.6)/撒娇(+3.1) 稳赢，
- *    温柔/惊讶/害羞 反而是默认段更好（那几个参考段本身就偏软）。
- *  所以不做"情绪段一定优先"，而是两个参考段都参与候选，让打分决定。 */
 /**
- * 参考段的"文本 / 音频"配比体检 —— 这是 10-26 那次"配音漏字"的真正病根。
+ * 参考段的"文本 / 语音段"配比体检 —— 这是 10-26 那次"配音漏字"的真正病根。
  *
- * GPT-SoVITS 用 prompt_text 去对齐 ref 音频；一旦文本只覆盖音频的一小段（或压根不是那段话），
- * 模型会把"文本已经念完"当成收尾信号 → 每次生成都在句子中途 EOS。实测：默认参考
- * bingjiao2.wav 长 6.19 秒，配的文本只有 12 个字（≈2.6 秒的话），同一句连合 3 条，
- * 音节覆盖率全是 46%（一条不差，说明是系统性错配，不是抽奖）。
- * 换成配比正常的情绪参考段（她自己录的），同样的话覆盖率 100%~145%。
+ * GPT-SoVITS 用 prompt_text 去对齐 ref 音频；文本只覆盖音频的一小段时，模型会把
+ * "文本已经念完"当成收尾信号 → 每次生成都在句子中途 EOS（实测覆盖率恒定 46%，是系统性错配）。
  *
- * @returns {{dur:number, chars:number, ratio:number, ok:boolean, why:string}}
+ * ⚠️ 10-27 修正：**配比不能用整个文件的时长算**。音声素材都是从长音频里剪出来的，
+ *   前后留着大段留白 —— 实测 bingjiao2.wav 全长 6.19s 里 3.64s 是静音，真正在说话的
+ *   只有 2.55s，11 个字配 2.55s 就是正常语速（配比 1.07）。旧算法拿 6.19s 算出 2.59，
+ *   把它判成"不合格"，于是 bingjiao1~4 / yinlang 五条参考段**全被误杀**，
+ *   她的基础音色从语音链上消失了 —— 聊天语音只能落到情绪段池，而池子里 8 条音高
+ *   从 244Hz 到 286Hz 不等，候选各用一条 → 一句里音色乱跳，"不是她的声音"。
+ *   所以配比按**真正有声的累加时长**算（静音、停顿都不算），而且不能用"第一声到最后一声"：
+ *   音声素材两端常有剪辑咔哒，一帧爆音就能把跨度顶满（bingjiao2 就是这样把 2.0 秒的话
+ *   量成 6.16 秒）。量法在 video.mjs 的 voicedSeconds()。
+ *
+ * @returns {{dur:number, speech:number, chars:number, ratio:number, ratioFile:number, ok:boolean, why:string}}
  */
 export function refSanity(refAudioPath, promptText = '') {
-  const out = { dur: 0, chars: 0, ratio: 0, ok: true, why: '' }
+  const out = { dur: 0, speech: 0, chars: 0, ratio: 0, ratioFile: 0, ok: true, why: '' }
   try {
     if (!refAudioPath) return { ...out, ok: false, why: '没有参考音频' }
     const text = String(promptText || refTextOf(refAudioPath) || '')
     out.chars = text.replace(/[^\u4e00-\u9fa5A-Za-z0-9]/g, '').length
+    // 体检要解码一遍音频，热路径上（每条消息都过）得缓存：同文件同文本只量一次
+    const key = out.chars ? sanityKey(refAudioPath, out.chars) : ''
+    const hit = key ? _sanityCache.get(key) : null
+    if (hit) return { ...hit }
     out.dur = probeSeconds(refAudioPath)
     if (!out.dur || !out.chars) return { ...out, ok: false, why: '参考音频或文本读不出来' }
-    out.ratio = +(out.dur / (out.chars / 4.6)).toFixed(2)
-    // 4.6 字/秒 ≈ 她的正常语速；配比落在 0.6~1.8 之间才算"这段音频就是这句话"
-    out.ok = out.ratio >= 0.6 && out.ratio <= 1.8
-    out.why = out.ok ? '' : `文本/音频配比 ${out.ratio}（${out.chars} 字配 ${out.dur.toFixed(1)}s）—— 模型会念一半就收尾`
+    out.speech = speechSeconds(refAudioPath, out.dur)
+    out.ratio = +(out.speech / (out.chars / 4.6)).toFixed(2)
+    out.ratioFile = +(out.dur / (out.chars / 4.6)).toFixed(2)
+    // 4.6 字/秒 ≈ 她的正常语速；配比落在 0.5~1.8 之间才算"这段音频就是这句话"
+    out.ok = out.ratio >= 0.5 && out.ratio <= 1.8
+    out.why = out.ok ? '' : `文本/语音段配比 ${out.ratio}（${out.chars} 字配 ${out.speech.toFixed(1)}s）—— 模型会念一半就收尾`
+    if (key) { if (_sanityCache.size > 200) _sanityCache.clear(); _sanityCache.set(key, { ...out }) }
   } catch (e) { out.ok = false; out.why = '体检失败：' + String(e.message).slice(0, 40) }
   return out
+}
+
+const _sanityCache = new Map()
+function sanityKey(file, chars) {
+  try { const st = fs.statSync(file); return `${path.resolve(file)}|${st.mtimeMs}|${st.size}|${chars}` } catch { return '' }
+}
+
+/** 语音段时长（真正有声的累加，静音/停顿不算）。量不出来就回落到整段 —— 宁可放过，不要误杀她的音色。 */
+function speechSeconds(file, dur = 0) {
+  try {
+    const v = voicedSeconds(file)
+    if (v > 0.25 && v <= dur + 0.25) return v
+  } catch {}
+  return dur
 }
 
 /** 音频时长（秒）。ffprobe 优先（这台机器 PATH 里没有，得试已知路径），再退 python/soundfile。 */
@@ -165,23 +188,57 @@ function probeSeconds(file) {
   } catch { return 0 }
 }
 
+/** 候选参考段池 —— **一句话只用一个音色**。
+ *
+ *  10-26 的做法是"情绪段 + 默认段一起上，谁合出来更像人用谁"。10-27 主人拍板改了：
+ *  候选之间可以换采样运气，**不许换嗓子**。同一句话的三个候选如果各用一个参考段，
+ *  择优就不是"挑念得最好的那条"，而是"挑哪个音色顺耳" —— 听感上音高逐句乱跳，
+ *  正是"不是她的声音"的来源。所以：
+ *    · 标了情绪 → 用该情绪的参考段（同一个人的不同语气，音高本来就是设计的一部分）
+ *    · 没标情绪（calm）→ 用配置里的**基础音色**（bingjiao2，244Hz）
+ *    · 主参考体检不合格 → 兜底也**只挑一条**，不再把整库丢进池子
+ */
 export function refPool(emotionKey, v = config().voice ?? {}, override = {}) {
   const pool = refPoolRaw(emotionKey, v, override)
   const good = pool.filter((p) => refSanity(p.ref_audio_path, p.prompt_text).ok)
-  if (good.length) return good
-  // 全场都不合格（多见于 bingjiao2 那条错配的默认参考）→ 换成她自己的情绪参考段，
-  // 嗓子是同一个人的，只是 prompt 文本配得上音频。
-  const emo = Object.values(emotionRefs() || {}).flat().filter((e) => e && e.wav)
-  const emoGood = emo.filter((e) => refSanity(e.wav, e.text).ok)
-  if (emoGood.length) {
+  if (good.length) return [good[0]]
+  if (override.ref_audio_path) return [pool[0]]   // 显式指定就照办，不替她挑
+  // 主参考不合格 → 换成她自己的情绪参考段（嗓子是同一个人，只是文本配得上音频）
+  const fb = bestEmotionRef(emotionKey)
+  if (fb) {
     if (!globalThis.__feiyuRefWarned) {
       globalThis.__feiyuRefWarned = true
-      console.warn('[tts] 默认参考段的文本对不上音频，已改用情绪参考段（她的嗓音不变）')
+      console.warn('[tts] 这条参考段的文本配不上音频，已改用她的情绪参考段（嗓子不变）')
     }
-    const pick = emoGood[emotionKey] ? [emoGood[emotionKey]] : emoGood
-    return pick.map((e) => ({ ref_audio_path: e.wav, prompt_text: e.text, from: 'emo-fallback' }))
+    return [fb]
   }
-  return pool
+  return [pool[0]]
+}
+
+/** 兜底挑**一条**她自己的情绪参考段。
+ *
+ *  旧代码这里是 `emoGood[emotionKey]` —— 数组拿字符串当下标取，永远是 undefined，
+ *  于是每次都退回"整库 8 条"。修好取值的同时把返回值收敛成一条。 */
+export function bestEmotionRef(emotionKey = '') {
+  const lib = emotionRefs() || {}
+  const usable = []
+  for (const [k, val] of Object.entries(lib)) {
+    for (const e of Array.isArray(val) ? val : [val]) {
+      if (!e || !e.wav || !fs.existsSync(e.wav)) continue
+      const text = refTextOf(e.wav) || String(e.text || '')
+      if (!refSanity(e.wav, text).ok) continue
+      usable.push({ key: k, wav: e.wav, text, score: Number(e.score) || 0 })
+    }
+  }
+  if (!usable.length) return null
+  const same = usable.find((u) => u.key === String(emotionKey || ''))
+  if (same) return { ref_audio_path: same.wav, prompt_text: same.text, from: 'emo-fallback:' + same.key }
+  // 没有同名情绪段时的次序：贴近她日常嗓音的那几种先上（F0 251~256Hz，离 bingjiao2 的 244 最近），
+  // 高唤醒的（惊讶/生气/开心）排后面 —— 兜底是"实在没参考可用了"，不该一上来就在喊。
+  const ORDER = ['sleepy', 'wronged', 'shy', 'coquettish', 'tender', 'happy', 'angry', 'surprise']
+  const rank = (k) => { const i = ORDER.indexOf(k); return i < 0 ? ORDER.length : i }
+  const best = usable.slice().sort((a, b) => rank(a.key) - rank(b.key) || b.score - a.score)[0]
+  return { ref_audio_path: best.wav, prompt_text: best.text, from: 'emo-fallback:' + best.key }
 }
 
 function refPoolRaw(emotionKey, v = config().voice ?? {}, override = {}) {
@@ -363,14 +420,25 @@ export async function synthDetailed(text, outFile, override = {}) {
   for (const [ci, chunk] of chunks.entries()) {
     const cands = []
     for (let k = 0; k < n; k++) {
-      const ref = pool[k % pool.length]          // 参考段轮流上：情绪段 / 默认段
+      const ref = pool[0]                        // 一句话一个音色：候选共用同一条参考段，只换采样运气
       const f = path.join(tmpDir, `${tag}-c${ci}-${k}.wav`)
       cands.push({ file: await ttsOnce(chunk, f, { ref, prof, override, v }), refFrom: ref.from })
     }
     made.push({ chunk, cands })
   }
 
-  const all = made.flatMap((m) => m.cands.map((c) => ({ path: c.file, chars: m.chunk.length, rateMin: prof.rateMin, rateMax: prof.rateMax })))
+  // 10-27：候选怎么挑，决定"像不像她"。老的打分偏爱"音域宽、F0 起伏大"的那条 ——
+// 三条里最抖的一条永远赢，听感就是颤音/电音。现在默认改**保真择优**：
+//   · 有锚（视频线，override.registerRef）→ 音区贴本片中位 + 不抖不噪；
+//   · 没锚（聊天线）→ 只比"抖不抖、噪不噪"，不按起伏加分，也不拿参考段当音区锚
+//     （参考段是一句情绪很高的音声，比正常说话高 7 个半音，锚它会把声音往上拽）。
+// config 里 voice.fidelity=false 可以退回老行为。
+const fidelity = override.fidelity !== undefined ? !!override.fidelity : config().voice?.fidelity !== false
+  const all = made.flatMap((m) => m.cands.map((c) => ({
+    path: c.file, chars: m.chunk.length, rateMin: prof.rateMin, rateMax: prof.rateMax,
+    ref: override.registerRef ? pool[0]?.ref_audio_path : undefined,
+    fidelity,
+  })))
   const scores = all.length > 1 ? scoreWavs(all) : [{ path: all[0].path, ok: true, score: 0 }]
   const byPath = new Map(scores.map((s) => [s.path, s]))
   const chosen = made.map((m) => {

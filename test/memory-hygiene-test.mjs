@@ -1,0 +1,206 @@
+// memory-hygiene-test —— 记忆卫生（10-27 主人报"连问十次吃没吃饭 / 南京执念 / 说看番一直不看"）
+//
+// 这些用例锁的是"病根不复发"，不是"代码能跑"：
+//   ① 饥饿不能只涨不落（旧版非饭点 -0.5 ≈ 永不下降 → 一整天"满脑子都是吃的"）
+//   ② 心情不能每 tick 被砍到底（旧版 -4/tick → 整天 0/100 → 句子压到 15 字）
+//   ③ 他自己的推送不算"真实经历"（recallAll 必须排掉 kind:'push'）
+//   ④ 价值观池不许混进运维笔记/干活流水/同主题刷屏
+//   ⑤ 主人说过的硬事实必须记下来，并且能拦住"再问一遍"
+//   ⑥ 承诺要有账、要到点、要能结清
+//   ⑦ 能力清单里的命令必须真存在（写了却不存在 = 她会去调一个不存在的东西然后编）
+import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import path from 'node:path'
+import os from 'node:os'
+
+// ⚠️ 隔离必须在**任何 import 之前**完成：paths.mjs 在 import 时就把 HOME 定死了。
+// 10-27 踩过：只设了自定义变量、没设 USERPROFILE，结果测试把真记忆库（lore 55KB /
+// episodes 86KB / facts 10KB）写成了几条假数据 —— 只能从备份往回捞。
+const TMP_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'feiyu-memtest-'))
+process.env.USERPROFILE = TMP_HOME
+process.env.HOME = TMP_HOME
+process.env.FEIYU_DATA_DIR = path.join(TMP_HOME, '.feiyu-ai')
+process.env.DSH_HOME = path.join(TMP_HOME, '.dsh')
+fs.mkdirSync(process.env.FEIYU_DATA_DIR, { recursive: true })
+fs.mkdirSync(process.env.DSH_HOME, { recursive: true })
+
+const { dataPath, dshPath } = await import('../tools/lib/paths.mjs')
+const mood = await import('../tools/lib/mood.mjs')
+const memory = await import('../tools/lib/memory.mjs')
+const ownerFacts = await import('../tools/lib/owner-facts.mjs')
+const promises = await import('../tools/lib/promises.mjs')
+const focus = await import('../tools/lib/focus.mjs')
+const persona = await import('../tools/lib/persona.mjs')
+
+let pass = 0
+const ok = async (name, fn) => {
+  try { await fn(); pass++; console.log('  ✓ ' + name) } catch (e) { console.log('  ✗ ' + name + ' → ' + e.message); process.exitCode = 1 }
+}
+const writeJson = (f, v) => { fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, JSON.stringify(v, null, 1)) }
+
+console.log('记忆卫生测试')
+
+// ① 饥饿：饭点封顶、非饭点按次掉、吃到饭归零
+await ok('饭点饥饿封顶在 hungerCap（不再打满 100）', () => {
+  fs.rmSync(dataPath('mood.json'), { force: true })
+  for (let i = 0; i < 30; i++) mood.tickMood(() => 0.99)
+  const st = mood.mood()
+  assert.ok(st.hunger <= 70, `hunger=${st.hunger} 应该 ≤70`)
+})
+await ok('fed() 把饥饿打到 20 以下并回一点心情', () => {
+  const before = mood.mood()
+  const after = mood.fed(20)
+  assert.equal(after.hunger, 20)
+  assert.ok(after.value >= before.value, '吃到东西心情不该更差')
+})
+await ok('非饭点衰减是"按次"而不是 0.5（旧 bug）', () => {
+  writeJson(dataPath('mood.json'), { value: 50, hunger: 60, day: new Date().toLocaleDateString('sv-SE') })
+  const st = mood.tickMood(() => 0.99)
+  const hour = new Date().getHours()
+  const inMeal = [11, 12, 17, 18].includes(hour)
+  if (inMeal) assert.ok(st.hunger >= 60, '饭点应该不降')
+  else assert.ok(st.hunger <= 54, `非饭点应该掉 ≥6，实际 ${st.hunger}`)
+})
+await ok('心情不会被单次 tick 砍 4 分', () => {
+  writeJson(dataPath('mood.json'), { value: 40, hunger: 90, day: new Date().toLocaleDateString('sv-SE') })
+  const st = mood.tickMood(() => 0.99)
+  assert.ok(st.value >= 39, `单次最多 -1，实际到了 ${st.value}`)
+})
+
+// ② recallAll 不把她自己的推送当经历
+await ok('recallAll 排除 kind:push 行', () => {
+  const f = dataPath('episodes.jsonl')
+  const now = Date.now()
+  const rows = [
+    { platform: 'qq', chatId: 'qq:1', role: 'assistant', text: '我搜了南京小吃', kind: 'push', ts: now - 60000 },
+    { platform: 'bilibili', chatId: 'bilibili:x', role: 'assistant', text: '看了个视频', ts: now - 50000 },
+  ]
+  writeJson(f, rows)
+  // episodes.jsonl 是 jsonl：上面写成数组不合法，重写一遍
+  fs.writeFileSync(f, rows.map((r) => JSON.stringify(r)).join('\n') + '\n')
+  const out = memory.recallAll('qq:999', { hours: 12, max: 12 })
+  const txt = (out.lines ?? []).join('\n')
+  assert.ok(!/我搜了南京小吃/.test(txt), '自己的推送不该被当成跨平台经历注入：' + txt)
+  assert.ok(/看了个视频/.test(txt), '真实经历应该还在：' + txt)
+})
+
+// ③ 价值观池：ops / 干活流水 / 同主题刷屏都不进
+await ok('addLore：运维 tag 进 ops 池，不进价值观', () => {
+  fs.rmSync(dataPath('lore.json'), { force: true })
+  memory.addLore('运维', 'Bing URL 多带一个 &count=15 才能搜到')
+  assert.equal(memory.loreValues(8).length, 0, '运维笔记不该出现在价值观池')
+  assert.equal(memory.loreOps(8).length, 1, '但要查得到')
+})
+await ok('addLore：带日期前缀的干活流水不进价值观', () => {
+  memory.addLore('学习', '10-27 16:05 统计了自己 84 条发言里 53 条带本鱼')
+  assert.ok(!memory.loreValues(8).some((t) => /84 条发言/.test(t)))
+})
+await ok('addLore：同主题刷屏被折叠（不会 25 条南京）', () => {
+  fs.rmSync(dataPath('lore.json'), { force: true })
+  for (let i = 0; i < 9; i++) memory.addLore('学习', `替主人探南京小吃第${i}版：盐水鸭、烤鸭、鸭血粉丝三样必吃`)
+  const vals = memory.loreValues(20)
+  const nanjing = vals.filter((t) => /南京/.test(t))
+  assert.ok(nanjing.length <= 2, `同主题应该只剩 ≤2 条，实际 ${nanjing.length} 条`)
+})
+await ok('真正的价值观照样注入', () => {
+  fs.rmSync(dataPath('lore.json'), { force: true })
+  memory.addLore('守规矩', '不许在群里叫别人主人，这是边界')
+  assert.ok(memory.loreValues(8).some((t) => /群里叫别人主人/.test(t)))
+})
+
+// ④ 主人事实
+await ok('从他的话里抽事实：吃了什么/在做什么/心情/作品', () => {
+  assert.equal(ownerFacts.extract('我中午吃了烧鸭')[0].value, '烧鸭')
+  assert.equal(ownerFacts.extract('我在改插件呢')[0].value, '改插件呢')
+  assert.equal(ownerFacts.extract('我明天要去看牙')[0].value, '看牙')
+  assert.equal(ownerFacts.extract('我有点累')[0].value, '累')
+  assert.equal(ownerFacts.extract('我推荐你去看《可塑性记忆》')[0].value, '可塑性记忆')
+})
+await ok('同一个 key 只留最新（吃了烧鸭 → 吃了面）', () => {
+  fs.rmSync(dataPath('facts.json'), { force: true })
+  ownerFacts.put('food', '烧鸭')
+  ownerFacts.put('food', '面')
+  const food = ownerFacts.list().filter((x) => x.key === 'food')
+  assert.equal(food.length, 1, '不该两条并列')
+  assert.equal(food[0].value, '面')
+})
+await ok('事实闸：他已经说过吃了什么 → 再问就是命中', () => {
+  fs.rmSync(dataPath('facts.json'), { force: true })
+  ownerFacts.learnFromOwner('我中午吃了烧鸭')
+  assert.ok(ownerFacts.asksKnown('你中午到底吃了没啊'), '应该拦下')
+  assert.ok(ownerFacts.asksKnown('吃饭了吗'), '应该拦下')
+  assert.equal(ownerFacts.asksKnown('今天南京下雨吗'), null, '无关的问题不该误伤')
+})
+await ok('事实块里明确写着"不用再问"', () => {
+  const blk = ownerFacts.promptBlock()
+  assert.ok(/烧鸭/.test(blk))
+  assert.ok(/不用再问/.test(blk))
+})
+
+// ⑤ 承诺账本
+await ok('从她的回复里认出承诺并落账（带名字）', () => {
+  fs.rmSync(dataPath('promises.json'), { force: true })
+  const got = promises.catchFromReply('这就去看《可塑性记忆》第一集，看完讲给你听', { userText: '我推荐你去看一部番叫做可塑性记忆' })
+  assert.equal(got.length, 1, '两条正则命中同一件事，只该落一条')
+  assert.equal(got[0].what, '可塑性记忆')
+  assert.equal(got[0].state, 'open')
+})
+await ok('同一条承诺不重复记账', () => {
+  const before = promises.list().length
+  promises.catchFromReply('这就去看《可塑性记忆》第二集', { userText: '可塑性记忆' })
+  assert.equal(promises.list().length, before, '同一个主题不该重复开账')
+})
+await ok('到期才 notable，done/fail 有终态', () => {
+  const it = promises.add('看一集番', { what: '另一个番', dueMin: 1 })
+  assert.equal(promises.dueNow().length, 0, '刚开的还不该到期')
+  promises.done(it.id, '看完了')
+  assert.equal(promises.list('done').length, 1)
+  const it2 = promises.add('另一件事', { what: '别的事', dueMin: 1 })
+  promises.fail(it2.id, '没有字幕')
+  assert.equal(promises.list('failed').length, 1)
+})
+await ok('提示词里有"你欠着的事/你真没做成"（教她照实说）', () => {
+  const blk = promises.promptBlock(Date.now() + 10 * 60_000)
+  assert.ok(/你答应过|欠着|没做成/.test(blk), blk)
+})
+
+// ⑥ 看番这件事必须真的存在
+await ok('focus 认"看番"，且 binge 是独立活动', () => {
+  assert.equal(focus.normActivity('看番'), 'binge')
+  assert.equal(focus.normActivity('binge'), 'binge')
+  assert.equal(focus.labelOf('binge'), '看番/看剧')
+})
+await ok('binge / promises 命令文件存在且导出 run', async () => {
+  for (const name of ['binge', 'promises']) {
+    const f = path.join(import.meta.dirname, '..', 'tools', 'commands', name + '.mjs')
+    assert.ok(fs.existsSync(f), `缺命令 ${name}`)
+    const mod = await import('file://' + f.replace(/\\/g, '/'))
+    assert.equal(typeof (mod.run ?? mod.default), 'function', `${name} 没有 run 导出`)
+  }
+})
+await ok('能力清单里的每条命令都真的注册在 feiyu.mjs 里', () => {
+  const src = fs.readFileSync(path.join(import.meta.dirname, '..', 'tools', 'feiyu.mjs'), 'utf8')
+  for (const [cmd] of persona.CAPABILITIES) {
+    const name = String(cmd).trim().split(/\s+/)[0]
+    const fileName = path.join(import.meta.dirname, '..', 'tools', 'commands', name.replace(/^--?/, '') + '.mjs')
+    assert.ok(new RegExp(`(^|\\s)${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}:`, 'm').test(src) || /--/.test(name),
+      `能力清单写了 ${name}，但 feiyu.mjs 的命令表里没有`)
+    if (!/--/.test(name)) assert.ok(fs.existsSync(fileName), `缺文件 tools/commands/${name}.mjs`)
+  }
+})
+await ok('人格层真的会注入"你能自己动手"（含 selfup 权限）', () => {
+  const txt = persona.CAPABILITIES.map((c) => c.join(' ')).join('\n')
+  assert.ok(/binge --show/.test(txt))
+  assert.ok(/selfup backup/.test(txt), '要告诉她能自己改代码')
+})
+
+// ⑦ 记忆卫生：日志钩子读"今天最新"而不是"文件最底部"
+await ok('qq-server 的网志钩子取的是当天段落最上面几条', () => {
+  const src = fs.readFileSync(path.join(import.meta.dirname, '..', 'tools', 'commands', 'qq-server.mjs'), 'utf8')
+  assert.ok(/function todayWebLines/.test(src), '缺 todayWebLines')
+  assert.ok(/## \$\{today\}/.test(src), '要按 ## 日期 找当天段落')
+  assert.ok(!/web-log\.md'[\s\S]{0,80}slice\(-3\)/.test(src), '不能再 slice(-3) 取文件末尾')
+})
+
+console.log(`\n记忆卫生测试：${pass}/${pass} 通过`)
+if (process.exitCode) console.log('（有失败项，见上）')

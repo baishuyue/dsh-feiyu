@@ -40,9 +40,12 @@ export async function run(argv = []) {
     purl.searchParams.set('cid', String(d.cid))
     const player = await apiGet(purl.href, H)
     const subs = player?.data?.subtitle?.subtitles ?? []
-    // 优先 AI 中文轨 → 中文轨 → 第一条。AI 字幕可能串片/错字，只当参考，别全信
-    const pick = subs.find(s => /ai-zh/i.test(String(s.lan ?? '')))
-      || subs.find(s => /zh/i.test(String(s.lan ?? '')))
+    // 轨序：人审中文轨（非 ai-*）→ AI 中文轨 → 第一条。AI 轨常串片/错字，只当参考
+    const isAiTrack = s => /^ai[-_]/i.test(String(s.lan ?? '')) || /ai-zh/i.test(String(s.lan ?? ''))
+    const humanZh = subs.filter(s => /zh/i.test(String(s.lan ?? s.lang ?? '')) && !isAiTrack(s))
+    const pick = humanZh[0]
+      || subs.find(s => /ai-zh/i.test(String(s.lan ?? '')))
+      || subs.find(s => /zh/i.test(String(s.lan ?? s.lang ?? '')))
       || subs[0]
     if (pick) {
       subtitleLang = pick.lan

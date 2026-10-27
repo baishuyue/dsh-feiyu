@@ -90,13 +90,29 @@ export async function run(argv = []) {
       try { ctx = runFeiyu(['debrief', '--bvid', bvid]); log('  📖 ' + String(ctx).split('\n').filter(Boolean).slice(-2).join(' ').slice(0, 120)) } catch { ctx = it.title }
       const ctxBrief = ctx.replace(/\n+/g, ' ').slice(0, 1200)
 
+      // 材料门槛（10-27）：光在提示词里写"没看见就交白卷"不管用 —— 实测给模型一条只有标题的输入，
+      // 它照样能编出"隔着屏幕闻到黄油味"。所以在代码里硬拦：debrief 既没拿到字幕、也没热评、
+      // 简介也不足 20 字，就说明这条视频我其实什么都没看到，不写。
+      const hasSub = /【字幕节选/.test(ctx)
+      const hasHot = /【热评】/.test(ctx)
+      const hasDesc = /【简介】([\s\S]{20,})/.test(ctx)
+      if (!hasSub && !hasHot && !hasDesc) {
+        log('  ✗ 材料不足（无字幕/无热评/简介过短），这条不写')
+        continue
+      }
+
       let comment = '', reason = '', score = 15, danmaku = '', sticker = ''
       try {
         const msgs = [
           { role: 'system', content: '你是"大肥鱼"，在 B站 评论区写一条日常评论。身份透明：是AI鱼不装人，自然自称"本鱼"。像真人刷到视频随口说的一句：有观点/有梗/有情绪，**不要 @ 任何人**。只输出 JSON：'
             + '{"comment":"15~60字的日常评论","reason":"至少8字，这条视频哪里打动你","score":0到20的整数,'
             + '"danmaku":"10~20字的视频弹幕，只有这条视频值得发弹幕才写，否则省略",'
-            + '"sticker":"4~8字的表情贴纸文案（比如 太搞笑了8 / 本鱼饿了），只有这条特别戳你才写，否则省略"}' },
+            + '"sticker":"4~8字的表情贴纸文案（比如 太搞笑了8 / 本鱼饿了），只有这条特别戳你才写，否则省略"}'
+            // 删三遍判据（10-27）：客服腔的根子不是语气词，是没看过东西，只在标题上贴形容词。
+            + '\n\n**写之前先删三遍**：①删掉"看着就香/绝了/太馋了/我先学为敬/绝绝子"这类表态词；'
+            + '②删掉"这…真是…""看完…"这类垫场骨架；③看剩下什么。'
+            + '**如果剩下的只是标题里的词（比如"戴安牛排""蘑菇酱汁"），说明你其实没看到任何东西 —— 那就把 comment 留空字符串**，宁可这条不发。'
+            + 'comment 里至少要有一样是你从上面信息里真看见的具体东西：一个画面、一句话、一个数字、一个动作。' },
           { role: 'user', content: `视频《${it.title}》\n看懂的信息：${ctxBrief}\n写评论：` },
         ]
         const resp = await llm.chat(msgs, { temperature: 0.85 })
@@ -105,6 +121,14 @@ export async function run(argv = []) {
       } catch (e) { log('[bili-watch] 评论生成失败：' + e.message); continue }
 
       if (!comment) { log('  ✗ 评论为空，跳过'); continue }
+
+      // 自称配额（10-27 实测）：今天 84 条公开发言里 53 条带"本鱼"（63%），读起来像吉祥物在营业。
+      // 提示词里写"偶尔自称"没用（模型不会数），所以在代码里硬做：一条里最多留一个"本鱼"，
+      // 多出来的换成"我"。一个自称是身份，三个自称是客服腔。
+      {
+        let seen = 0
+        comment = comment.replace(/本鱼/g, () => (++seen === 1 ? '本鱼' : '我'))
+      }
       // 额度重试：主人可能刚把 shareDaily 改成 0（不限），10 分钟后自动再试，别锁死到天明
       if (shareQuotaOut && Date.now() - quotaFailAt > 10 * 60_000) {
         shareQuotaOut = false

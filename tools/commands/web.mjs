@@ -61,7 +61,10 @@ function htmlToText(html) {
 export function searchWeb(kw) {
   const results = []
   try {
-    const html = curlGet(`https://cn.bing.com/search?q=${encodeURIComponent(kw)}&count=15`)
+    // ✗ 别加 &count=15（10-27 实测）：带上这个参数，cn.bing.com 会返回一批**跟关键词完全无关**
+    //   的结果（问"稻花香大米口感"给我淘宝和屏幕亮度），看着是"搜到了"，其实全是脏数据。
+    //   去掉之后同一个问题前三条就命中"稻花香集团官方网站"。宁可少抓，不要脏抓。
+    const html = curlGet(`https://cn.bing.com/search?q=${encodeURIComponent(kw)}`)
     const re = /<h2><a[^>]+href="(https?:\/\/[^"]+)"[^>]*>([\s\S]*?)<\/a><\/h2>([\s\S]*?)<p[^>]*>([\s\S]*?)<\/p>/g
     let m
     while ((m = re.exec(html)) && results.length < 10) {

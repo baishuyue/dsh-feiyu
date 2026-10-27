@@ -23,8 +23,71 @@ import sys
 
 import numpy as np
 
+isfinite = np.isfinite
 
-def analyse(path, chars, sr_target=16000, rate_min=4.2, rate_max=6.4):
+
+def _pyin(path, fmin=70, fmax=500, sr_target=16000, vp_min=0.0):
+    import librosa
+    import soundfile as sf
+    y, sr = sf.read(path)
+    if y.ndim > 1:
+        y = y.mean(axis=1)
+    y = np.asarray(y, dtype='float32')
+    y16 = librosa.resample(y, orig_sr=sr, target_sr=sr_target)
+    f0, _, vp = librosa.pyin(y16, fmin=fmin, fmax=fmax, sr=sr_target, frame_length=1024, hop_length=512)
+    f0 = np.asarray(f0, dtype='float32')
+    vp = np.asarray(vp, dtype='float32')
+    keep = (~np.isnan(f0)) & (vp >= vp_min)
+    return f0[keep], y16
+
+
+def roughness(path):
+    """HNR（谐噪比，dB）+ F0 抖动（半音）。电音/嘶哑/颤音就是这两个数掉下去。"""
+    import librosa
+    import soundfile as sf
+    y, sr = sf.read(path)
+    if y.ndim > 1:
+        y = y.mean(axis=1)
+    y = np.asarray(y, dtype='float32')
+    y = y / (np.abs(y).max() + 1e-9)
+    frame, hop = 1024, 256
+    vals = []
+    for i in range(0, max(1, len(y) - frame), hop):
+        fr = y[i:i + frame]
+        if np.sum(fr ** 2) < 1e-5:
+            continue
+        ac = np.correlate(fr, fr, 'full')[frame - 1:]
+        ac = ac / (ac[0] + 1e-12)
+        lo, hi = int(sr / 420), int(sr / 140)
+        if hi >= len(ac):
+            continue
+        pk = float(np.max(ac[lo:hi]))
+        if pk > 0.05:
+            vals.append(10 * np.log10(pk / (1 - pk + 1e-9)))
+    hnr = float(np.median(vals)) if vals else float('nan')
+    f0v, _ = _pyin(path, 140, 420, vp_min=0.85)
+    st = 12 * np.log2(f0v / 220) if len(f0v) else np.array([np.nan])
+    jit = float(np.median(np.abs(np.diff(st)))) if len(st) > 3 else float('nan')
+    return hnr, jit
+
+
+_ref_cache = {}
+
+
+def ref_register(path):
+    """参考段的主音高（半音，相对 220Hz）—— 合成的每句都该落在同一个八度里的同一段。"""
+    if not path:
+        return None
+    if path in _ref_cache:
+        return _ref_cache[path]
+    f0v, _ = _pyin(path, 140, 420, vp_min=0.85)
+    st = 12 * np.log2(f0v / 220) if len(f0v) else np.array([np.nan])
+    v = float(np.median(st)) if len(st) else None
+    _ref_cache[path] = v
+    return v
+
+
+def analyse(path, chars, sr_target=16000, rate_min=4.2, rate_max=6.4, ref=None, fidelity=False):
     import librosa
     import soundfile as sf
 
@@ -73,11 +136,39 @@ def analyse(path, chars, sr_target=16000, rate_min=4.2, rate_max=6.4):
     if voiced < 0.20:
         score -= 2.0
         why.append(f'浊音比偏低 {voiced:.2f}')
-    if sd < 3.4 or rng < 11.5:
-        why.append(f'语调偏平（起伏 {sd:.1f} / 音域 {rng:.1f}）')
+
+    # 落区（相对 220Hz 的半音）—— 她的每句都该在同一个音区，不然"同一个人"听着像两三个人
+    # 只统计"确实在发声"的帧（vp ≥ 0.85），否则静音段的野值会把 jit 抬到 1.3 半音
+    f0c, _ = _pyin(path, 140, 420, vp_min=0.85)
+    st_med = float(np.median(12 * np.log2(f0c / 220))) if len(f0c) else float('nan')
+    jit = float(np.median(np.abs(np.diff(12 * np.log2(f0c / 220))))) if len(f0c) > 3 else float('nan')
+    hnr = float('nan')
+
+    if fidelity:
+        # 保真模式（10-27）：视频配音要的是"就是她原声"，不是"最活的那条"。
+        # 只看三件事 —— 音区离参考段多近、抖不抖、噪不噪；起伏大不给加分（那正是电音的来源）。
+        try:
+            hnr, jit2 = roughness(path)
+            if isfinite(jit2):
+                jit = jit2
+        except Exception:
+            pass
+        ref_st = ref_register(ref)
+        dist = abs(st_med - ref_st) if (ref_st is not None and isfinite(st_med)) else 0.0
+        score = - (dist * 1.6) - max(0.0, (jit if isfinite(jit) else 0.25) - 0.30) * 6.0 - max(0.0, 3.0 - (hnr if isfinite(hnr) else 3.0)) * 1.2
+        if ref_st is not None and dist > 2.5:
+            why.append(f'音区偏离参考 {dist:.1f} 半音（{st_med:+.1f} vs {ref_st:+.1f}）')
+        if isfinite(hnr) and hnr < 2.0:
+            why.append(f'噪声重（HNR {hnr:.1f}dB）')
+    else:
+        if sd < 3.4 or rng < 11.5:
+            why.append(f'语调偏平（起伏 {sd:.1f} / 音域 {rng:.1f}）')
 
     return dict(dur=round(dur, 2), sd=round(sd, 2), rng=round(rng, 2), rms=round(rms_std, 2),
                 rate=round(rate, 2), voiced=round(voiced, 2), score=round(score, 2),
+                st=round(st_med, 2) if isfinite(st_med) else None,
+                jit=round(jit, 3) if isfinite(jit) else None,
+                hnr=round(hnr, 1) if isfinite(hnr) else None,
                 ok=not why, why='；'.join(why))
 
 
@@ -94,7 +185,8 @@ def main():
         try:
             out.append(dict(path=it.get('path'), **analyse(
                 it.get('path'), int(it.get('chars') or 0),
-                rate_min=float(it.get('rateMin') or 4.2), rate_max=float(it.get('rateMax') or 6.4))))
+                rate_min=float(it.get('rateMin') or 4.2), rate_max=float(it.get('rateMax') or 6.4),
+                ref=it.get('ref'), fidelity=bool(it.get('fidelity')))))
         except Exception as e:  # 单个失败不影响其他候选
             out.append(dict(path=it.get('path'), ok=False, score=0, why=str(e)[:120]))
     print(json.dumps({'items': out}, ensure_ascii=False))

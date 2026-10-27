@@ -7,6 +7,7 @@ import { apiGet, makeHeaders } from './bili-api.mjs'
 import { loadCred } from './cred.mjs'
 import { config } from './config.mjs'
 import * as guard from './guard.mjs'
+import { classifyComment } from './comment-kind.mjs'
 import { dataPath } from './paths.mjs'
 
 // ── 日额度账本 ───────────────────────────────────────────────────────────
@@ -143,7 +144,13 @@ export async function postDynamic(rawText, { go = false } = {}) {
         execFile(py, ['D:/social-auto-upload/bili_act_cdp.py', 'dyn', text],
           { encoding: 'utf8', timeout: 180000, windowsHide: true }, (e2, so, se) => resolve(String((so || se || e2?.message) || '')))
       })
-      if (/"code"\s*:\s*0/.test(out) && out.includes('CREATE_DYN')) { capRecord('dyn'); return { ok: true, why: '动态已发（CDP 真浏览器通道）' } }
+      if (/"code"\s*:\s*0/.test(out) && out.includes('CREATE_DYN')) {
+        capRecord('dyn')
+        // 台账（10-27 补）：以前这条 CDP 成功路径只记额度、不写台账，于是"我发过一条动态"在
+        // 账本里查不到（当天 social-log 里 dynamic 条数 = 0）。说不清自己说过什么，等于没记。
+        try { const { recordBili } = await import('./outbox.mjs'); recordBili({ kind: '动态', text }) } catch {}
+        return { ok: true, why: '动态已发（CDP 真浏览器通道）' }
+      }
       if (out.includes('NEED_LOGIN')) return { ok: false, why: '动态需要先在 CDP Chrome 窗口里登录一次B站（扫码），之后永久免登' }
       if (out.includes('CDP_CONNECT_FAIL')) return { ok: false, why: 'CDP Chrome(9222) 没开（动态的兜底通道）' }
       return { ok: false, why: '动态失败：' + out.slice(-150) }
@@ -268,22 +275,177 @@ export async function scanReplies({ sinceMs } = {}) {
 }
 
 /** 回复别人（楼中楼）：不带 @主人（社交回应，不是分享），不过 share 标尺，但照走 guard + 日额度。
- *  opts.inReplyTo：「对方昵称:对方的话」—— 发言台账用。 */
-export async function postReply(bvid, rootRpid, parentRpid, rawMessage, { go = false, inReplyTo = '' } = {}) {
+ *  opts.inReplyTo：「对方昵称:对方的话」—— 发言台账用。
+ *  opts.aid / opts.title：已知就传进来 —— 省掉一次 /x/web-interface/view（那个接口今天已经被
+ *  B站 412 限流过两回，回评论不该被"查 aid"卡死；aid 在评论区接口里本来就有）。 */
+export async function postReply(bvid, rootRpid, parentRpid, rawMessage, { go = false, inReplyTo = '', aid = 0, title = '', image = '' } = {}) {
   const cfg = config().bilibili?.replies ?? {}
   const message = guard.clean(String(rawMessage || ''), config()).slice(0, 100)
-  if (!message) return { ok: false, why: '回复内容为空' }
-  const info = await videoInfo(bvid)
-  if (!go) return { ok: true, dry: true, why: `【干跑】回评 →《${info.title.slice(0, 18)}》：${message}` }
+  // 10-27：回复不再只有文字 —— 带图回复走同一个 /x/v2/reply/add（`pictures` 参数），
+  // 图先上传到B站图床（和图片评论复用 uploadImage）。纯图回复允许文字为空。
+  if (!message && !image) return { ok: false, why: '回复内容为空' }
+  const info = Number(aid) > 0 ? { aid: Number(aid), title: String(title || bvid) } : await videoInfo(bvid)
+  const tag = image ? ` [图:${path.basename(image)}]` : ''
+  if (!go) return { ok: true, dry: true, why: `【干跑】回评 →《${String(info.title).slice(0, 18)}》：${message}${tag}` }
   if (cfg.enabled !== true) return { ok: false, why: 'bilibili.replies.enabled 是关的' }
   if (!capOk('reply', Number(cfg.dailyMax ?? 10))) return { ok: false, why: '今日回评额度已用完' }
-  const verdict = guard.allow(`bilibili:${bvid}`, message, config())
+  const verdict = guard.allow(`bilibili:${bvid}`, message || '[图]', config())
   if (!verdict.ok) return { ok: false, why: '被风控闸门拦下：' + verdict.why }
   const cred = loadCred()
+  let pics = ''
+  if (image) {
+    if (config().bilibili?.replies?.image !== true) return { ok: false, why: 'bilibili.replies.image 没开（带图回复要显式开启）' }
+    const pic = await uploadImage(image)
+    pics = JSON.stringify([pic])
+  }
   const j = await formPost(cred, 'https://api.bilibili.com/x/v2/reply/add', {
     oid: String(info.aid), type: '1', plat: '1', message, root: String(rootRpid), parent: String(parentRpid),
+    ...(pics ? { pictures: pics } : {}),
   })
   const res = okOf(j)
-  if (res.ok) { capRecord('reply'); guard.commit(`bilibili:${bvid}`, message); recordMyComment(bvid, info.aid, j?.data?.rpid); try { const { recordBili } = await import('./outbox.mjs'); recordBili({ kind: '回评', title: info.title, bvid, to: inReplyTo, text: message }) } catch {} }
-  return { ...res, why: res.ok ? `已回复「${message.slice(0, 30)}」` : `回评失败 ${res.message}` }
+  if (res.ok) { capRecord('reply'); guard.commit(`bilibili:${bvid}`, message || '[图]'); recordMyComment(bvid, info.aid, j?.data?.rpid); try { const { recordBili } = await import('./outbox.mjs'); recordBili({ kind: image ? '回评(图)' : '回评', title: info.title, bvid, to: inReplyTo, text: message, extra: image ? path.basename(image) : '' }) } catch {} }
+  return { ...res, why: res.ok ? `已回复「${(message || '[图]').slice(0, 30)}」` : `回评失败 ${res.message}` }
+}
+
+// ── ⑦ 自己作品评论区（10-27）──────────────────────────────────────────────
+// 主人要的是：**自己投稿下面，别人的评论（任何类型）都要回**。
+// 以前 B站 只有「别人回复了我的评论」这一条被动路径，自己作品下的评论根本没人管。
+/** 我自己的投稿（最近 N 个）。三路来源，从最稳到最容易风控：
+ *   ① config.bilibili.ownBvids（主人手填，永远最准）
+ *   ② 本地产出记录：~/.feiyu-ai/bili-debut.json 的 bvid + bili-posts/*​/bvid.txt
+ *   ③ /x/space/wbi/arc/search（WBI 签名空间接口，最容易被 412 挡；失败就静默退回）
+ * 为什么要有 ②（10-27 实测）：space 接口对脚本很凶，第一次试就吃了 HTTP 412 并被熔断 5 分钟 ——
+ * 为了读个投稿列表把整个 B站 通道堵住不值得。本地记过的 bvid 一样能查评论（走 /x/v2/reply 不限流）。
+ */
+export async function listOwnVideos({ ps = 10 } = {}) {
+  const cfg = config().bilibili ?? {}
+  const out = []
+  const push = (v) => { const b = String(v?.bvid || '').trim(); if (/^BV[0-9A-Za-z]{10}$/.test(b) && !out.some((x) => x.bvid === b)) out.push({ bvid: b, aid: Number(v?.aid || 0), title: String(v?.title || ''), created: Number(v?.created || 0) }) }
+
+  // ① 手填
+  for (const b of cfg.ownBvids || []) push({ bvid: b })
+  // ② 本地记录：首条锁 + 每个投稿包的 bvid.txt
+  try {
+    const d = JSON.parse(fs.readFileSync(dataPath('bili-debut.json'), 'utf8'))
+    if (d?.bvid) push({ bvid: d.bvid, title: d.title || '' })
+  } catch {}
+  try {
+    const root = dataPath('bili-posts')
+    for (const name of fs.readdirSync(root)) {
+      const f = path.join(root, name, 'bvid.txt')
+      if (!fs.existsSync(f)) continue
+      const b = String(fs.readFileSync(f, 'utf8')).trim()
+      if (b) push({ bvid: b, title: name })
+    }
+  } catch {}
+
+  // ③ 空间接口（能拿到标题/时间；**默认不调**）
+  //    10-27 实测：`/x/space/wbi/arc/search` 在这个 IP 上稳定 -412，而且会把 apiGet 熔断 20 分钟，
+  //    连带堵住回评/弹幕。所以默认关掉，要开就 config `bilibili.useSpaceList: true`（并且走 soft 不熔断）。
+  if (cfg.useSpaceList === true && out.length < Math.min(3, ps)) {
+    try {
+      const cred = loadCred()
+      const H = makeHeaders(cred)
+      const nav = await apiGet('https://api.bilibili.com/x/web-interface/nav', H, { soft: true })
+      const mid = String(nav?.data?.mid ?? cfg.ownMid ?? '')
+      if (mid) {
+        const u = `https://api.bilibili.com/x/space/wbi/arc/search?mid=${mid}&ps=${Math.max(1, Math.min(30, Number(ps) || 10))}&pn=1&order=pubdate&platform=web`
+        const d = await apiGet(u, H, { noCache: true, soft: true })
+        for (const v of d?.data?.list?.vlist || []) push({ bvid: v.bvid, aid: v.aid, title: v.title, created: Number(v.created || 0) * 1000 })
+      }
+    } catch { /* 风控/未登录：忽略，用本地记录 */ }
+  }
+  // 补齐 aid/标题（/x/v2/reply 只认数字 aid；本地记录里只有 bvid）
+  // aid 缓存进 bili-own-engage.json：view 接口被 412 的时候还能靠缓存照常回评论。
+  const CACHE = dataPath('bili-own-engage.json')
+  let cache = {}
+  try { cache = JSON.parse(fs.readFileSync(CACHE, 'utf8'))?.aidCache || {} } catch {}
+  // 归属校验（10-27 血的教训）：ownBvids 手填错一个号，她就会跑去**别人的视频**下面回评论。
+  // 拿 nav 的 mid 跟视频 ownerMid 比，不一样就丢掉这个 BV。
+  let myMid = String(cfg.ownMid ?? '')
+  if (!myMid) {
+    try {
+      const nav = await apiGet('https://api.bilibili.com/x/web-interface/nav', makeHeaders(loadCred()), { soft: true })
+      myMid = String(nav?.data?.mid ?? '')
+    } catch {}
+  }
+  const full = []
+  let dirty = false
+  const skipped = []
+  for (const v of out.slice(0, Math.max(1, Number(ps) || 10))) {
+    const hit = cache[v.bvid]
+    if (hit?.owner && myMid && String(hit.owner) !== myMid) { skipped.push(v.bvid); continue }
+    if (v.aid) {
+      // 来自 space 接口的连接（mid 已按 myMid 查过）→ 一定是她自己的
+      full.push(v)
+      cache[v.bvid] = { ...(cache[v.bvid] || {}), aid: v.aid, title: v.title || cache[v.bvid]?.title || '', owner: myMid || cache[v.bvid]?.owner || '' }
+      dirty = true
+      continue
+    }
+    // 缓存里只有 aid、没有 owner 的条目 = 老版本留下的，**归属没验过** → 还得问一次
+    if (hit?.aid && (hit.owner || !myMid)) { full.push({ ...v, aid: Number(hit.aid), title: v.title || hit.title || '' }); continue }
+    try {
+      const info = await videoInfo(v.bvid)
+      if (myMid && info.ownerMid && String(info.ownerMid) !== myMid) {
+        // 不是她的投稿：记进缓存（带 owner），以后不再问接口
+        cache[v.bvid] = { aid: info.aid, title: info.title, owner: String(info.ownerMid) }
+        dirty = true
+        skipped.push(v.bvid)
+        continue
+      }
+      full.push({ ...v, aid: info.aid, title: v.title || info.title })
+      cache[v.bvid] = { ...(cache[v.bvid] || {}), aid: info.aid, title: info.title, owner: String(info.ownerMid ?? '') }
+      dirty = true
+    } catch { /* 读不到就跳过（412/已删除）—— 下次再说，别把整轮搞挂 */ }
+  }
+  if (dirty) {
+    try {
+      const cur = (() => { try { return JSON.parse(fs.readFileSync(CACHE, 'utf8')) } catch { return {} } })()
+      cur.aidCache = { ...(cur.aidCache || {}), ...cache }
+      fs.mkdirSync(path.dirname(CACHE), { recursive: true })
+      fs.writeFileSync(CACHE, JSON.stringify(cur))
+    } catch {}
+  }
+  if (skipped.length) {
+    console.warn(`  ⚠ 跳过 ${skipped.length} 个不属于自己的 BV：${skipped.join(' ')}（bilibili.ownBvids 填错了？）`)
+  }
+  return full
+}
+
+/**
+ * 某个视频下的评论（含楼中楼），带类型（文字/表情占位/图片评论/空）。
+ * 主人 10-27 的原话：「任何类型」—— 所以这里**不筛空文本**，交给上层按 kind 处理。
+ * @returns {Promise<Array<{rpid,rootRpid,parentRpid,mid,uname,text,kind,label,plain,pictures,ctime,isUp}>>}
+ */
+export async function listCommentsOf(aid, { ps = 20, bvid = '', upMid = '' } = {}) {
+  const cred = loadCred()
+  const H = makeHeaders(cred)
+  const d = await apiGet(`https://api.bilibili.com/x/v2/reply?type=1&oid=${encodeURIComponent(String(aid))}&ps=${ps}&sort=2&nohot=1`, H, { noCache: true })
+  if (Number(d?.code) !== 0) return []
+  const rows = []
+  const push = (r, root) => {
+    const c = r?.content || {}
+    const k = classifyComment({ text: c.message, pictures: c.pictures, emote: c.emote })
+    rows.push({
+      bvid,
+      aid: Number(aid),
+      rpid: String(r.rpid ?? ''),
+      rootRpid: String(root || r.rpid || ''),
+      parentRpid: String(r.parent_str || '0'),
+      mid: String(r.mid ?? ''),
+      uname: String(r.member?.uname ?? ''),
+      text: String(c.message ?? ''),
+      kind: k.kind,
+      label: k.label,
+      plain: k.plain,
+      pictures: k.pictures,
+      ctime: Number(r.ctime ?? 0) * 1000,
+      isUp: upMid ? String(r.mid ?? '') === String(upMid) : false,
+    })
+  }
+  for (const r of d?.data?.replies || []) {
+    push(r, r.rpid)
+    for (const sub of r.replies || []) push(sub, r.rpid)   // 楼中楼：她答过一轮后对方再说的话也在这里
+  }
+  return rows
 }

@@ -97,7 +97,7 @@ ok('没建情绪库时只有配置那一段', () => {
   assert.equal(pool.length, 1)
   assert.equal(pool[0].from, 'config')
 })
-ok('情绪库有就用"情绪段 + 默认段"两段都上（谁合出来像人用谁）', () => {
+ok('情绪段优先，但只给一条 —— 音色不在句内轮换（10-27 拍板）', () => {
   const dir = path.join(sandbox, '.feiyu-ai', 'voice-emo', 'angry')
   fs.mkdirSync(dir, { recursive: true })
   const wav = path.join(dir, 'ref.wav')
@@ -106,10 +106,10 @@ ok('情绪库有就用"情绪段 + 默认段"两段都上（谁合出来像人�
   const man = path.join(sandbox, '.feiyu-ai', 'voice-emo', 'manifest.json')
   fs.writeFileSync(man, JSON.stringify({ angry: { wav, text: '你怎么又不吃饭啊！', sd: 4.8, rng: 14.6 } }), 'utf8')
   const pool = tts.refPool('angry', { ref_audio_path: 'X:/default.wav', prompt_text: '乙' })
-  assert.equal(pool.length, 2)
+  // 两条参考段都读不出时长（体检不可能过）→ 也只会拿回一条，不再"情绪段 + 默认段"一起上
+  assert.equal(pool.length, 1)
   assert.equal(pool[0].from, 'emotion:angry')
   assert.equal(pool[0].prompt_text, '你怎么又不吃饭啊！')  // 参考文本取 ref.txt，不信配置
-  assert.equal(pool[1].from, 'config')
 })
 ok('显式指定参考音频时只用那一段', () => {
   const pool = tts.refPool('angry', {}, { ref_audio_path: 'Y:/z.wav' })
@@ -202,10 +202,12 @@ ok('她能看懂"方括号不会显示给主人"', () => {
 
 console.log('源码防线')
 const read = (p) => fs.readFileSync(new URL('../' + p, import.meta.url), 'utf8')
-ok('tts.mjs：默认 cut0、候选循环、参考段轮流上', () => {
+ok('tts.mjs：默认 cut0、候选循环、一句话一个音色', () => {
   const src = read('tools/lib/tts.mjs')
   assert.match(src, /text_split_method: override\.text_split_method \|\| v\.text_split_method \|\| 'cut0'/)
-  assert.match(src, /pool\[k % pool\.length\]/)
+  // 10-27 拍板：候选只换采样运气，不换嗓子 —— 不许再按 pool 下标轮换参考段
+  assert.match(src, /const ref = pool\[0\]/)
+  assert.equal(/pool\[k % pool\.length\]/.test(src), false, '参考段不许在候选之间轮换')
   assert.match(src, /scoreWavs/)
 })
 ok('qq-server：情绪标签先剥掉再发、语音按情绪合成、剩余文字补发', () => {

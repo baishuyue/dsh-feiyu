@@ -31,6 +31,9 @@ const TESTS = [
   'imggen-test.mjs',
   'vision-test.mjs',
   'ledger-test.mjs',
+  'comment-engage-test.mjs',
+  'reply-style-test.mjs',
+  'memory-hygiene-test.mjs',
   'video-test.mjs',
 ]
 

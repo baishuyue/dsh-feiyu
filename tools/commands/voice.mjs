@@ -12,6 +12,7 @@ import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { config } from '../lib/config.mjs'
 import { synth } from '../lib/tts.mjs'
+import { compactRef } from '../lib/refclean.mjs'
 import { dataPath, configPath } from '../lib/paths.mjs'
 
 const MODELS_DIR = 'D:/GPT-SoVITS/models'
@@ -132,17 +133,102 @@ export async function run(argv = []) {
     const name = arg(argv, '--name')
     const v = voices.find(x => x.name === name)
     if (!v) { console.error('没这个音色'); process.exit(1) }
+    // 有清洗版就用清洗版（死空气会被带偏音色，见 lib/refclean.mjs）
+    const clean = v.wav.replace(/\.wav$/, '-clean.wav')
+    const useWav = fs.existsSync(clean) ? clean : v.wav
+    const cleanTxt = clean.replace(/\.wav$/, '.txt')
+    const useText = fs.existsSync(cleanTxt) ? fs.readFileSync(cleanTxt, 'utf8').trim() : v.text
     // 直接改配置文件（config() 是只读视图）；路径统一走 paths.mjs，
     // 认 $FEIYU_CONFIG / $DSH_HOME —— 以前读 config().configPath（不存在的字段）再硬编码 USERPROFILE。
     // configPath 在 paths.mjs 里导出的是**字符串常量**，当成函数调用必然 TypeError —— 10-26 修
     const cfgFile = configPath
     const j = JSON.parse(fs.readFileSync(cfgFile, 'utf8'))
     // 参考文本语言要跟音频一致（英文参考配 zh 会文本-音频错位，克隆质量崩）——粗判 ASCII 占比
-    const asciiRatio = (v.text.match(/[\x20-\x7E]/g) || []).length / Math.max(1, v.text.length)
+    const asciiRatio = (useText.match(/[\x20-\x7E]/g) || []).length / Math.max(1, useText.length)
     const lang = arg(argv, '--lang') || (asciiRatio > 0.7 ? 'en' : 'zh')
-    j.voice = { ...(j.voice || {}), ref_audio_path: v.wav, prompt_text: v.text, prompt_lang: lang }
+    j.voice = { ...(j.voice || {}), ref_audio_path: useWav, prompt_text: useText, prompt_lang: lang }
     fs.writeFileSync(cfgFile, JSON.stringify(j, null, 2) + '\n')
-    console.log(`✓ 默认音色已切换为「${v.name}」（prompt_lang=${lang}，即时生效，不用重启）`)
+    console.log(`✓ 默认音色已切换为「${v.name}」${useWav !== v.wav ? '（用清洗版参考段）' : ''}（prompt_lang=${lang}，即时生效，不用重启）`)
+    return
+  }
+
+  if (sub === 'refclean') {
+    // 参考段清洗：把音声剪出来的参考音频里的大段死空气挤掉（10-27 实测，见 lib/refclean.mjs 顶部）。
+    // bingjiao2 原样 6.19s 里有 2.88s 死空气，合成谱相似度只有 0.703；挤掉后 3.53s、相似度 0.998。
+    const file = arg(argv, '--file') || config().voice?.ref_audio_path || ''
+    if (!file || !fs.existsSync(file)) { console.error('找不到参考音频：' + (file || '(未指定)')); process.exit(1) }
+    const r = compactRef(file, { text: arg(argv, '--text') })
+    console.log(`参考音频：${file}`)
+    console.log(`说话时长：${r.speech}s，原来 ${(r.speech + r.removed).toFixed(2)}s（挤掉 ${r.removed}s 死空气，保留 ${r.pieces} 段）`)
+    console.log(`清洗结果：${r.file}（${r.dur.toFixed(2)}s${r.padded ? '，不够 3 秒所以补了尾部静音' : ''}）`)
+    console.log(`参考文本：${r.text || '(无)'}${r.text ? `（${(r.text.match(/[\u4e00-\u9fa5A-Za-z0-9]/g) || []).length} 字）` : ''}`)
+    if (argv.includes('--use')) {
+      const cfgFile = configPath
+      const j = JSON.parse(fs.readFileSync(cfgFile, 'utf8'))
+      j.voice = { ...(j.voice || {}), ref_audio_path: r.file }
+      if (r.text) j.voice.prompt_text = r.text
+      fs.writeFileSync(cfgFile, JSON.stringify(j, null, 2) + '\n')
+      console.log('✓ 已把默认音色的参考段换成清洗版（即时生效）')
+    } else {
+      console.log('（加 --use 就把它设成默认参考段）')
+    }
+    return
+  }
+
+  if (sub === 'refcheck') {
+    // 参考文本体检（ASR）：GPT-SoVITS 拿 prompt_text 去对齐参考音频，**文本必须覆盖整段音频**。
+    // 少一个字都不行：实测 bingjiao2 的文本把结尾"哦对了"漏掉，同一句连合 6 条全部提前收尾
+    // （9.6~13.7 字/秒）；把文本补全后 6/6 念全（3.9~5.7 字/秒）。10-26 那轮"配音漏字"就是这个。
+    const file = arg(argv, '--file') || config().voice?.ref_audio_path || ''
+    if (!file || !fs.existsSync(file)) { console.error('找不到参考音频：' + (file || '(未指定)')); process.exit(1) }
+    const txtFile = arg(argv, '--text-file') || file.replace(/\.[^.]+$/, '.txt')
+    const claimed = arg(argv, '--text') || (fs.existsSync(txtFile) ? fs.readFileSync(txtFile, 'utf8').trim() : '')
+    const py = arg(argv, '--python') || 'D:/GPT-SoVITS/.venv/Scripts/python.exe'
+    const count = (s) => (String(s).match(/[\u4e00-\u9fa5A-Za-z0-9]/g) || []).length
+    console.log(`参考音频：${file}`)
+    console.log(`参考文本：${claimed || '(无)'}${claimed ? `（${count(claimed)} 字）` : ''}`)
+    const code = [
+      'import json, sys, os',
+      // 模型优先用本地目录（faster-whisper 传名字会去 HF 下载，代理没开就直接崩）
+      `MP = ${JSON.stringify(fs.existsSync('D:/GPT-SoVITS/runtime/fw-models/small') ? 'D:/GPT-SoVITS/runtime/fw-models/small' : 'small')}`,
+      'if os.environ.get("HTTPS_PROXY") and not os.environ.get("FEIYU_ASR_PROXY_OK"):',
+      '    os.environ.pop("HTTPS_PROXY", None); os.environ.pop("HTTP_PROXY", None)',
+      'import soundfile as sf, librosa',
+      'from faster_whisper import WhisperModel',
+      'p = sys.argv[1]',
+      'm = WhisperModel(MP, device="cpu", compute_type="int8")',
+      'y, sr = sf.read(p, dtype="float32")',
+      'if y.ndim > 1: y = y.mean(1)',
+      'if sr != 16000: y = librosa.resample(y, orig_sr=sr, target_sr=16000)',
+      'segs, info = m.transcribe(y, language="zh", beam_size=5, vad_filter=False)',
+      'print(json.dumps({"text": "".join(s.text for s in segs).strip(), "dur": round(float(info.duration), 2)}))',
+    ].join('\n')
+    let heard = ''
+    let dur = 0
+    try {
+      const r = execFileSync(py, ['-c', code, file], {
+        encoding: 'utf8', timeout: 300000, windowsHide: true,
+        // 中文走 console 代码页会变 GBK，Node 按 UTF-8 解就成乱码 → 强制 UTF-8 子进程
+        env: { ...process.env, PYTHONIOENCODING: 'utf-8' },
+      })
+      const j = JSON.parse(String(r).trim().split(/\r?\n/).pop())
+      heard = String(j.text || '')
+      dur = Number(j.dur) || 0
+    } catch (e) {
+      console.error('✗ ASR 跑不起来（需要 D:/GPT-SoVITS/.venv 里有 faster-whisper）：' + String(e.message).slice(0, 120))
+      process.exit(1)
+    }
+    console.log(`转写结果：${heard}（${count(heard)} 字，音频 ${dur}s）`)
+    const gap = count(heard) - count(claimed)
+    if (!claimed) { console.log('⚠ 还没有参考文本 —— 把上面的转写结果写进 ' + txtFile); return }
+    if (gap > Math.max(2, count(claimed) * 0.15)) {
+      console.log(`⚠ 参考文本漏了约 ${gap} 个字 —— 模型会以为"说完就收尾"，合成时句尾被吃掉。`)
+      console.log(`  修法：把 ${txtFile} 改成上面的转写内容（再听一遍核对错别字），然后 voice refcheck 复查。`)
+    } else if (gap < -Math.max(2, count(heard) * 0.15)) {
+      console.log(`⚠ 参考文本比音频多约 ${-gap} 个字 —— 可能串了别的句子，同样会念歪。`)
+    } else {
+      console.log('✓ 参考文本和音频对得上')
+    }
     return
   }
 
@@ -268,7 +354,7 @@ export async function run(argv = []) {
     return
   }
 
-  console.log('用法：voice list | try --name | tryall | use --name | import --url --name --text | emo list/build/test')
+  console.log('用法：voice list | try --name | tryall | use --name | import --url --name --text | refcheck [--file wav] | emo list/build/test')
 }
 
 if (process.argv[1] && process.argv[1].endsWith('voice.mjs')) {

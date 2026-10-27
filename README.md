@@ -39,7 +39,8 @@
 - **B站**：生物钟到点自己醒 → 选题 → 深读（字幕/热评/简介）→ 打分 → 干跑分享 → 写两本日记。写通道只有**评论**，DRY_RUN 默认开。
 - **QQ**：常驻 `qq-server` 秒回；群聊被 @ 才回、私聊都回；能发图、能发语音条、能发空间说说。会主动找你（有安静阈值、间隔、每日上限、相似度去重）。
 - **微信**：独立 Python 进程，替主人回消息（对方不知道是自动回复），语气是她本人——有温度、会吐槽；按联系人分开记，广告/服务号跳过，钱/时间/见面不承诺。
-- **抖音**：`interact` 自主评论、`watch` 自主观看、`engage` 在自己作品评论区回评论、`douyin-dm-server` 私信陪聊。
+- **抖音**：`interact` 自主评论、`watch` 自主观看、`engage` 在自己作品评论区回评论（**任何类型**：文字、表情包、图片、只有 `[微笑]` 那种；表情包没文本可 match 时按昵称定位）、`douyin-dm-server` 私信陪聊。
+- **B站评论区**：`replies` 三段 —— ⓪ 自己投稿下面别人的评论（同样任何类型）、① 别人对我评论的回复、② 主动去搭话；默认干跑，走 `bilibili.replies.enabled` + 日额度 + 风控闸。
 
 ---
 
@@ -133,6 +134,9 @@
 | **生物钟**（`night`） | 窗口内随机醒（拟人，不整点），跨零点、最小间隔，每次刷 N 条视频 |
 | **完全自由**（`freedom`） | 开了之后按间隔 + 概率给她"自由时间"：上网、刷B站/抖音、写小说、写游戏、发说说、自我升级 |
 | **自定唤醒**（`selfwake`） | 她自己说"我 23:40 再醒"，到点**真的**叫起来（优先于概率）。`node feiyu.mjs selfwake 23:40 --note "把那篇小说收尾"` |
+| **真的看番/看剧**（`binge`，10-27 新增） | 不是"看标题和热评"，是**真看完一集**：`binge --search "可塑性记忆"` → `binge --show "可塑性记忆" --ep 1 --go`。材料优先用弹幕（番剧字幕轨串片率极高，实测拿到过 ED 歌词和钢化膜测评），LLM 读完写 `{剧情, 感受}` 进她的记忆；进度落 `~/.feiyu-ai/binge/<番名>.json`，`--list` 查看到第几集。日上限 `binge.dailyMax=1`（一天一集是"真看"，一天十集是"刷数据"） |
+| **承诺有账本**（`promises`，10-27 新增） | 她说"这就去看"会被 `catchFromReply` 记成一条带截止时间的承诺；每次主动搭话前先跑到期的，`binge` 成功就结清、没材料就照实记失败（顺延 6 小时）。`promises` 查全部、`promises --due` 查到期 |
+| **主人事实**（`owner-facts`，10-27 新增） | 他说"我中午吃了烧鸭""我在改插件""推荐你看《可塑性记忆》"→ 抽成 `food/doing/plan/mood/media` 五类事实，注入成【今天已经知道的事】，出门前还有一道闸门：命中"吃了吗/在干嘛"且已有事实就打回重写，**绝不再问第二遍** |
 | **每日回顾**（`personality.nightly`，默认 23:00） | 翻今天 → 写日记 → 更新"我是谁"（改前存快照）→ 记账 |
 | **人格进化**（`personality.evolve`） | 每 N 天一次复盘，更新 `persona.md` 自我迭代区 |
 
@@ -172,11 +176,13 @@ dsh-feiyu/
 │   └── commands/               selftest nav feed debrief comment quota diary mem selfwake
 │                               qq-server qzone douyin douyin-dm-server report watch bili-watch
 │                               act replies voice sing sticker web selfup produce vision debrief
+│                               binge promises（10-27：真看番 + 承诺账本）
 ├── douyin_interact.py          抖音浏览器自动化（feed/comments/comment/reply/comment-reply/
 │                               self-info/my-videos/dm-send/dm-read/engage 子命令）
 ├── wechat/wechat_bot.py        微信机器人（副本；运行的是 D:/wechat-bot/ 那份）
-├── test/                       8 套测试（client-smoke / client-render / stickers / imggen /
-│                               memory / memory-recall / qq-human / vision）
+├── test/                       23 套测试（client-smoke / client-render / stickers / imggen /
+│                               memory / memory-recall / qq-human / vision / focus-one-thing /
+│                               reply-style / memory-hygiene（10-27 记忆卫生）/ …）
 └── package.json
 ```
 
@@ -274,8 +280,13 @@ QQ 收到消息 → 摇中 voice_chance → lib/tts.mjs POST 9880/tts
 ```
 produce ["主题"] [--platform bili|douyin] [--frames 1|2] [--bgm auto|none] [--dry]
 produce --reuse <已有投稿包目录>          # 图没毛病、只重做配音和剪辑（不再花生图钱）
-# 配音两条硬规矩：① 参考段先过"文本/音频配比"体检（配不上的会被踢掉，否则每句只念一半）
-#                 ② 一条片子只用一个情绪参考 voice.videoEmotion（默认 wronged，音高最贴她原来那条）
+# 配音四条硬规矩：① 参考文本必须盖住整段参考音频（少一个字都会漏句尾，voice refcheck 可查）
+#                 ② 参考段里的大段死空气先挤掉（voice refclean，2.9s 死空气能把音色带偏）
+#                 ③ 语速/温度钉死 1.0，不按"起伏大"择优、不动态压缩（改一点就是变调/电音）
+#                 ④ 一句话只用一个参考段：没标情绪就用基础音色 voice.videoEmotion=calm
+# 剪静音那步只能是"切"，绝不能重新量化 —— writeWavLocal 曾把 Int16 当 float 压成 ±1 方波，
+# 那就是主人报了一周的"电音机械音"（voice-*.wav 只有 3 个取值）。测试里用"不同取值 >200"兜住。
+# 配音是抽奖：抽到满意的用 --keep-voices 锁住；只改音轨不动画面用 --reaudio（复用 visual.mp4）
   ① DeepSeek 出脚本/分镜（每幕：动作 + 台词 + 景别）
   ② 硅基 Qwen-Image-Edit 逐幕 2 帧配图（锁她的形象，同场景换个动作/表情）
   ③ GPT-SoVITS 逐句念台词 → **念完还得验**：量真实说话段的字/秒，离谱就换参数重念，
@@ -315,9 +326,11 @@ social [--days 3] [--kind 回评] [--invisible] [--md] [--push] [--json] [--back
    ├─ 上网搜吃的（web search → 记忆 platform=web）
    ├─ 写小说片段（web roam 的写作模式 → 记忆）
    ├─ 刷B站/抖音（bili-watch --free / watch --free → 评论走额度+风控闸）
-   ├─ 抖音评论区经营（engage：扫自己作品 → cid 精确回复）
+   ├─ 抖音评论区经营（engage：扫自己作品 → 任何类型的评论都回：文字/表情包/图片/只有表情）
+   ├─ B站评论区经营（replies：⓪自己作品下的评论 ①别人对我的回复 ②主动搭话）
    ├─ 做视频（produce：策划→配图→配音→真剪辑成片，等你发布）
    ├─ 唱歌/语音（sing / voice → 发 QQ）
+   ├─ 真看一集番（binge --show "…" --ep N --go → 读完写剧情+感受进记忆）
    └─ 给自己约下一次（selfwake 23:40 --note "把小说收尾"）
         ↓ 到点
   每日回顾（23:00）：翻今天 → 写日记 → 更新"我是谁"（改前存快照）→ 记账
@@ -380,6 +393,16 @@ node tools/feiyu.mjs diary --book private --append "…"
 node tools/feiyu.mjs selfwake 23:40 --note "把那篇小说收尾"   # 她定下次几点醒
 node tools/feiyu.mjs selfwake --show | --clear
 
+# ── 看番 / 承诺（10-27）──────────────────────────────────────
+node tools/feiyu.mjs binge --search "可塑性记忆"        # 搜番，看有哪几集能看
+node tools/feiyu.mjs binge --show "可塑性记忆" --ep 1 --go   # 真看完一集（写剧情+感受进记忆）
+node tools/feiyu.mjs binge --bvid BV1os411S7dL --ep 1 --go   # 指定投稿
+node tools/feiyu.mjs binge --list                       # 已经看过哪几部、看到第几集
+node tools/feiyu.mjs focus binge --min 40               # 接下来 40 分钟专心看番（其余循环停）
+node tools/feiyu.mjs promises                           # 她答应过、还没做的事
+node tools/feiyu.mjs promises --due                     # 只看到期的（主动搭话前会自己跑）
+node tools/feiyu.mjs promises done <id> "看完了"         # 结清 / fail <id> "没字幕"
+
 # ── 聊天通道 ────────────────────────────────────────────────
 node tools/feiyu.mjs qq-server 8080                # QQ 常驻（NapCat OneBot 上报 /onebot）
 node tools/feiyu.mjs douyin-dm-server --port 8095  # 抖音私信陪聊
@@ -404,7 +427,7 @@ node tools/feiyu.mjs web search "关键词" | web fetch <url> | web log
 node tools/feiyu.mjs sticker gen "文案" [--tag 标签] [--send]
 node tools/feiyu.mjs produce ["主题"]              # 短视频投稿包（成片等你点发布）
 node tools/feiyu.mjs sing ["主题"] | cover "歌名"
-node tools/feiyu.mjs voice list | tryall | use
+node tools/feiyu.mjs voice list | tryall | use | refcheck | refclean   # refcheck：ASR 核对参考文本；refclean：挤掉参考段死空气
 node tools/feiyu.mjs selfup backup|log|status       # 改自己代码前备份、改完记账
 node tools/feiyu.mjs report --days 1                # 观看日报（不调模型）
 ```

@@ -23,6 +23,9 @@ export const LOOP_ACTIVITIES = {
   web: { label: '自由上网', sw: ['web', 'roam'], hint: '逛网页/搜索/读文章/写小说' },
   bilibili: { label: '刷B站', sw: ['bilibili', 'freeRoam'], hint: '看视频/深读/评论/发动态' },
   douyin: { label: '刷抖音', sw: ['douyin', 'freeRoam'], hint: '刷视频/看评论/回私信' },
+  // 看番（10-27 新增）：她说"这就去看"必须真有个动作。binge 是一次性命令，
+  // 不需要自己的循环；这里让它占住时间（其余循环全关），她会调 `feiyu binge --show … --go`。
+  binge: { label: '看番/看剧', sw: ['bilibili', 'bingeLoop'], hint: '用 binge 真的看完一集，看完写感受' },
 }
 
 /** 别名 → 规范名（她可能写 bili / B站 / douyin） */
@@ -32,6 +35,7 @@ export function normActivity(a) {
   if (['web', '上网', 'browse', 'net'].includes(s)) return 'web'
   if (['bili', 'bilibili', 'b站', 'b站刷', 'bl'].includes(s)) return 'bilibili'
   if (['douyin', 'dy', '抖音'].includes(s)) return 'douyin'
+  if (['binge', '看番', '看剧', '追番', 'anime'].includes(s)) return 'binge'
   if (['rest', '歇', '歇着', '休息', 'idle', '躺'].includes(s)) return 'rest'
   if (['off', 'stop', '收工', '结束', 'none', '空'].includes(s)) return 'off'
   return s
@@ -107,8 +111,11 @@ export function syncSwitches(cfg, activity) {
     const [sec, sub] = meta.sw
     const want = key === activity
     if (!cfg[sec] || typeof cfg[sec] !== 'object') cfg[sec] = {}
-    const cur = cfg[sec][sub] && typeof cfg[sec][sub] === 'object' ? cfg[sec][sub] : {}
-    if ((cur.enabled === true) !== want) { cfg[sec][sub] = { ...cur, enabled: want }; changed = true }
+    const had = cfg[sec][sub] && typeof cfg[sec][sub] === 'object'
+    const cur = had ? cfg[sec][sub] : {}
+    // 缺的开关也要**建出来**（10-27）：以前只在"值与期望不同"时才写，
+    // 新增活动（binge）的开关永远不存在 → 事后查状态时读 undefined 就炸。
+    if (!had || (cur.enabled === true) !== want) { cfg[sec][sub] = { ...cur, enabled: want }; changed = true }
   }
   return changed
 }

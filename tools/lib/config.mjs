@@ -295,7 +295,7 @@ const merge = (base, over) => {
 /** 读取合并后的配置（不缓存：改完保存立刻生效 —— bili-whale 的实战要求）。 */
 export function config() {
   let user = {}
-  try { user = JSON.parse(fs.readFileSync(configPath, 'utf8')) } catch { /* 没配置就用默认 */ }
+  try { user = JSON.parse(fs.readFileSync(configPath, 'utf8').replace(/^\uFEFF/, '')) } catch { /* 没配置就用默认 */ }
   const cfg = merge(DEFAULTS, user)
   cfg.__hasUserFile = Object.keys(user).length > 0
   return cfg

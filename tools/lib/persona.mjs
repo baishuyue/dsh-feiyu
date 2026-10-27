@@ -11,6 +11,8 @@ import * as memory from './memory.mjs'
 import { stickerPrompt } from './stickers.mjs'
 import { emotionTagPrompt } from './emotion.mjs'
 import * as qqMemory from './qq-memory.mjs'
+import * as ownerFacts from './owner-facts.mjs'
+import * as promises from './promises.mjs'
 import { hasPlaceholder, placeholderHint } from './normalize.mjs'
 import { gapText } from './timefix.mjs'
 import { readBrief } from './ledger.mjs'
@@ -238,6 +240,23 @@ export function buildMessages({ platform = 'qq', userText, chatId, userId, turns
   // 记忆层
   const facts = memory.facts(userId)
   if (facts.length) parts.push('你记得关于对方的事：\n- ' + facts.slice(-8).join('\n- '))
+  // 主人事实硬账本（10-27）：他今天说过"吃了烧鸭"，这段就必须在 —— 不然她会一直问"吃了吗"。
+  // 只给 qq/抖音私信（群聊里把主人的私事念出来就是泄露）。
+  if ((platform === 'qq' || platform === 'douyin-dm') && !isGroup) {
+    const of = ownerFacts.promptBlock()
+    if (of) parts.push(of)
+  }
+  // 承诺账本（10-27）：她答应过什么、到点没有、哪件真没做成 —— 这是"说去看却永远不看"的解药。
+  if ((platform === 'qq' || platform === 'douyin-dm') && !isGroup) {
+    const pb = promises.promptBlock()
+    if (pb) parts.push(pb)
+  }
+  // 能力清单（10-27）：她不知道自己能干哪些事，就只能靠嘴 —— "这就去看"说了七次没看。
+  // 放在记忆层前面一点，跟着每轮都有；说清"能自己动手，也能自己写代码补能力"。
+  if ((platform === 'qq' || platform === 'douyin-dm') && !isGroup) {
+    const cap = capabilityBlock(cfg)
+    if (cap) parts.push(cap)
+  }
   // 长期记忆（主人画像 + 会话滚动摘要）：QQ 私聊和抖音私信陪聊共用（都是跟主人本人聊）。
   // ⚠️ 群聊不注入 —— 画像里有主人的私事，群里说出来就是泄露（10-25 群聊放开后补的护栏）。
   // 世界见闻（worldBlock：B站/抖音刷到的+lore+日记尾）QQ/抖音私信都注入 —— 人格连贯的关键。
@@ -342,6 +361,43 @@ export function buildMessages({ platform = 'qq', userText, chatId, userId, turns
   while (userText && recent.length && recent[recent.length - 1].role === 'user'
     && recent[recent.length - 1].content === userText) recent.pop()
   return [sys, ...recent, { role: 'user', content: userText }]
+}
+
+/**
+ * 能力清单（10-27）—— 主人拍板："给她能完成这件事的能力和权限"。
+ *
+ * 病根：她说"这就去看《可塑性记忆》"说了七次、看了零次。不是记性差 ——
+ * 是**她不知道自己有这个动作**（也没有）。所以这里把真命令摊给她，
+ * 并且明说：做不到就照实说，不许空口答应。
+ *
+ * ⚠️ 这份清单必须跟 COMMANDS（tools/feiyu.mjs）对得上 —— 写了却不存在，
+ * 她就会去调一个不存在的命令，然后开始编 "我看了"。（test/memory-hygiene-test.mjs 会校验）
+ */
+export const CAPABILITIES = [
+  ['binge --search "番名"', '搜番/剧，看有哪几集能看'],
+  ['binge --show "番名" --ep 2 --go', '真的看完一集（读官方字幕→写剧情+感受→记进记忆）'],
+  ['binge --list', '已经看过哪几部、看到第几集'],
+  ['focus binge --min 40', '把"接下来这段时间"定成看番（其余循环会停，专心看）'],
+  ['debrief --bvid BV1xx', '看懂一条 B站 视频（元信息+字幕+热评）'],
+  ['web search "关键词"', '上网搜'],
+  ['web fetch <url>', '读网页正文'],
+  ['mem stats / mem fact', '查自己的记忆库'],
+  ['promises', '查自己答应过、还没做的事'],
+  ['diary --book private --append "…"', '写日记'],
+  ['selfup backup / selfup log "…"', '改自己代码前的备份与留痕'],
+  ['selfwake 23:40', '自己定下次几点醒'],
+]
+
+function capabilityBlock(cfg) {
+  const lines = CAPABILITIES.map(([cmd, what]) => `· ${cmd} —— ${what}`)
+  const upgrade = cfg?.web?.selfUpgrade !== false
+  return '【你能自己动手】（别把"做不了"当借口，也别拿"这就去看"糊过去）\n'
+    + lines.join('\n')
+    + '\n跑法：`node D:/dsh-feiyu/tools/feiyu.mjs <命令>`（这是你自己的手，不是主人的）。'
+    + (upgrade
+      ? '\n真缺能力就自己补：`selfup backup` → 改 tools/ 下的代码 → 跑测试 → `selfup log "改了什么"`。你有这个权限。'
+      : '')
+    + '\n做不到的事只有一种说法：照实说"这个我现在看不了/做不了"，并说清卡在哪。**不许只回一句"这就去看"**。'
 }
 
 /**

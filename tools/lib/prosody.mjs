@@ -32,13 +32,18 @@ export function scoreWavs(items) {
     fs.writeFileSync(payload, JSON.stringify({ items: list }), 'utf8')
     const out = execFileSync(pythonPath(), [SCRIPT, payload], {
       encoding: 'utf8', timeout: 180_000, windowsHide: true, maxBuffer: 2 * 1024 * 1024,
+      // 中文路径 + Windows 控制台代码页：不钉 UTF-8 的话 python 输出是 GBK，JSON.parse 直接炸，
+      // 整个打分器会**静默降级成 0 分**（10-27 才发现：择优实际一直是"用第一条"）。
+      env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' },
     })
     const parsed = JSON.parse(out)
     const byPath = new Map((parsed.items || []).map((x) => [x.path, x]))
     return list.map((it) => byPath.get(it.path) || { path: it.path, ok: false, score: 0, why: '没拿到评分' })
   } catch (e) {
     // 评分器坏了不能拖累语音：全部返回 0 分，调用方会退化成"用第一条"
-    return list.map((it) => ({ path: it.path, ok: false, score: 0, why: '评分器不可用：' + String(e.message).slice(0, 80) }))
+    const msg = '评分器不可用：' + String(e.message).slice(0, 80)
+    if (!scoreWavs._warned) { scoreWavs._warned = true; console.warn(`   ⚠ ${msg}`) }
+    return list.map((it) => ({ path: it.path, ok: false, score: 0, why: msg }))
   } finally {
     try { fs.rmSync(payload, { force: true }) } catch {}
   }

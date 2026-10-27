@@ -214,6 +214,12 @@ export function recallAll(chatId, opts = {}) {
     && r.isGroup !== true                           // 群聊行不进"最近真实发生的事"：群里说话的是群友，不是主人
     && r.platform !== 'wechat'                       // 微信是替主人干活的工作记录，不进人格记忆
     && (r.role === 'user' || r.role === 'assistant')
+    // ⚠️ 10-27：她自己的**主动搭话**（kind:'push'）不算"真实发生的事"。
+    // 它本来只是"我随口说的一句"，混进来以后就变成"我今天确实在翻南京小吃"的证据 ——
+    // 于是 B站/抖音 的提示词里也满是"南京/饿"，她自己都开始说"我今早查白饭查了四轮"。
+    // 广播只该留在本通道（她的记忆），不该当跨平台的经历反复注入。
+    && r.kind !== 'push'
+    && !LEGACY_PUSH.test(String(r.text || ''))
     && Number(r.ts) >= cutoff
     && String(r.text || '').trim())
   if (!rows.length) return { lines: [], count: 0, newest: 0 }
@@ -317,6 +323,20 @@ export function addFact(userId, fact) {
   writeJson(FACT_FILE, all)
 }
 
+/**
+ * 主人事实（owner-facts.mjs 专用）：`key|值|时间|原话`。
+ * 同一个 key 只留最新一条 —— "吃了烧鸭"被"吃了面"覆盖，不会两条并列让她自己挑。
+ */
+export const OWNER_BUCKET = 'owner'
+export function addOwnerFact(line) {
+  const all = readJson(FACT_FILE, {})
+  const key = String(line).split('|')[0]
+  const list = (all[OWNER_BUCKET] ?? []).filter(x => !String(x).startsWith(key + '|'))
+  list.push(String(line))
+  all[OWNER_BUCKET] = list.slice(-40)
+  writeJson(FACT_FILE, all)
+}
+
 export function facts(userId, max = 30) {
   const list = readJson(FACT_FILE, {})[userId] ?? []
   return list.slice(-max)
@@ -329,13 +349,112 @@ export function facts(userId, max = 30) {
 // 按 tag 区分：「兴趣」标签进兴趣池，其余都算价值观。
 
 const isInterest = (x) => x.kind === 'interest' || x.tag === '兴趣'
+// 10-27：她自己的**排障笔记**（"Bing URL 多带一个 &count=15"、"搜狐正文 2390 字"）以前也进
+// 「价值观」池，被当成人生信条每轮注入 —— 于是她在 B站 评论里说"我今早刚吃过记忆力不够的苦"。
+// 运维归运维，人格归人格：tag 命中这些词的单独一池，prompt 不注入。
+const OPS_TAGS = new Set(['运维', '排障', '调试', '工具', 'bug', 'Bug', 'BUG', '工程'])
+export const isOps = (x) => x.kind === 'ops' || OPS_TAGS.has(String(x.tag))
+
+/** 主题键：拿前 12 个字当"同一件事"的粗略签名（"南京菜单定稿…" × 10 → 一个键）。 */
+function topicKey(text) {
+  return String(text ?? '').replace(/[「」『』（）()《》【】\s·:：,，。.!！?？]/g, '').slice(0, 12)
+}
+
+const CJK = /[\u4e00-\u9fa5]{2,6}/g
+const tokensOf = (t) => new Set(String(t ?? '').match(CJK) || [])
+/** 带日期的都是干活流水（"10-27 16:05 统计了…"），不是价值观 —— 单独一池，不注入。 */
+export const isDatedLog = (t) => /^\s*\d{1,2}-\d{1,2}\s/.test(String(t ?? ''))
+
+/**
+ * 主题封顶（10-27）：同一个主题写太多次就只留最新的 keep 条，其余标 superseded。
+ * 真实情况：她 10-25 夜里为了"南京菜单"连写 25 条近义条目，全都进了价值观池，
+ * 于是每轮注入都在提醒她"我在研究南京小吃"。这不是记忆，是自己给自己下的暗示。
+ * 判定用"跨条目高频词"而不是写死南京 —— 换任何主题（番、店、人）都自动生效。
+ */
+export function loreThemeCap(list, { keep = 2, minCount = 4, passes = 5 } = {}) {
+  let cur = list
+  for (let pass = 0; pass < passes; pass++) {
+    const next = loreThemeCapOnce(cur, { keep, minCount })
+    if (next === cur) break
+    cur = next
+  }
+  return cur
+}
+
+function loreThemeCapOnce(list, { keep = 2, minCount = 4 } = {}) {
+  const plainOf = (arr) => arr.filter(x => !isInterest(x) && !isOps(x) && x.kind !== 'work' && x.kind !== 'superseded')
+  let cur = list
+
+  // 第一道：跨条目高频词封顶（"盐水鸭"这种词出现在 4 条以上 → 只留最新 keep 条）
+  const pool = plainOf(cur)
+  const freq = new Map()
+  for (const x of pool) for (const t of tokensOf(x.text)) freq.set(t, (freq.get(t) || 0) + 1)
+  const hotSet = new Set([...freq].filter(([, n]) => n >= minCount).map(([t]) => t))
+  if (hotSet.size) {
+    const seen = new Map()
+    const drop = new Set()
+    for (let i = pool.length - 1; i >= 0; i--) {
+      const x = pool[i]
+      const toks = [...tokensOf(x.text)].filter(t => hotSet.has(t)).sort((a, b) => freq.get(b) - freq.get(a))
+      if (!toks.length) continue
+      const main = toks[0]
+      const n = seen.get(main) || 0
+      if (n >= keep) drop.add(x)
+      else seen.set(main, n + 1)
+    }
+    if (drop.size) cur = cur.map(x => (drop.has(x) ? { ...x, kind: 'superseded', supersededAt: Date.now() } : x))
+  }
+
+  // 第二道：字面高度重合也算同一件事（同一个意思换九种说法，高频词只收得住一部分）
+  const bi = (t) => {
+    const s = String(t ?? '').replace(/[^\u4e00-\u9fa5A-Za-z0-9]/g, '')
+    const out = new Set()
+    for (let i = 0; i < s.length - 1; i++) out.add(s.slice(i, i + 2))
+    return out
+  }
+  const plain2 = plainOf(cur)
+  const keptNew = []
+  const drop2 = new Set()
+  for (let i = plain2.length - 1; i >= 0; i--) {
+    const a = bi(plain2[i].text)
+    if (!a.size) { keptNew.push(plain2[i]); continue }
+    const dup = keptNew.some((k) => {
+      const b = bi(k.text)
+      let inter = 0
+      for (const g of a) if (b.has(g)) inter++
+      return inter / (a.size + b.size - inter) >= 0.55
+    })
+    if (dup) drop2.add(plain2[i])
+    else keptNew.push(plain2[i])
+  }
+  if (!drop2.size) return cur
+  return cur.map(x => (drop2.has(x) ? { ...x, kind: 'superseded', supersededAt: Date.now() } : x))
+}
 
 export function addLore(tag, text) {
   const list = readJson(LORE_FILE, [])
-  list.push({ tag: String(tag), text: String(text), ts: Date.now(), kind: String(tag) === '兴趣' ? 'interest' : 'value' })
-  const values = list.filter(x => !isInterest(x))
-  const interests = list.filter(isInterest)
-  writeJson(LORE_FILE, [...values, ...interests.slice(-200)].sort((a, b) => Number(a.ts || 0) - Number(b.ts || 0)))
+  const kind = OPS_TAGS.has(String(tag)) ? 'ops' : (String(tag) === '兴趣' ? 'interest' : (isDatedLog(text) ? 'work' : 'value'))
+  const item = { tag: String(tag), text: String(text), ts: Date.now(), kind }
+  // ⚠️ 10-27 止损：同一主题已经写过 2 次以上 → 不再新增，只把最后一条换成新的并记 n。
+  if (kind === 'value' || kind === 'interest') {
+    const key = topicKey(text)
+    const same = list.filter(x => !isOps(x) && topicKey(x.text) === key)
+    if (same.length >= 2) {
+      const last = same[same.length - 1]
+      last.text = String(text)
+      last.ts = Date.now()
+      last.n = Number(last.n || 1) + 1
+      writeJson(LORE_FILE, list)
+      return
+    }
+  }
+  list.push(item)
+  const capped = loreThemeCap(list)
+  const values = capped.filter(x => !isInterest(x) && !isOps(x) && x.kind !== 'work' && x.kind !== 'superseded')
+  const work = capped.filter(x => x.kind === 'work' || x.kind === 'superseded').slice(-120)
+  const interests = capped.filter(isInterest)
+  const ops = capped.filter(isOps).slice(-60)
+  writeJson(LORE_FILE, [...values, ...interests.slice(-200), ...work, ...ops].sort((a, b) => Number(a.ts || 0) - Number(b.ts || 0)))
 }
 
 export function lore(tag) {
@@ -343,9 +462,16 @@ export function lore(tag) {
   return (tag ? list.filter(x => x.tag === tag) : list).map(x => x.text)
 }
 
-/** 价值观池（长期观念/标尺，永久保留）—— 提示词常驻。 */
+/** 价值观池（长期观念/标尺，永久保留）—— 提示词常驻。运维笔记/干活流水/被折叠的重复项都不进这池。 */
 export function loreValues(max = 8) {
-  return readJson(LORE_FILE, []).filter(x => !isInterest(x)).slice(-max).map(x => x.text)
+  return readJson(LORE_FILE, [])
+    .filter(x => !isInterest(x) && !isOps(x) && x.kind !== 'work' && x.kind !== 'superseded')
+    .slice(-max).map(x => x.text)
+}
+
+/** 运维/排障池 —— 只给 `mem lore` 看，不注入人格（她要查也能查得到）。 */
+export function loreOps(max = 20) {
+  return readJson(LORE_FILE, []).filter(isOps).slice(-max).map(x => x.text)
 }
 
 /** 兴趣池：最近 24 条里随机抽 max 条（每次聊到的话题不完全一样）。 */

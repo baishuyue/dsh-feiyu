@@ -142,6 +142,8 @@ export async function apiGet(input, headers = {}, opts = {}) {
       '/x/web-interface/view': '/x/web-interface/wbi/view',
       '/x/player/playurl': '/x/player/wbi/playurl',
       '/x/web-interface/search/type': '/x/web-interface/wbi/search/type',   // feed 选题的搜索源
+      // 自己的投稿列表（10-27 「回自己作品下面的评论」要先知道自己投了哪些）
+      '/x/space/wbi/arc/search': '/x/space/wbi/arc/search',
     }
     if (url.hostname === 'api.bilibili.com' && signedPaths[url.pathname]) {
       const nav = await apiGet('https://api.bilibili.com/x/web-interface/nav', headers, { noCache })
@@ -158,15 +160,21 @@ export async function apiGet(input, headers = {}, opts = {}) {
     const response = await fetch(url.href, { headers, signal: AbortSignal.timeout(30000) })
 
     // HTTP 412/429：平台级风控 → 熔断（默认 5 分钟，指数退避封顶 30 分钟）
+    // opts.soft：可选接口（如"列我的投稿"用的 space 接口）吃了 412 **不要**牵连整条通道 ——
+    // 10-27 实测：`/x/space/wbi/arc/search` 一次 412 就把 apiGet 熔断 20 分钟，别人正在跑的
+    // B站 任务（回评/发弹幕）全被堵住。可选接口失败就该安静返回，别动全局账单。
     if (biliHost && (response.status === 412 || response.status === 429)) {
-      const prev = readJson(BAN_FILE, {})
-      const streak = Number(prev.streak ?? 0) + 1
-      const mins = Math.min(30, 5 * 2 ** (streak - 1))
-      if (!noCacheEnv()) setBan(mins * 60_000, `HTTP ${response.status}`)
-      if (!noCacheEnv()) writeJson(BAN_FILE, { ...readJson(BAN_FILE, {}), streak, endpoint: url.pathname })
-      const hit = stale()
-      if (hit) return hit
-      return { code: -412, message: `HTTP ${response.status}（B站 风控）—— 已熔断 ${mins} 分钟，别再打了` }
+      if (!opts.soft) {
+        const prev = readJson(BAN_FILE, {})
+        const streak = Number(prev.streak ?? 0) + 1
+        const mins = Math.min(30, 5 * 2 ** (streak - 1))
+        if (!noCacheEnv()) setBan(mins * 60_000, `HTTP ${response.status}`)
+        if (!noCacheEnv()) writeJson(BAN_FILE, { ...readJson(BAN_FILE, {}), streak, endpoint: url.pathname })
+        const hit = stale()
+        if (hit) return hit
+        return { code: -412, message: `HTTP ${response.status}（B站 风控）—— 已熔断 ${mins} 分钟，别再打了` }
+      }
+      return { code: -412, soft: true, message: `HTTP ${response.status}（这个接口被风控了，不影响别处）` }
     }
     if (!response.ok) return { code: -1, message: `HTTP ${response.status}（B站风控或接口异常，请稍后重试）` }
 
@@ -184,6 +192,7 @@ export async function apiGet(input, headers = {}, opts = {}) {
       if (Number(data.code) === -412 && isContentRestricted(url.pathname)) {
         return { ...data, message: `${data.message ?? ''}（这条播放地址受限：大会员专属/地区限制，不是限流）` }
       }
+      if (opts.soft) return { ...data, soft: true, message: `${data.message ?? ''}（可选接口风控 ${data.code}，不影响别处）` }
       const prev = readJson(BAN_FILE, {})
       const streak = Number(prev.streak ?? 0) + 1
       const mins = Math.min(30, 5 * 2 ** (streak - 1))

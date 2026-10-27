@@ -17,7 +17,7 @@
 //   配音起始时刻 = startᵢ + lead（落在转场之后，绝不被转场切掉）
 import fs from 'node:fs'
 import path from 'node:path'
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 
 import { config } from './config.mjs'
 import { dataPath } from './paths.mjs'
@@ -138,6 +138,26 @@ export function speechSpan(file, cfg = config()) {
 }
 
 /**
+ * "真正有声"的总时长（10ms 窗能量 > 峰值×th 才算）：静音、句间停顿都不进累加。
+ *
+ * 与 speechSpan 的分工要说清：speechSpan 取"第一声到最后一声"，**包含中间停顿**（排字幕要这个）；
+ * 这里做累加，专门用来量"参考音频到底说了多久的话"（tts.refSanity 的配比体检）。
+ * 为什么不能直接拿 speechSpan 当配比：音声素材两端常有剪辑爆音/咔哒，一帧爆音就能把
+ * "第一声"顶到 0.00 秒、"最后一声"顶到末尾 —— 实测 bingjiao2 的 2.0 秒真话被量成 6.16 秒，
+ * 于是 11 个字配 6.16 秒又被判"配不上"，白杀一条好参考。
+ */
+export function voicedSeconds(file, th = 0.06, cfg = config()) {
+  const pcm = pcm16(file, 0, cfg)
+  const env = envelopeOf(pcm)
+  const peak = env.reduce((a, b) => Math.max(a, b), 0)
+  if (!(peak > 0)) return 0
+  const cut = peak * th
+  let n = 0
+  for (const v of env) if (v > cut) n++
+  return +(n * 0.01).toFixed(3)
+}
+
+/**
  * 剪掉首尾静音，让"字幕出现"与"开口"落在同一时刻（前留 60ms 气口，后留 120ms 余音）。
  * @returns {{file:string, dur:number, span:object}} dur = 修剪后的真实语音时长
  */
@@ -149,6 +169,43 @@ export function trimVoice(file, out, cfg = config()) {
   const slice = pcm.data.subarray(from, to)
   writeWavLocal(out, pcm.sr, slice)
   return { file: out, dur: slice.length / pcm.sr, span }
+}
+
+/**
+ * 静态响度对齐 —— 只量一遍、算一个固定增益，**不做动态压缩**。
+ *
+ * 为什么（10-27 主人第二次报"机械、电音、不是她的声音"）：
+ *   以前是把 loudnorm 挂在"整条配音总线"上。总线上大部分是静音，单遍 loudnorm 会在静音里
+ *   疯狂补gain、说话时再压回去 —— 人声被泵过一遍就是"机器味"。抖音那几条（10-25）音频是
+ *   32k 单声道、只做了很轻的处理，听着就正常，正好对照。
+ *   现在每条配音各自量 integrated loudness，只加一个固定 dB，人声的强弱起伏原样保留。
+ * @returns {{gainDb:number, lufs:number|null}}
+ */
+export function staticGainTo(file, targetLufs = -16, cfg = config()) {
+  const probe = (args) => {
+    const r = spawnSync(ffmpegBin(cfg), args, { encoding: 'utf8', windowsHide: true, maxBuffer: 8 * 1024 * 1024 })
+    return String(r.stderr || '') + String(r.stdout || '')
+  }
+  const txt = probe(['-hide_banner', '-nostats', '-i', file, '-af', 'loudnorm=I=-16:TP=-1.5:LRA=11:print_format=json', '-f', 'null', '-'])
+  const m = txt.match(/"input_i"\s*:\s*"?(-?[\d.]+)"?/)
+  if (!m) return { gainDb: 0, lufs: null }
+  const lufs = parseFloat(m[1])
+  if (!isFinite(lufs) || lufs < -70) return { gainDb: 0, lufs }
+  const gainDb = Math.max(-12, Math.min(12, targetLufs - lufs))
+  return { gainDb: Math.round(gainDb * 10) / 10, lufs }
+}
+
+/** 只加固定增益写回（不动音高、不动时长）。支持原地覆盖（先写临时文件再改名）。 */
+export function applyGain(file, gainDb, out, cfg = config()) {
+  if (!gainDb) {
+    if (path.resolve(file) !== path.resolve(out)) fs.copyFileSync(file, out)
+    return out
+  }
+  const same = path.resolve(file) === path.resolve(out)
+  const dst = same ? out.replace(/\.wav$/, '.gain.wav') : out
+  ff(['-v', 'error', '-y', '-i', file, '-af', `volume=${gainDb}dB`, dst], { cfg })
+  if (same) fs.renameSync(dst, out)
+  return out
 }
 
 /**
@@ -422,8 +479,17 @@ function singIO() {
   return _singIO
 }
 
+/**
+ * 写 16bit 单声道 wav。
+ * ⚠ 10-27 真凶在这里：`trimVoice` 传进来的是 **Int16Array**（±32768），老代码却按 float 处理，
+ *  `Math.max(-1, Math.min(1, data[i]))` 把每个样本压成 ±1，再乘 32767 —— 整条配音变成
+ *  **只有 3 个取值（-32767 / 0 / +32767）的方波**，听感就是"电音、机械、不是她的声音"。
+ *  `line-*.wav`（模型原声）一直是对的，只有进剪辑后被这一步毁了 —— 主人 10-20 起报的每一次
+ *  "电音" 都是它。现在按数组类型分开处理，Int16 原样写。
+ */
 function writeWavLocal(file, sampleRate, data) {
   const n = data.length
+  const isInt16 = data instanceof Int16Array
   const buf = Buffer.alloc(44 + n * 2)
   buf.write('RIFF', 0, 'ascii'); buf.writeUInt32LE(36 + n * 2, 4); buf.write('WAVE', 8, 'ascii')
   buf.write('fmt ', 12, 'ascii'); buf.writeUInt32LE(16, 16); buf.writeUInt16LE(1, 20)
@@ -431,8 +497,8 @@ function writeWavLocal(file, sampleRate, data) {
   buf.writeUInt16LE(2, 32); buf.writeUInt16LE(16, 34)
   buf.write('data', 36, 'ascii'); buf.writeUInt32LE(n * 2, 40)
   for (let i = 0; i < n; i++) {
-    const v = Math.max(-1, Math.min(1, data[i]))
-    buf.writeInt16LE(Math.round(v * 32767), 44 + i * 2)
+    const s = isInt16 ? data[i] : Math.round(Math.max(-1, Math.min(1, data[i])) * 32767)
+    buf.writeInt16LE(s, 44 + i * 2)
   }
   fs.mkdirSync(path.dirname(file), { recursive: true })
   fs.writeFileSync(file, buf)
@@ -492,8 +558,10 @@ export function composeAudio({ voices, timeline, bgm, out, spec, cfg = config() 
     mix.push(`[a${i}]`)
   })
   if (!voices.length) throw new Error('没有配音，成不了片')
+  // 人声总线**不做 loudnorm**：每条配音在写盘前已经用固定增益对齐到同一响度（见 applyGain），
+  // 这里再来一遍动态归一，会在静音段猛补 gain、说话时再压回去 —— 人声被"泵"过就是机器味。
   filters.push(`${mix.join('')}amix=inputs=${voices.length}:normalize=0,`
-    + `loudnorm=I=-16:TP=-1.5:LRA=11,apad=whole_dur=${total.toFixed(3)}[vo]`)
+    + `apad=whole_dur=${total.toFixed(3)}[vo]`)
   let bgmIdx = -1
   if (bgm) {
     bgmIdx = voices.length
@@ -507,7 +575,8 @@ export function composeAudio({ voices, timeline, bgm, out, spec, cfg = config() 
     filters.push('[vo]alimiter=limit=0.94[aout]')
   }
   args.push('-filter_complex', filters.join(';'), '-map', '[aout]', '-t', total.toFixed(3),
-    '-c:a', 'aac', '-b:a', '192k', out)
+    // 固定 48k 双声道：loudnorm 内部跑 192k，不钉住的话 aac 会落成 96k 单声道（白占码率、播放器兼容也差）
+    '-ar', '48000', '-ac', '2', '-c:a', 'aac', '-b:a', '192k', out)
   ff(args, { cfg })
   return out
 }
@@ -567,8 +636,13 @@ export async function makeFilm({ scenes, spec, text = {}, dir, opts = {}, log = 
       try {
         const r = trimVoice(sc.voice, out, cfg)
         if (r.dur > 0.2) {
+          // 响度对齐用**固定增益**（量一次 LUFS，加一个常数 dB）—— 不做动态压缩/归一，
+          // 她的语气强弱原样保留。10-27 之前这里是 loudnorm 挂在总线上，听着"机器味"。
+          const g = staticGainTo(out, Number(cfg.video?.voiceLufs ?? -16), cfg)
+          if (g.gainDb) applyGain(out, g.gainDb, out, cfg)
           sc.voice = out
           sc.voiceDur = r.dur
+          sc.gain = g.gainDb
           sc.trimmed = { raw: +r.span.dur.toFixed(2), lead: +r.span.lead.toFixed(2), tail: +r.span.tail.toFixed(2) }
         }
       } catch (e) { log(`  配音修剪失败（第 ${i + 1} 句，保持原样）：${String(e.message).slice(0, 50)}`) }
@@ -577,8 +651,19 @@ export async function makeFilm({ scenes, spec, text = {}, dir, opts = {}, log = 
 
   const timeline = buildTimeline(scenes, spec, { intro: opts.intro, outro: opts.outro })
 
+  // 复用已有画面（--reaudio）：只重做音轨时不用再花十几分钟渲染镜头。
+  // 必须校验时长对得上 —— 时间轴变了就说明配音时长变了，这时候老老实实重渲染。
+  const visualFile = path.join(dir, 'visual.mp4')
+  const reuseVisual = Boolean(opts.reuseVisual) && fs.existsSync(visualFile)
+    && Math.abs(probeDur(visualFile, cfg) - timeline.total) <= 0.2
+  let visual = visualFile
+
   // ① 片头 / 片尾卡
   const clips = []
+  const assPath = path.join(dir, 'subtitle.ass')
+  if (reuseVisual) {
+    log(`  画面 ♻ 沿用已有 visual.mp4（${timeline.total.toFixed(1)}s，只重做音轨）`)
+  } else {
   if (timeline.intro > 0) {
     const f = path.join(clipsDir, 'clip-intro.mp4')
     renderCard({ out: f, dur: timeline.intro, w: spec.w, h: spec.h, fps: spec.fps, cfg,
@@ -625,14 +710,13 @@ export async function makeFilm({ scenes, spec, text = {}, dir, opts = {}, log = 
   }
 
   // ④ 字幕（先算时间轴，再烧进去 —— 顺序反了字幕就会错位）
-  const assPath = path.join(dir, 'subtitle.ass')
   fs.writeFileSync(assPath, buildAss({ scenes, timeline, spec, title: text.title, brand: text.brand }))
   log('  字幕 ✓')
 
   // ⑤ 画面合成（xfade 链 + 烧字幕）
-  const visual = path.join(dir, 'visual.mp4')
   composeVisual({ clips, timeline, ass: assPath, out: visual, spec, cfg })
   log(`  画面合成 ✓ ${timeline.total.toFixed(1)}s`)
+  }
 
   // ⑥ 配音摆位 + BGM 避让（BGM 默认现合成一条，不碰版权）
   const voices = scenes.map((sc, i) => ({ file: sc.voice, index: i })).filter((v) => v.file && fs.existsSync(v.file))

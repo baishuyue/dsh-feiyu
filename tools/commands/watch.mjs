@@ -166,8 +166,17 @@ export async function run(argv = []) {
     memory.remember('douyin', `douyin:${v.vid}`, v.author, 'event', String(v.desc).slice(0, 120))
 
     // 读热评，当作"看了内容"
+    // 10-27：以前 `filter(x => x.text)` 会把"纯表情包/纯图片"的热评过滤掉 ——
+    // 别人用图回应她的时候，她其实"看不见"。现在按 label 取（表情包也有说法）。
     let hot = []
-    try { const c = jsonOf(runPy(silent ? ['comments', '--vid', v.vid] : ['comments', '--vid', v.vid, '--headed'], cfg)); hot = (c.comments || []).filter(x => x.text).slice(0, 4).map(x => x.text) } catch {}
+    try {
+      const c = jsonOf(runPy(silent ? ['comments', '--vid', v.vid] : ['comments', '--vid', v.vid, '--headed'], cfg))
+      hot = (c.comments || [])
+        .filter((x) => String(x.plain ?? x.text ?? '').trim() || x.kind === 'sticker' || (Number(x.images) || 0) > 0)
+        .slice(0, 4)
+        .map((x) => String(x.label || x.text || '').trim())
+        .filter(Boolean)
+    } catch {}
 
     // 画面采样 + 视觉理解（10-25 框架）：vision 配齐才启用；没配静默跳过，老流程不受影响
     let visual = ''

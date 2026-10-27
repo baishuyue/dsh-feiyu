@@ -15,6 +15,9 @@ import { startBriefRefresher } from '../lib/ledger.mjs'
 import * as guard from '../lib/guard.mjs'
 import * as memory from '../lib/memory.mjs'
 import * as qqMemory from '../lib/qq-memory.mjs'
+import * as ownerFacts from '../lib/owner-facts.mjs'
+import * as promises from '../lib/promises.mjs'
+import { fed } from '../lib/mood.mjs'
 import * as llm from '../lib/llm.mjs'
 import { buildMessages, thinkingInstruction, addressesOwner } from '../lib/persona.mjs'
 import { gapText, mentionsDays, sanitizeDayClaims } from '../lib/timefix.mjs'
@@ -25,7 +28,7 @@ import { sing } from '../lib/sing.mjs'
 import { tickMood } from '../lib/mood.mjs'
 import { generateStickerImage } from '../lib/imggen.mjs'
 import { availableTags } from '../lib/stickers.mjs'
-import { execFile } from 'node:child_process'
+import { execFile, spawnSync } from 'node:child_process'
 import { promisify } from 'node:util'
 
 // 图片下载必须异步：execFileSync 会把事件循环钉住最多 35 秒，期间 /health 不通、群里所有
@@ -264,6 +267,21 @@ export async function run(argv = []) {
 
       memory.remember('qq', chatId, userId, 'user', userText, { isGroup })
 
+      // 主人说的硬事实（10-27）：他吃了什么/在干什么/要去干什么 —— 落账以后就不许再问。
+      // 只记私聊里主人本人的话（群友的话不是他的事）。
+      try {
+        const ownerQQ0 = String(config().owner?.qq || '')
+        if (!isGroup && ownerQQ0 && String(userId) === ownerQQ0) {
+          const got = ownerFacts.learnFromOwner(userText)
+          if (got.length) log(`[qq] 📝 记下主人的事：${got.map((g) => g.key + '=' + g.value).join('，')}`)
+          // 他说他吃了 → 她的饥饿直接落地（不然接下来两小时会一直问"你吃了吗"）
+          if (/吃(了|过|的是)|刚吃|在吃|饭吃了/.test(String(userText))) {
+            fed(20)
+            log('[qq] 🍚 主人说他吃了 → 她的饥饿归到 20')
+          }
+        }
+      } catch (e) { logErr('[qq] 记事实失败：' + (e?.message ?? e)) }
+
       // 生成回复（三段式 prompt + 走神注入）
       const turns = memory.recent(chatId).length
       const messages = buildMessages({ platform: 'qq', userText, chatId, userId, turnsToday: turns, isGroup })
@@ -340,7 +358,15 @@ export async function run(argv = []) {
       }
       if (!out) return
 
-      // 情绪标签（L1）：她会在回复最前面写 [[撒娇]] / [[情绪:委屈]] 之类，决定语音用哪种语气 + 参考音色。
+      // 承诺账本（10-27）：从她真正发出去的话里抽"这就去看/我答应/明天做"，落账带截止时间。
+      // 只记私聊（群里答应的事不算对主人的承诺），且只在非干跑时记。
+      try {
+        const ownerQQ1 = String(config().owner?.qq || '')
+        if (!isGroup && !config().guard?.dryRun && ownerQQ1 && String(userId) === ownerQQ1) {
+          const got = promises.catchFromReply(out, { userText })
+          if (got.length) log(`[qq] 📌 记下承诺：${got.map((g) => g.what).join('，')}（到点会真去做）`)
+        }
+      } catch (e) { logErr('[qq] 记承诺失败：' + (e?.message ?? e)) }
       // 标签本身绝不能发给主人 —— 这里就剥掉，同时把情绪记下来给语音用。
       const emoTagged = parseEmotionTag(out)
       const emotion = emoTagged.emotion
@@ -559,8 +585,54 @@ export async function run(argv = []) {
   let ownerLastMsgAt = 0
   const STARTED_AT = Date.now()
   const dayKeyNow = () => new Date().toLocaleDateString('sv-SE')
+
+  /**
+   * 跑一条自己的 CLI（= 她"自己动手"，10-27）。
+   * 用宿主同一个 node（process.execPath），不用 shell，超时可控；
+   * 失败只返回空串并记一行日志 —— 绝不让"没做成"变成谎话。
+   */
+  function runCli(args = [], timeoutMs = 180000) {
+    try {
+      const feiyu = path.join(path.dirname(new URL(import.meta.url).pathname.replace(/^\//, '')), '..', 'feiyu.mjs')
+      const r = spawnSync(process.execPath, [feiyu, ...args], {
+        encoding: 'utf8', timeout: timeoutMs, windowsHide: true,
+        env: { ...process.env, PYTHONIOENCODING: 'utf-8' },
+      })
+      const out = String(r.stdout || '')
+      if (r.status !== 0) {
+        log(`[qq] 自跑 ${args[0]} 退出码 ${r.status}：${String(r.stderr || out).slice(0, 120)}`)
+      }
+      return out
+    } catch (e) { logErr('[qq] 自跑失败：' + (e?.message ?? e)); return '' }
+  }
   const readProact = () => { try { return JSON.parse(fs.readFileSync(PROACT_FILE, 'utf8')) } catch { return {} } }
   const writeProact = (st) => { try { fs.writeFileSync(PROACT_FILE, JSON.stringify(st)) } catch {} }
+
+  /**
+   * 「她今天在网上干了什么」—— 从 web-log.md 当天段落取**最新** n 条（10-27 修）。
+   * 文件格式：`## 2026-10-27` 标题在上、新条目插在该段顶部（即最新在前）。
+   * 老代码 `.split('\n').slice(-3)` 取的是文件最底部 = 最早那天的最早几条 ——
+   * 于是整整两天，每条推送都在告诉她"你自己刚才在网上干的：搜南京小吃"，
+   * 南京就从"她顺手搜过的一次"变成了"她的人设"。
+   */
+  function todayWebLines(n = 3) {
+    try {
+      const raw = fs.readFileSync(dataPath('web-log.md'), 'utf8')
+      const today = dayKeyNow()
+      const lines = raw.split('\n')
+      const start = lines.findIndex((l) => l.trim() === `## ${today}`)
+      if (start < 0) return []
+      const body = []
+      for (let i = start + 1; i < lines.length; i++) {
+        const l = lines[i]
+        if (/^##\s/.test(l)) break
+        if (!l.trim()) continue
+        body.push(l.replace(/^-\s*/, '').replace(/\*\*/g, '').slice(0, 46))
+        if (body.length >= n) break
+      }
+      return body
+    } catch { return [] }
+  }
 
   // 10-25 修（用户抓到"两条差不多的抱怨"）：ownerLastMsgAt 只在内存里 → DSH 一重启就归零
   // → quietH 变成 99 → 她一律按"主人很久没理我"开口，编出"你消失四天了"（当时其实 13 分钟前刚聊过）。
@@ -641,20 +713,33 @@ export async function run(argv = []) {
       const hour = new Date().getHours()
       const slot = hour < 9 ? '早上' : hour < 12 ? '上午' : hour < 14 ? '午饭点' : hour < 18 ? '下午' : hour < 20 ? '傍晚' : hour < 23 ? '晚上' : '深夜'
       const moodNow = (() => { try { return JSON.parse(fs.readFileSync(dataPath('mood.json'), 'utf8')) } catch { return {} } })()
-      const hooks = [`现在是${slot}${hour >= 11 && hour < 14 ? '（饭点，她惦记吃饭很合理）' : ''}`, `你的情绪值 ${Math.round(Number(moodNow.value) || 60)}（低于 40 就是低落）`]
+      const hooks = [`现在是${slot}${hour >= 11 && hour < 14 ? '（饭点，但**他已经说过吃了什么就别再问**）' : ''}`, `你的情绪值 ${Math.round(Number(moodNow.value) || 60)}（低于 40 就是低落）`]
       try {
         const rows = fs.readFileSync(dataPath('episodes.jsonl'), 'utf8').trim().split('\n').filter(Boolean)
           .map((l) => JSON.parse(l)).filter((r) => Date.now() - (r.ts || 0) < 86400_000 && ['bilibili', 'douyin'].includes(r.platform))
         if (rows.length) hooks.push('今天在外面：' + rows.slice(-3).map((r) => String(r.summary || r.text || '').slice(0, 28)).join('；'))
       } catch {}
-      const fcts = memory.facts('owner')
-      if (fcts.length) hooks.push('关于主人的记忆：' + fcts.slice(-2).join('；').slice(0, 90))
+      // 主人事实（10-27）：他今天已经说过的事 —— 有了这段，她才不会一天问十次"吃了没"
+      {
+        const known = ownerFacts.list()
+        if (known.length) {
+          const label = { food: '他吃了', doing: '他在做', plan: '他说要去', mood: '他的状态', media: '他提到的作品' }
+          hooks.push('他已经说过的事（别再问第二遍）：' + known.slice(-4).map((x) => `${label[x.key] || x.key}${x.value}`).join('；'))
+        }
+      }
+      {
+        const fcts = memory.facts('owner')
+        if (fcts.length) hooks.push('关于主人的记忆：' + fcts.slice(-2).join('；').slice(0, 90))
+      }
       // 10-26：以前素材只有 B站/抖音，她翻来覆去就那几句（"肚子叫/桑拿鸡"连着说），
       // 大半草稿被去重拦掉，看着就像"主动性很弱"。把她自己在网上干的事也喂进去 —— 素材新鲜，话才不重。
-      try {
-        const wl = fs.readFileSync(dataPath('web-log.md'), 'utf8').split('\n').filter(Boolean).slice(-3).reverse()
-        if (wl.length) hooks.push('你自己刚才在网上干的：' + wl.map((s) => s.replace(/^-\s*/, '').replace(/\*\*/g, '').slice(0, 42)).join('；'))
-      } catch {}
+      // ⚠️ 10-27 修：`web-log.md` 是**最新在上**（## 日期在文件头，新条目插在该段顶部），
+      // 老代码 `.slice(-3)` 取到的是**文件最底部**=最早那天的条目 —— 于是连着两天每条推送都在说
+      // "你自己刚才在网上干的：搜南京小吃"。现在按"今天的段落 + 取头部 3 条"来读。
+      {
+        const wl = todayWebLines(3)
+        if (wl.length) hooks.push('你自己今天在网上干的：' + wl.join('；'))
+      }
       try {
         const dg = fs.readFileSync(dataPath('diary-owner.md'), 'utf8').split('\n').filter(Boolean).slice(-1)[0]
         if (dg) hooks.push('你最近写给主人的日记里那句：' + dg.replace(/^[-#\s]+/, '').slice(0, 50))
@@ -662,13 +747,49 @@ export async function run(argv = []) {
       try { const li = memory.loreInterests(1); if (li.length) hooks.push('最近挂在心上：' + String(li[0]).slice(0, 40)) } catch {}
       const lastProact = readProact()
       const lastType = String(lastProact.lastType || '')
+
+      // ── 到点的承诺，先真去做（10-27）─────────────────────────────────────
+      // 主人抓的病根："她说去看可塑性记忆，说了七次一次没看"。现在欠账到期就**当场执行**：
+      // binge 搜不到 / 没字幕 → 记 fail 并照实说；看成了 → 用真实的剧情当这条推送的内容。
+      // 这样她的"我看了"就不再是空话，而是有产出（剧情+感受）可讲。
+      let didPromise = null
+      try {
+        const due = promises.dueNow()
+        if (due.length) {
+          const job = due[0]
+          log(`[qq] 📌 到期承诺：${job.what}（${job.id}）→ 真去执行`)
+          const what = String(job.what || '')
+          let r = null
+          if (/看|追|番|剧/.test(what) || /看|追/.test(String(job.text || ''))) {
+            const shown = (what.match(/([一-龥A-Za-z0-9・·]{2,16}(?:记忆|物语|故事|之|传|记|番|剧))/)
+              || String(job.text || '').match(/《([^》]{1,24})》/) || [])[1] || what.replace(/^看/, '')
+            r = runCli(['binge', '--show', String(shown || what), '--ep', '1', '--go', '--json', '--promise', job.id], 240000)
+            didPromise = { job, out: r }
+          }
+          if (!r) {
+            promises.fail(job.id, '这条我没有能执行的动作')
+            log(`[qq] ✗ 承诺做不了：${job.what}（没有对应的执行动作）`)
+          }
+        }
+      } catch (e) { logErr('[qq] 执行承诺失败：' + (e?.message ?? e)) }
       const saidBefore = (Array.isArray(lastProact.recent) ? lastProact.recent : []).slice(-3)
         .map((x) => `「${String(x.text || '').slice(0, 24)}」`).join('、')
       const built = buildMessages({ platform: 'qq', userText: '', chatId: `qq:${ownerQQ}`, userId: ownerQQ, turnsToday: 0 })
       const quietHint = quietH >= 5 ? '（可以带一点点小委屈或调侃他，但别过头）' : ''
+      // 刚真做完的承诺 → 这条推送就以它为由头（不是"想聊什么"，是"我真干了什么"）
+      let didLine = ''
+      if (didPromise?.out) {
+        try {
+          const raw = String(didPromise.out)
+          const j = JSON.parse(raw.slice(raw.indexOf('{')).trim() || '{}')
+          if (j?.ok) didLine = `你刚真的看完了《${j.title}》第 ${j.ep} 集：${String(j.plot || '').slice(0, 120)}（感受：${String(j.feel || '').slice(0, 60)}）`
+          else didLine = `你刚试图看《${didPromise.job.what}》，但没成：${String(j?.via || j?.plot || '没有可用材料').slice(0, 80)} —— 这条推送要照实说做不到`
+        } catch {}
+      }
       const msgs = [
         built[0],
         { role: 'user', content: `【主动搭话】现在是 ${nowText}。主人最后一条消息是 ${quietText} 前。${quietHint}\n`
+          + (didLine ? `**这条就用它当由头**：${didLine}\n` : '')
           + `**时间只准用这一句里的数字**：不许换算成"几天"，不许说"四天/好几天/整整几天"这种我没告诉你的数字${quietMin < 120 ? '；才两个钟头不到，别摆出"好久没见"的架势' : ''}。\n`
           + '**自己挑一个类型**（上次用过「' + (lastType || '无') + '」，这次换一个）：'
           + '①日常——你现在正在干嘛/看到什么随口说；②思考——最近琢磨的小念头；③疑惑——想问他的问题；'
@@ -689,6 +810,33 @@ export async function run(argv = []) {
         } else out = guard.clean(String(resp ?? ''), cfgNow)
       } catch { out = guard.clean(String(resp ?? ''), cfgNow) }
       if (!out) return
+      // ── 事实闸（10-27）────────────────────────────────────────────────
+      // "你中午吃了没啊" 在主人 12:47 说过"吃了烧鸭"之后还问了 4 次。根子不是记性，
+      // 是推送草稿没人核对事实。这里先把草稿对着「他今天已经说过的事」过一遍：
+      //   ①先让她自己改一次（把答案写进去，别问）；②还问就这轮不发。
+      {
+        const known = ownerFacts.asksKnown(out)
+        if (known) {
+          log(`[qq] 🚧 草稿在问已经有答案的事（${known.key}=${known.value}）：「${out.slice(0, 30)}」→ 让她改`)
+          try {
+            const retry = msgs.slice()
+            retry[retry.length - 1] = {
+              role: 'user',
+              content: msgs[msgs.length - 1].content
+                + `\n\n【重写】他已经说过「${known.value}」了，你刚才那句还在问，等于没听人说话。`
+                + `换成别的由头重写一条（不许再问吃没吃/在干嘛）。`,
+            }
+            const r2 = await llm.chat(retry, { temperature: 0.9, max_tokens: 300 })
+            let out2 = ''
+            try {
+              const m2 = String(r2 ?? '').match(/\{[\s\S]*\}/)
+              out2 = guard.clean(m2 ? String(JSON.parse(m2[0]).text || '') : String(r2 ?? ''), cfgNow)
+            } catch { out2 = guard.clean(String(r2 ?? ''), cfgNow) }
+            if (out2 && !ownerFacts.asksKnown(out2)) out = out2
+            else { log('[qq] 改写后仍在问已知的事，这轮不发'); return }
+          } catch (e) { logErr('[qq] 事实闸改写失败：' + e.message); return }
+        }
+      }
       // 主动搭话本来就是"主人多久没理我"最容易编出天数的场景，再加一道兜底
       if (mentionsDays(out)) {
         const fixed = sanitizeDayClaims(out, Date.now() - ownerLastMsgAt)
@@ -731,7 +879,11 @@ export async function run(argv = []) {
       const st2 = readProact()
       const rec = (Array.isArray(st2.recent) ? st2.recent : []).slice(-7)
       rec.push({ at: Date.now(), type: usedType, text: String(out).slice(0, 60) })
-      writeProact({ day: dayKeyNow(), count: Number(st2.count ?? 0) + 1, lastAt: Date.now(), lastType: usedType, recent: rec })
+      // 10-27：计数按**今天**算。老代码只把"跨天清零"写在内存变量里（`st = {...}`），
+      // 落盘时又 `readProact()` 拿回昨天的 count 再加一 —— 于是 qq-proactive.json 是 73，
+      // 而记忆里今天只有 32 条推送。现在同一天才算累加。
+      const countToday = (st2.day === dayKeyNow() ? Number(st2.count ?? 0) : 0) + 1
+      writeProact({ day: dayKeyNow(), count: countToday, lastAt: Date.now(), lastType: usedType, recent: rec })
       log(`[qq] 🐟 主动搭话（${usedType}）：${out.slice(0, 50)}`)
     } catch (e) { logErr('[qq] 主动搭话失败：' + e.message) }
   }
