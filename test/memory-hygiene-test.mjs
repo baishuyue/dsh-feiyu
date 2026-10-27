@@ -31,6 +31,7 @@ const ownerFacts = await import('../tools/lib/owner-facts.mjs')
 const promises = await import('../tools/lib/promises.mjs')
 const focus = await import('../tools/lib/focus.mjs')
 const persona = await import('../tools/lib/persona.mjs')
+const quote = await import('../tools/lib/quote.mjs')
 
 let pass = 0
 const ok = async (name, fn) => {
@@ -200,6 +201,66 @@ await ok('qq-server 的网志钩子取的是当天段落最上面几条', () => 
   assert.ok(/function todayWebLines/.test(src), '缺 todayWebLines')
   assert.ok(/## \$\{today\}/.test(src), '要按 ## 日期 找当天段落')
   assert.ok(!/web-log\.md'[\s\S]{0,80}slice\(-3\)/.test(src), '不能再 slice(-3) 取文件末尾')
+})
+
+// ⑧ 引用消息（10-27 主人报"他看不懂引用/看不见引用了哪条"）
+//    OneBot 只给 reply 段的 id，正文得自己取 —— 以前只折成"【引用回复了一条消息】"，
+//    被引用的原话一个字没有，于是她只能回"我这边看不到引用的啥"。
+await ok('parseMessage 把 reply 段的 id 挖出来（array 与 CQ 码都认）', async () => {
+  const { parseMessage } = await import('../tools/commands/qq-server.mjs')
+  const a = parseMessage([{ type: 'reply', data: { id: '50854801' } }, { type: 'text', data: { text: '这句啥意思' } }], '3796002846')
+  assert.equal(a.replyId, '50854801', 'array 上报要取到 id')
+  assert.equal(a.text, '这句啥意思')
+  const b = parseMessage('[CQ:reply,id=-99123]这句啥意思', '3796002846')
+  assert.equal(b.replyId, '-99123', 'CQ 码上报也要取到 id')
+  const c = parseMessage([{ type: 'text', data: { text: '在吗' } }], '1')
+  assert.equal(c.replyId, '', '没引用时不该有 id')
+})
+
+await ok('引用索引：自己的话 / 他自己的话 / 别人的话 说法各不同', () => {
+  quote.clear()
+  quote.remember('m1', { text: '我明天去看可塑性记忆', who: 'me', at: Date.now() - 60000 })
+  quote.remember('m2', { text: '中午吃了烧鸭', who: 'owner' })
+  quote.remember('m3', { text: '我也想吃', who: 'other', name: '阿强' })
+  const s1 = quote.describe(quote.get('m1'))
+  const s2 = quote.describe(quote.get('m2'))
+  const s3 = quote.describe(quote.get('m3'))
+  assert.match(s1, /你自己刚说的/)
+  assert.match(s1, /我明天去看可塑性记忆/, '被引用的原话必须在里面')
+  assert.match(s2, /他自己前面说的/)
+  assert.match(s3, /阿强说的/)
+  assert.match(quote.describe(null), /没取到/, '取不到要老实说取不到')
+  quote.clear()
+})
+
+await ok('引用索引：get_msg 返回体认得出发送者是谁', () => {
+  const parse = (m, selfId) => ({
+    text: (m || []).filter((s) => s.type === 'text').map((s) => s.data.text).join(''),
+    images: [], marks: [],
+  })
+  const mine = quote.fromGetMsg({ message: [{ type: 'text', data: { text: '我发的那句' } }], sender: { user_id: 3796002846 }, time: 1793000000 },
+    { selfQQ: '3796002846', ownerQQ: '3082864371', parseMessage: parse })
+  assert.equal(mine.who, 'me')
+  const his = quote.fromGetMsg({ message: [{ type: 'text', data: { text: '他说的话' } }], sender: { user_id: 3082864371 }, time: 1793000000 },
+    { selfQQ: '3796002846', ownerQQ: '3082864371', parseMessage: parse })
+  assert.equal(his.who, 'owner')
+  assert.equal(his.at, 1793000000000, '时间戳要按秒→毫秒换算')
+})
+
+await ok('提示词里要有"这是在接上面那条"的引用块，且不许装看不见', () => {
+  const block = persona.quoteBlock('【他引用的是你自己刚说的这一句：「我明天去看番」】')
+  assert.match(block, /接上面那一条/)
+  assert.match(block, /我明天去看番/)
+  assert.match(block, /不许装没看见|不许反问/)
+  assert.equal(persona.quoteBlock(''), '', '没有引用时不要多出空块')
+})
+
+await ok('qq-server 真的把 quoteLine 送进提示词，并且写进记忆', () => {
+  const src = fs.readFileSync(path.join(import.meta.dirname, '..', 'tools', 'commands', 'qq-server.mjs'), 'utf8')
+  assert.ok(/resolveQuote\(parsed\.replyId/.test(src), '入口要拿 replyId 去解析')
+  assert.ok(/quote: quoteLine/.test(src), 'buildMessages 要收到 quote')
+  assert.ok(/memory\.remember\('qq', chatId, userId, 'user', memText/.test(src), '记忆里要带引用上下文')
+  assert.ok(/warmQuoteIndex/.test(src), '老消息要靠预热历史才取得到原文')
 })
 
 console.log(`\n记忆卫生测试：${pass}/${pass} 通过`)

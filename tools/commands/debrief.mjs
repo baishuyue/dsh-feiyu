@@ -49,6 +49,14 @@ export async function run(argv = []) {
       || subs[0]
     if (pick) {
       subtitleLang = pick.lan
+      // 轨选择留痕（10-27 补）：以前只有"选中的轨"进正文，选没选对、还有哪些候选，全看不见。
+      // 于是想验证"人审轨优先"时只能在外围瞎猜（外围单独调接口拿不到字幕列表，因为没带登录态）。
+      // 现在把候选和结果打一行到 stderr，验证靠真实播放路径，不靠猜。
+      try {
+        const cand = subs.map(s => String(s.lan ?? s.lang ?? '?')).join(' / ')
+        const kind = isAiTrack(pick) ? 'AI 轨' : '人审轨'
+        process.stderr.write(`[debrief] 字幕候选 ${subs.length} 条：${cand || '无'} → 选中 ${subtitleLang}（${kind}）\n`)
+      } catch {}
       let su = String(pick.subtitle_url ?? '')
       if (su.startsWith('//')) su = 'https:' + su
       const subRes = await fetch(su, { headers: { 'user-agent': H['user-agent'], referer: 'https://www.bilibili.com/' }, signal: AbortSignal.timeout(20000) })

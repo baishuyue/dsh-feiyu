@@ -136,6 +136,7 @@
 | **自定唤醒**（`selfwake`） | 她自己说"我 23:40 再醒"，到点**真的**叫起来（优先于概率）。`node feiyu.mjs selfwake 23:40 --note "把那篇小说收尾"` |
 | **真的看番/看剧**（`binge`，10-27 新增） | 不是"看标题和热评"，是**真看完一集**：`binge --search "可塑性记忆"` → `binge --show "可塑性记忆" --ep 1 --go`。材料优先用弹幕（番剧字幕轨串片率极高，实测拿到过 ED 歌词和钢化膜测评），LLM 读完写 `{剧情, 感受}` 进她的记忆；进度落 `~/.feiyu-ai/binge/<番名>.json`，`--list` 查看到第几集。日上限 `binge.dailyMax=1`（一天一集是"真看"，一天十集是"刷数据"） |
 | **承诺有账本**（`promises`，10-27 新增） | 她说"这就去看"会被 `catchFromReply` 记成一条带截止时间的承诺；每次主动搭话前先跑到期的，`binge` 成功就结清、没材料就照实记失败（顺延 6 小时）。`promises` 查全部、`promises --due` 查到期 |
+| **看得懂引用**（10-27 新增） | 主人引用她（或别人）某条消息再说话时，她读到的是**被引用的原文**，不是"【引用回复了一条消息】"。做法：她发出去的每条都记 `message_id → 正文`（环形表 400 条落 `msg-index.json`），收到引用先查本地表，没命中走 NapCat `get_msg`，再没有就把最近 40~50 条历史拉一遍（`get_msg` 对老消息只回"消息不存在"，所以启动时和每 10 分钟预热一次）。引用的是图片还会过一次 VL。开关 `qq.quote = {enabled, seeImage, historyCount}` |
 | **主人事实**（`owner-facts`，10-27 新增） | 他说"我中午吃了烧鸭""我在改插件""推荐你看《可塑性记忆》"→ 抽成 `food/doing/plan/mood/media` 五类事实，注入成【今天已经知道的事】，出门前还有一道闸门：命中"吃了吗/在干嘛"且已有事实就打回重写，**绝不再问第二遍** |
 | **每日回顾**（`personality.nightly`，默认 23:00） | 翻今天 → 写日记 → 更新"我是谁"（改前存快照）→ 记账 |
 | **人格进化**（`personality.evolve`） | 每 N 天一次复盘，更新 `persona.md` 自我迭代区 |
@@ -170,6 +171,9 @@ dsh-feiyu/
 │   │   ├── persona.mjs         三段式 prompt 装配 + 时间常驻层 + 我是谁快照
 │   │   ├── qq-memory.mjs       QQ 长记忆（摘要 + 主人画像 + worldBlock）
 │   │   ├── stickers.mjs        表情库（标签挑选 / 根本形象过滤 / autoTag 情绪兜底）
+│   │   ├── owner-facts.mjs     主人今天说过的硬事实（food/doing/plan/mood/media）+ 反问闸门
+│   │   ├── promises.mjs        承诺账本（认诺 → 到点执行 → done/fail → 注入提示词）
+│   │   ├── quote.mjs           引用消息（message_id → 正文 环形表 + describe + get_msg 解析）
 │   │   ├── imggen.mjs          AI 表情包（硅基参考图锁形象 > Pollinations 兜底）
 │   │   ├── config/cred/guard/mood/llm/tts/vision/bili-api/night-plan/share-policy/lock… 
 │   │   └── sticker_render.py   PIL 本地画文字贴纸

@@ -17,6 +17,7 @@ import * as memory from '../lib/memory.mjs'
 import * as qqMemory from '../lib/qq-memory.mjs'
 import * as ownerFacts from '../lib/owner-facts.mjs'
 import * as promises from '../lib/promises.mjs'
+import * as quoteIndex from '../lib/quote.mjs'
 import { fed } from '../lib/mood.mjs'
 import * as llm from '../lib/llm.mjs'
 import { buildMessages, thinkingInstruction, addressesOwner } from '../lib/persona.mjs'
@@ -88,6 +89,7 @@ export function parseMessage(message, selfId) {
   let atMe = false
   const images = []   // 图片 URL（等 Qwen3-VL 来"看"）
   const marks = []    // 非文字内容的描述标记
+  let replyId = ''    // 引用了哪一条（10-27：以前只留一句"【引用…】"，被引用的正文丢了）
   if (Array.isArray(message)) {
     for (const seg of message) {
       const t = seg?.type
@@ -100,7 +102,10 @@ export function parseMessage(message, selfId) {
       } else if (t === 'face') marks.push('【QQ表情】')
       else if (t === 'video') marks.push('【发了一段视频】')
       else if (t === 'record') marks.push('【发了一条语音】')
-      else if (t === 'reply') marks.push('【引用回复了一条消息】')
+      else if (t === 'reply') {
+        replyId = String(seg.data?.id ?? seg.data?.message_id ?? '').trim()
+        marks.push('【引用回复了一条消息】')
+      }
       else if (t === 'forward' || t === 'node') marks.push('【合并转发消息】')
       else if (t === 'json' || t === 'miniapp') {
         // 卡片（B站/小程序/结构化消息）：挖 title/desc/url
@@ -122,8 +127,10 @@ export function parseMessage(message, selfId) {
   } else if (typeof message === 'string') {
     text = message.replace(/\[CQ:[^\]]*\]/g, '')
     atMe = message.includes(`[CQ:at,qq=${selfId}]`)
+    const m = /\[CQ:reply,id=(-?\d+)/.exec(message)
+    if (m) replyId = m[1]
   }
-  return { text: text.trim(), atMe, images, marks }
+  return { text: text.trim(), atMe, images, marks, replyId }
 }
 
 export async function run(argv = []) {
@@ -137,15 +144,105 @@ export async function run(argv = []) {
   const NAPCAT = (QQ.napcat_http || 'http://127.0.0.1:3000').replace(/\/+$/, '')
   const port = Number(argv[0]) || 8080
 
-  const send = async (action, payload) => {
+  const callApi = async (action, payload = {}, timeout = 20000) => {
     try {
       const r = await fetch(`${NAPCAT}/${action}`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
-        signal: AbortSignal.timeout(20000),
+        signal: AbortSignal.timeout(timeout),
       })
-      if (!r.ok) logErr(`[qq] 回发失败 ${action}: HTTP ${r.status}`)
-      return r.ok
-    } catch (e) { logErr(`[qq] 回发异常 ${action}: ${e.message}`); return false }
+      if (!r.ok) { logErr(`[qq] ${action} 失败: HTTP ${r.status}`); return null }
+      return await r.json().catch(() => null)
+    } catch (e) { logErr(`[qq] ${action} 异常: ${e.message}`); return null }
+  }
+
+  const send = async (action, payload) => {
+    const j = await callApi(action, payload)
+    if (!j) return false
+    if (j.status && j.status !== 'ok') {
+      logErr(`[qq] ${action} 返回 ${j.status}/${j.retcode}: ${j.message || j.wording || ''}`)
+      return false
+    }
+    // 10-27：自己发的每条都记下 message_id → 正文，主人引用她的话时能零延迟取到原文
+    try {
+      const id = j?.data?.message_id ?? j?.message_id
+      const txt = Array.isArray(payload?.message)
+        ? payload.message.map((s) => (s?.type === 'text' ? s.data?.text ?? '' : s?.type === 'image' ? '【图片】' : '')).join('')
+        : String(payload?.message ?? '')
+      if (id) quoteIndex.remember(id, { text: txt || '（一条非文字消息）', who: 'me', name: '你' })
+    } catch {}
+    return true
+  }
+
+  // ── 引用索引预热（10-27）──────────────────────────────────────────────
+  // get_msg 只认得还有缓存的消息（实测老消息直接回"消息不存在"），所以启动时和之后每 10 分钟
+  // 把主人私聊 / 已开群 的最近几十条拉一遍，id → 正文 全部登记。这样引用历史消息也能取到原文。
+  async function warmQuoteIndex(count = 40) {
+    const ownerQQ = String(config().owner?.qq || '')
+    const targets = []
+    if (ownerQQ) targets.push({ api: 'get_friend_msg_history', key: 'user_id', id: Number(ownerQQ) })
+    for (const gid of (QQ.allow_groups || [])) targets.push({ api: 'get_group_msg_history', key: 'group_id', id: Number(gid) })
+    let n = 0
+    for (const t of targets) {
+      const j = await callApi(t.api, { [t.key]: t.id, count }, 15000)
+      const msgs = j?.data?.messages
+      if (!Array.isArray(msgs)) continue
+      for (const m of msgs) {
+        const senderQQ = String(m?.sender?.user_id ?? '')
+        const who = senderQQ === String(selfIdCached) ? 'me' : (senderQQ === ownerQQ ? 'owner' : 'other')
+        const p = parseMessage(m?.message, selfIdCached)
+        const own = [p.text, ...p.marks.filter((x) => x !== '【引用回复了一条消息】')].filter(Boolean).join(' ')
+        if (!own) continue
+        quoteIndex.remember(m.message_id, {
+          text: own, who, at: Number(m.time) * 1000,
+          name: String(m?.sender?.card || m?.sender?.nickname || senderQQ),
+        })
+        n++
+      }
+    }
+    quoteIndex.save()
+    if (n) log(`[qq] 引用索引预热：${n} 条（${quoteIndex.size()} 条在手）`)
+  }
+
+  // ── 引用消息解析（10-27）──────────────────────────────────────────────
+  // 本地表（她自己发过的、以及最近收到的）→ 没命中就问 NapCat get_msg。
+  // 引用里的图片再走一次 VL，免得"他引用了一张图"她只看到一句话。
+  async function resolveQuote(replyId, { selfId = '', userId = '', isGroup = false, groupId = '' } = {}) {
+    const ownerQQ = String(config().owner?.qq || '')
+    let rec = quoteIndex.get(replyId)
+    if (!rec) {
+      const j = await callApi('get_msg', { message_id: Number(replyId) || replyId }, 12000)
+      const data = j?.data || (j?.status === 'ok' ? j : null)
+      if (data) {
+        rec = quoteIndex.fromGetMsg(data, { selfQQ: selfId, ownerQQ, parseMessage })
+        if (rec) quoteIndex.remember(replyId, rec)
+      }
+    }
+    // 还是没有 → 可能是很久以前的消息：现场把最近历史再拉一遍（比"取不到"强）
+    if (!rec) {
+      await warmQuoteIndex(60)
+      rec = quoteIndex.get(replyId)
+    }
+    if (rec && config().qq?.quote?.seeImage !== false) {
+      // 被引用的是图片：取一次 VL 描述（失败就算了，别拖慢回复）
+      const url = /https?:\/\/[^\s"）)]+/.exec(rec.text)?.[0]
+      if (url && rec.who === 'me' && /【发了一张图片】|【图片】/.test(rec.text)) {
+        try {
+          const { visionOn, describeFrames } = await import('../lib/vision.mjs')
+          if (visionOn()) {
+            const dl = path.join(dataPath('qq-img'), `q-${Date.now()}.jpg`)
+            fs.mkdirSync(path.dirname(dl), { recursive: true })
+            const exe = fs.existsSync('C:/Windows/System32/curl.exe') ? 'C:/Windows/System32/curl.exe' : 'curl'
+            await execFileAsync(exe, ['-sS', '-L', '-m', '25', '-A', 'Mozilla/5.0', '-o', dl, url], { timeout: 30000, windowsHide: true })
+            if (fs.existsSync(dl) && fs.statSync(dl).size > 2000) {
+              const desc = await describeFrames([dl], { query: '这是他引用的一张图。一两句话说明图里是什么/什么梗/情绪。' })
+              if (desc) rec.text = `${rec.text}（图里是：${desc.slice(0, 100)}）`
+            }
+            try { fs.rmSync(dl, { force: true }) } catch {}
+          }
+        } catch {}
+      }
+    }
+    return quoteIndex.describe(rec, { selfQQ: selfId, ownerQQ })
   }
 
   // ── AI 表情包补发（10-25）：图库没有的标签 / 自制表情 → Pollinations 生成入库再补发 ──
@@ -188,6 +285,24 @@ export async function run(argv = []) {
       const parsed = parseMessage(evt.message, selfId)
       let extra = parsed.marks.filter((m) => m !== '【发了一张图片】').join(' ')   // 图片单独走 VL
       const { text, atMe, images } = { text: parsed.text, atMe: parsed.atMe, images: parsed.images }
+
+      // ── 引用消息（10-27）：把他引用的那条原文取回来 ────────────────────────
+      // 主人常常引用她上面那句再问"这个呢/你去了吗"，以前她只看到"【引用回复了一条消息】"，
+      // 等于被蒙着眼睛提问。这里：本地表 → NapCat get_msg → 连图片都用 VL 看一眼。
+      let quoteLine = ''
+      if (parsed.replyId && config().qq?.quote?.enabled !== false) {
+        try {
+          quoteLine = await resolveQuote(parsed.replyId, { selfId, userId, isGroup, groupId })
+          if (quoteLine) log(`[qq] 📎 引用解析：${quoteLine.slice(0, 70)}`)
+        } catch (e) { logErr('[qq] 引用解析失败：' + (e?.message ?? e)) }
+      }
+      // 别人（含主人）发来的这条也登记，下次被引用就不用请求
+      if (evt.message_id) {
+        const who = String(userId) === String(config().owner?.qq || '') ? 'owner' : 'other'
+        const label = isGroup ? String(evt.sender?.card || evt.sender?.nickname || userId) : '主人'
+        const own = [parsed.text, ...parsed.marks.filter((m) => m !== '【引用回复了一条消息】')].filter(Boolean).join(' ')
+        quoteIndex.remember(evt.message_id, { text: own || '（非文字消息）', who, name: label })
+      }
       if (!text && !images.length && !extra) return
       if (isGroup && QQ.at_only !== false && !atMe) return   // 群里只被 @ 才回
       const chatId = isGroup ? `qq:${groupId}` : `qq:${userId}`
@@ -216,14 +331,19 @@ export async function run(argv = []) {
         } catch { imageDesc = '【她发来一张图片】' }
         try { fs.rmSync(path.join(dataPath('qq-img')), { recursive: true, force: true }) } catch {}   // 用完即清
       }
-      const parts = [text.replace(new RegExp(`@?${selfId}\\s*`), '').trim(), extra, imageDesc]
+      // 10-27：引用行（他引用了哪一条）拼在正文前面 —— 记忆里也留着，回头能还原上下文
+      const parts = [quoteLine, text.replace(new RegExp(`@?${selfId}\\s*`), '').trim(), extra, imageDesc]
       const raw = parts.filter(Boolean).join(' ')
       if (!raw) return
       // 群聊像私聊一样回（at_only=false 时）：把说话人昵称带上，她才知道在跟谁说话，
       // 记忆里也留着"谁说了什么"（号码绝不当称呼 —— ownerLine 踩过的坑）。
       // labeled 是本轮的规范文本：remember 和 buildMessages 用同一份，装配端去重才对得上。
       const display = isGroup ? String(evt.sender?.card || evt.sender?.nickname || '').trim() : ''
-      const userText = (isGroup && display) ? `${display}：${raw}` : raw
+      // 引用行不进"他说的正文"（否则会把被引用的原话当成新说的话去抽事实），
+      // 但**要进记忆**：回头 recall 时才还原得出上下文。
+      const said = (isGroup && display) ? `${display}：${raw}` : raw
+      const userText = said
+      const memText = quoteLine ? `${quoteLine} ${said}` : said
 
       // 🎵 唱歌分支：主人让她唱，就真的唱（LLM 写词 + 她的音色逐句合成 + 鼓点混音）
       if (QQ.voice_enabled !== false && QQ.sing !== false && !isGroup && /唱(一首|首歌|个|段|吧|$)|唱歌|来一首|哼(一首|段)/.test(userText)) {
@@ -265,7 +385,7 @@ export async function run(argv = []) {
         }
       }
 
-      memory.remember('qq', chatId, userId, 'user', userText, { isGroup })
+      memory.remember('qq', chatId, userId, 'user', memText, { isGroup })
 
       // 主人说的硬事实（10-27）：他吃了什么/在干什么/要去干什么 —— 落账以后就不许再问。
       // 只记私聊里主人本人的话（群友的话不是他的事）。
@@ -284,7 +404,7 @@ export async function run(argv = []) {
 
       // 生成回复（三段式 prompt + 走神注入）
       const turns = memory.recent(chatId).length
-      const messages = buildMessages({ platform: 'qq', userText, chatId, userId, turnsToday: turns, isGroup })
+      const messages = buildMessages({ platform: 'qq', userText, chatId, userId, turnsToday: turns, isGroup, quote: quoteLine })
       messages[0].content += thinkingInstruction()
       // 时间锚点已经搬进 persona 的「【现在】」常驻层（10-25 重构，照 dsh-world 的 timeContext）：
       // 贴在最后一条消息上的临时提示一重写就丢，现在每轮都在 system 里。
@@ -576,6 +696,17 @@ export async function run(argv = []) {
     // 群聊认人护栏自检（10-26）：启动就把三件套的状态打出来 —— 换了代码却忘了重启时，
     // 看这一行就知道跑的是哪一版，不用再猜"到底生效了没有"。
     log(`    群聊认人护栏：事实块 + 剔旧错话 + 出稿拦截 = 已启用（主人号 ${String(config().owner?.qq || '').slice(0, 3)}***）`)
+    // 引用索引预热（10-27）：没有它，"他引用的是哪句"就只能回一句"我看不到"
+    void (async () => {
+      try {
+        const li = await callApi('get_login_info', {}, 8000)
+        if (li?.data?.user_id) selfIdCached = String(li.data.user_id)
+        if (config().qq?.quote?.enabled !== false) {
+          await warmQuoteIndex(50)
+          setInterval(() => { void warmQuoteIndex(40) }, 10 * 60_000)
+        }
+      } catch (e) { logErr('[qq] 引用索引预热失败：' + (e?.message ?? e)) }
+    })()
   })
 
   // ── 主动搭话引擎（B站同款自主性）：主人安静久了，带着由头主动开口 ──────────
@@ -583,6 +714,7 @@ export async function run(argv = []) {
   //       每天有上限（dailyMax）；开口前情绪先漂移一次；发完即写记忆（推送即记忆）。
   const PROACT_FILE = dataPath('qq-proactive.json')
   let ownerLastMsgAt = 0
+  let selfIdCached = String(QQ.self_id || '')     // 引用索引要用（启动时从 get_login_info 补上）
   const STARTED_AT = Date.now()
   const dayKeyNow = () => new Date().toLocaleDateString('sv-SE')
 

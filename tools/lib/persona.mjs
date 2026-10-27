@@ -224,7 +224,7 @@ export function dropCardMistakes(rows) {
 }
 export function cardMistake(text) { return CARD_MISTAKE.test(String(text || '')) }
 
-export function buildMessages({ platform = 'qq', userText, chatId, userId, turnsToday = 0, isGroup = false }) {
+export function buildMessages({ platform = 'qq', userText, chatId, userId, turnsToday = 0, isGroup = false, quote = '' }) {
   const cfg = config()
   const parts = []
 
@@ -318,6 +318,9 @@ export function buildMessages({ platform = 'qq', userText, chatId, userId, turns
   // 以前这些是贴在最后一条消息上的临时提示（重写时就丢了），现在放 system 里，每轮都在。
   parts.push(clockBlock(platform, chatId, userText, isGroup))
 
+  // 引用层（10-27）：他引用了某一条再说话 —— 那条原文在这里，别当成新话题。
+  if (quote) parts.push(quoteBlock(quote))
+
   // 状态层（平台提示 + 情绪 + 时段）
   const hintKey = isGroup ? `${platform}-group` : platform
   const hint = PLATFORM_HINTS[hintKey] || PLATFORM_HINTS[platform] || ''
@@ -387,6 +390,19 @@ export const CAPABILITIES = [
   ['selfup backup / selfup log "…"', '改自己代码前的备份与留痕'],
   ['selfwake 23:40', '自己定下次几点醒'],
 ]
+
+/**
+ * 引用块（10-27）：OneBot 只上报 reply 段的 id，被引用的正文得自己去取。
+ * qq-server 取到以后从这里讲给她听 —— 关键是**别把引用当新话题**。
+ */
+export function quoteBlock(quote) {
+  const q = String(quote ?? '').trim()
+  if (!q) return ''
+  return '【他这条是在接上面那一条说的】\n'
+    + q + '\n'
+    + '这不是新话题：先顺着被引用的那条回答（如果你被引的那句话说错了/说过了，就直说"我前面说的那个"），'
+    + '再自然往下讲。**不许装没看见、不许反问"你指的是哪句"** —— 原文就在上面。'
+}
 
 function capabilityBlock(cfg) {
   const lines = CAPABILITIES.map(([cmd, what]) => `· ${cmd} —— ${what}`)
