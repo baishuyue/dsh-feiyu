@@ -137,6 +137,7 @@
 | **真的看番/看剧**（`binge`，10-27 新增） | 不是"看标题和热评"，是**真看完一集**：`binge --search "可塑性记忆"` → `binge --show "可塑性记忆" --ep 1 --go`。材料优先用弹幕（番剧字幕轨串片率极高，实测拿到过 ED 歌词和钢化膜测评），LLM 读完写 `{剧情, 感受}` 进她的记忆；进度落 `~/.feiyu-ai/binge/<番名>.json`，`--list` 查看到第几集。日上限 `binge.dailyMax=1`（一天一集是"真看"，一天十集是"刷数据"） |
 | **承诺有账本**（`promises`，10-27 新增） | 她说"这就去看"会被 `catchFromReply` 记成一条带截止时间的承诺；每次主动搭话前先跑到期的，`binge` 成功就结清、没材料就照实记失败（顺延 6 小时）。`promises` 查全部、`promises --due` 查到期 |
 | **看得懂引用**（10-27 新增） | 主人引用她（或别人）某条消息再说话时，她读到的是**被引用的原文**，不是"【引用回复了一条消息】"。做法：她发出去的每条都记 `message_id → 正文`（环形表 400 条落 `msg-index.json`），收到引用先查本地表，没命中走 NapCat `get_msg`，再没有就把最近 40~50 条历史拉一遍（`get_msg` 对老消息只回"消息不存在"，所以启动时和每 10 分钟预热一次）。引用的是图片还会过一次 VL。开关 `qq.quote = {enabled, seeImage, historyCount}` |
+| **自己作品下的评论真的回**（10-27 修） | `replies --own-only` 走 ⓪ 路：先 `listOwnVideos()` 认出投稿（手填 `ownBvids` → 本地 `bvid.txt`/`bili-debut.json` → `space/wbi/arc/search`，space 路默认开且 `soft` 不熔断），再逐条回（任何类型：文字/图/纯表情）。`produce --debut-posted <BV>` 必须跑一次，否则本地不知道你发过什么，这条路永远是空的。楼中楼**不能带图**（B站 硬限制），带图稿会自动降级纯文字 |
 | **主人事实**（`owner-facts`，10-27 新增） | 他说"我中午吃了烧鸭""我在改插件""推荐你看《可塑性记忆》"→ 抽成 `food/doing/plan/mood/media` 五类事实，注入成【今天已经知道的事】，出门前还有一道闸门：命中"吃了吗/在干嘛"且已有事实就打回重写，**绝不再问第二遍** |
 | **每日回顾**（`personality.nightly`，默认 23:00） | 翻今天 → 写日记 → 更新"我是谁"（改前存快照）→ 记账 |
 | **人格进化**（`personality.evolve`） | 每 N 天一次复盘，更新 `persona.md` 自我迭代区 |
@@ -425,6 +426,9 @@ node tools/feiyu.mjs douyin watch [--duration 10]  # 自主观看
 node tools/feiyu.mjs feed | debrief --bvid BV1xx | comment --bvid BV1xx --message "…" [--go]
 node tools/feiyu.mjs bili-watch --free             # 静默自助刷一轮
 node tools/feiyu.mjs replies                       # 扫别人对我评论的回复并回应
+node tools/feiyu.mjs replies --own-only [--go]      # 只回**我自己作品**下面的评论（任何类型）
+node tools/feiyu.mjs replies --audit 10             # 体检：最近 10 条评论别人到底看不看得见（匿名视角）
+node tools/feiyu.mjs replies --own-only --go --force # 明知被挂审核也要发（默认会自刹车）
 
 # ── 她自己的手脚 ─────────────────────────────────────────────
 node tools/feiyu.mjs web search "关键词" | web fetch <url> | web log

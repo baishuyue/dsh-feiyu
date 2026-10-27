@@ -8,7 +8,7 @@
 //   node feiyu.mjs replies [--go] [--max 3]      # ⓪①② 一次跑完
 //   node feiyu.mjs replies --own-only            # 只回自己作品下面的评论
 import fs from 'node:fs'
-import { scanReplies, postReply, capOk, actStats, listOwnVideos, listCommentsOf } from '../lib/bili-write.mjs'
+import { scanReplies, postReply, capOk, actStats, listOwnVideos, listCommentsOf, replyVisibility } from '../lib/bili-write.mjs'
 import { config } from '../lib/config.mjs'
 import * as llm from '../lib/llm.mjs'
 import * as memory from '../lib/memory.mjs'
@@ -81,10 +81,15 @@ async function ownWorks(maxLeft, go, log = console.log) {
         if (wm.repliedTo[r.rpid]) continue
       }
       news.push({ ...r, vtitle: v.title, key, vid: v.bvid })
-      wm.seen.push(key)
     }
   }
-  wm.seen = wm.seen.slice(-800)
+  // 10-27 修：以前**发现即算看过**（这里就把 key 塞进 seen）—— 额度为 0 的时候
+  // （真实配置 dailyMax:0 = 不限额，但当时理解反了）所有评论被标成看过，之后再也回不了。
+  // 现在 seen 只在"真回过 / 她主动决定不接"时写（见下面的循环），失败一律回滚。
+  const ownerMid = String(config().owner?.biliMid || config().owner?.mid || '')
+  // 主人的评论排最前（跟私聊一样，他说话永远优先）
+  const isOwnerRow = (n) => Boolean(ownerMid) && String(n.mid) === ownerMid
+  news.sort((a, b) => Number(isOwnerRow(b)) - Number(isOwnerRow(a)) || Number(a.ctime) - Number(b.ctime))
   if (!news.length) { log('  自己作品下面没有新评论。'); return 0 }
   log(`  自己作品下的新评论 ${news.length} 条：`)
   for (const n of news.slice(0, 12)) {
@@ -100,6 +105,8 @@ async function ownWorks(maxLeft, go, log = console.log) {
         + '这是**你自己投稿**的B站视频评论区。以 UP 主 + "本鱼"的身份回评论：短、自然、有态度，别客服腔、别用敬语、别说"感谢支持"。'
         + '\n**评论不只有文字**：写着「（发了 N 张图…）」「（只有 [大笑] 这种表情）」的，是对方用图/表情跟你说话 —— '
         + '这种照样要回，顺着表情或图接一句就好，别问"你想说什么"。杠精和广告可以不接。'
+        + '\n**别把什么都扯到吃上**：对方没提吃的，你就别自己拐过去（你最近这个毛病刚被说过）。'
+        + '\n别人夸你、给你加油，就正正经经接住（可以嘴硬，但别敷衍，更别"哼…算了"把人的好意推回去）。'
         + `\n最多挑 ${maxLeft} 条。只输出 JSON：{"replies":[{"index":序号,"text":"回复内容"}]}，都不想接就 {"replies":[]}` },
       { role: 'user', content: news.slice(0, 12).map((n, i) => `${i + 1}. [${String(n.vtitle).slice(0, 12)}] ${n.uname}：${String(n.label || n.text).slice(0, 50)}`).join('\n') },
     ]
@@ -126,19 +133,33 @@ async function ownWorks(maxLeft, go, log = console.log) {
     const { kind, line } = styleReply(text, { platform: 'bilibili' })
     text = line
     log(`  ↩ 回 ${n.uname}（${n.kind}）：${text}${kind !== 'text' ? ` 〔${kind}〕` : ''}`)
-    const r = await postReply(n.bvid, n.rootRpid, n.rpid, text, { go, inReplyTo: `${n.uname}：${n.label || n.text}`, aid: n.aid, title: n.vtitle, image: kind === 'image' || kind === 'sticker' ? lastPickedImage : '' })
+    const own = isOwnerRow(n)
+    if (own) log('  👑 主人的评论——免额度、优先回')
+    const r = await postReply(n.bvid, n.rootRpid, n.rpid, text, { go, inReplyTo: `${n.uname}：${n.label || n.text}`, aid: n.aid, title: n.vtitle, image: kind === 'image' || kind === 'sticker' ? lastPickedImage : '', bypassCap: own })
     log('  ' + (r.why || '?'))
+    // 发出去了 ≠ 别人看得见（10-27）：B站 会给低等级号挂"仅自己可见"。
+    // 每次发完匿名拉一遍楼中楼，看不见就照实记成"审核中"，别让她以为已经跟人聊上了。
+    let visible = null
+    if (r.ok && go && config().bilibili?.replies?.verifyAfterPost !== false) {
+      const vis = await replyVisibility({ aid: n.aid, rpid: r.rpid, rootRpid: n.rootRpid })
+      visible = vis.checked ? vis.visible : null
+      if (vis.checked && !vis.visible) log('  ⚠ 匿名拉不到这条 —— B站 正让它「仅自己可见」（审核/风控）。对方还没看到，别当已送达。')
+      if (vis.checked && vis.visible) log('  ✓ 匿名可见：这条真出去了（' + vis.how + '）')
+    }
     if (r.ok) {
       done++
       wm.repliedTo[n.rpid] = Date.now()
-      if (go) save()
-      try { memory.addFact(n.uname || '网友', `B站 我自己的作品《${String(n.vtitle).slice(0, 20)}》评论区：对方说"${String(n.label || n.text).slice(0, 40)}"，我回了"${text.slice(0, 30)}"`) } catch {}
-    } else if (go) {
-      // 失败必须把水位退回去：不然这条评论永远不再尝试（人家就一直等不到回复）
-      wm.seen = wm.seen.filter((k) => k !== n.key)
-      save()
+      if (go) { wm.seen.push(n.key); save() }
+      try {
+        const note = visible === false ? '（B站挂着审核，暂时只有我自己看得见）' : ''
+        memory.addFact(n.uname || '网友', `B站 我自己的作品《${String(n.vtitle).slice(0, 20)}》评论区：对方说"${String(n.label || n.text).slice(0, 40)}"，我回了"${text.slice(0, 30)}"${note}`)
+      } catch {}
+    } else {
+      // 失败**什么都不记**：下一轮还看得见这条，不会因为一次额度/风控就永久失联
+      log('  （这条没回成，水位不退不记，下轮再来）')
     }
   }
+  wm.seen = wm.seen.slice(-800)
   if (!go) { log('  （干跑：水位不写，真跑时才落盘）'); return done }
   save()
   return done
@@ -205,7 +226,47 @@ async function outreach(maxLeft, go) {
 export async function run(argv = []) {
   const go = argv.includes('--go')
   const cfg = config().bilibili?.replies ?? {}
+
+  // --audit：审自己最近的评论对外到底看不看得见（10-27 新号风控体检）
+  if (argv.includes('--audit')) {
+    const n = Number(arg(argv, '--audit', 10)) || 10
+    const mine = readJson(dataPath('my-comments.json'), [])
+    const recent = mine.slice(-n)
+    console.log(`🔍 审最近 ${recent.length} 条我发出去的评论（匿名视角）：`)
+    let vis = 0, hid = 0
+    for (const c of recent) {
+      const v = await replyVisibility({ aid: c.aid, rpid: c.rpid })
+      if (!v.checked) { console.log(`  ?  rpid=${c.rpid} 查不了（${v.how}）`); continue }
+      if (v.visible) { vis++ } else { hid++ }
+      console.log(`  ${v.visible ? '✓' : '✗'} aid=${c.aid} rpid=${c.rpid}　${v.visible ? '可见（' + v.how + '）' : '仅自己可见（审核/风控）'}`)
+    }
+    const rate = recent.length ? Math.round((hid / recent.length) * 100) : 0
+    console.log(`\n可见 ${vis} 条 / 仅自己可见 ${hid} 条（${rate}% 被挂）`)
+    if (rate >= 50) console.log('⚠ 过半被挂：这是账号信用问题，不是代码问题 —— 停下来养号（看/赞/分享、别刷评论量），等 B站 把等级和实名信用抬起来。')
+    return { audit: true, visible: vis, hidden: hid }
+  }
+
   if (go && cfg.enabled !== true) { console.log('bilibili.replies.enabled 是关的（面板 B站卡片），不社交'); return }
+
+  // 自刹车（10-27）：先看最近几条评论在别人眼里到底看不看得见。
+  // 真实情况是 27 条全被挂成"仅自己可见" —— 这时候继续发只会把账号信用越刷越低，
+  // 所以默认停下来喊一声（真要继续就 --force）。
+  if (go && !argv.includes('--force') && cfg.holdCheck !== false) {
+    const mine = readJson(dataPath('my-comments.json'), [])
+    const probe = mine.slice(-3)
+    let hid = 0, checked = 0
+    for (const c of probe) {
+      const v = await replyVisibility({ aid: c.aid, rpid: c.rpid })
+      if (!v.checked) continue
+      checked++
+      if (!v.visible) hid++
+    }
+    if (checked >= 2 && hid >= 2) {
+      console.log('⛔ 最近 ' + checked + ' 条评论里 ' + hid + ' 条「仅自己可见」——B站 正在挂审核，继续发只会伤信用。')
+      console.log('   已停手。要抬信用：完善资料/绑定手机、看点东西、别刷评论量；确认要发就加 --force。')
+      return { held: true, checked, hidden: hid }
+    }
+  }
   const dailyMax = Number(cfg.dailyMax ?? 10)
   const maxOnce = Math.min(5, Number(arg(argv, '--max', 3)) || 3)
   const state = readJson(STATE, { lastTs: 0 })

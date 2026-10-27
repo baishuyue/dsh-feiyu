@@ -263,5 +263,46 @@ await ok('qq-server 真的把 quoteLine 送进提示词，并且写进记忆', (
   assert.ok(/warmQuoteIndex/.test(src), '老消息要靠预热历史才取得到原文')
 })
 
+// ⑨ B站「自己作品下的评论」（10-27 主人报"没有实现和抖音一样的回复评论"）
+//   真实病根三连：bvid 没落库 → 找不到投稿；space 列表默认关 → 自己发现不了；
+//   "发现即算看过" → 额度卡住一次就永久失联。
+await ok('找自己的投稿：默认会走 space 接口（否则永远"自己还没有投稿"）', () => {
+  const src = fs.readFileSync(path.join(import.meta.dirname, '..', 'tools', 'lib', 'bili-write.mjs'), 'utf8')
+  assert.ok(/cfg\.useSpaceList !== false/.test(src), 'space 列表必须默认开（soft 不熔断）')
+  assert.ok(/soft: true/.test(src), 'space 接口要走 soft，别把整个 B站 通道熔断')
+})
+
+await ok('回自己作品评论：只在真回过时记 seen，失败不许吃掉这条', () => {
+  const src = fs.readFileSync(path.join(import.meta.dirname, '..', 'tools', 'commands', 'replies.mjs'), 'utf8')
+  // 发现阶段不许写 seen
+  const discover = src.slice(src.indexOf('const news = []'), src.indexOf('const ownerMid'))
+  assert.ok(!/wm\.seen\.push/.test(discover), '发现评论时不能直接标 seen（额度卡住就永久失联）')
+  assert.ok(/wm\.seen\.push\(n\.key\)[\s\S]{0,40}save\(\)/.test(src), '成功之后才写 seen')
+  assert.ok(/这条没回成，水位不退不记/.test(src), '失败要明说会重试')
+})
+
+await ok('子评论不能带图：楼中楼要降级成纯文字，并有兜底重试', () => {
+  const src = fs.readFileSync(path.join(import.meta.dirname, '..', 'tools', 'lib', 'bili-write.mjs'), 'utf8')
+  assert.ok(/子评论（楼中楼）不能带图/.test(src), '注释里要写清这个平台约束')
+  assert.ok(/const isNested = String\(rootRpid/.test(src), '要判断是不是楼中楼')
+  assert.ok(/if \(image && isNested\)/.test(src), '楼中楼要主动去掉图')
+  assert.ok(/去掉图再来一次/.test(src), '被拒还要再试一次纯文字')
+})
+
+await ok('发出去了≠看得见：要有匿名可见性核查 + 被挂就自刹车', () => {
+  const w = fs.readFileSync(path.join(import.meta.dirname, '..', 'tools', 'lib', 'bili-write.mjs'), 'utf8')
+  const r = fs.readFileSync(path.join(import.meta.dirname, '..', 'tools', 'commands', 'replies.mjs'), 'utf8')
+  assert.ok(/export async function replyVisibility/.test(w), '要有匿名核查函数')
+  assert.ok(/仅自己可见/.test(w), '要说清 state=17 的含义')
+  assert.ok(/--audit/.test(r), '要有体检入口')
+  assert.ok(/holdCheck/.test(r) && /--force/.test(r), '被挂过半要自刹车，但要留 --force')
+})
+
+await ok('主人评论免额度：跟抖音一致', () => {
+  const w = fs.readFileSync(path.join(import.meta.dirname, '..', 'tools', 'lib', 'bili-write.mjs'), 'utf8')
+  assert.ok(/bypassCap/.test(w), 'postReply 要支持 bypassCap')
+  assert.ok(/主人的评论永远不受日额度限制/.test(w), '语义要写清')
+})
+
 console.log(`\n记忆卫生测试：${pass}/${pass} 通过`)
 if (process.exitCode) console.log('（有失败项，见上）')

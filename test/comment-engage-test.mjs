@@ -119,8 +119,10 @@ await ok('B站 投稿列表有归属校验（别人的 BV 不许回）+ space �
   const s = read('tools/lib/bili-write.mjs')
   assert.match(s, /不属于自己的 BV/, '缺归属校验提示')
   assert.match(s, /info\.ownerMid/, '没有比对 ownerMid')
-  // space 接口一碰就 412 且会熔断整条通道 → 默认不调，要开得显式配置
-  assert.match(s, /cfg\.useSpaceList === true/)
+  // space 接口会 412 → 必须走 soft（不熔断整条通道）；10-27 起**默认开**
+  // （关着的话她永远"自己还没有投稿"，自己作品下面的评论一条都扫不到）
+  assert.match(s, /cfg\.useSpaceList !== false/)
+  assert.match(s, /soft: true/, 'space 接口必须 soft，别熔断')
   // 回评必须能直传 aid，别为查 aid 去撞 /x/web-interface/view
   assert.match(s, /aid = 0, title = ''/, 'postReply 没有 aid 直传口')
 })

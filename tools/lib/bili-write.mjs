@@ -278,7 +278,55 @@ export async function scanReplies({ sinceMs } = {}) {
  *  opts.inReplyTo：「对方昵称:对方的话」—— 发言台账用。
  *  opts.aid / opts.title：已知就传进来 —— 省掉一次 /x/web-interface/view（那个接口今天已经被
  *  B站 412 限流过两回，回评论不该被"查 aid"卡死；aid 在评论区接口里本来就有）。 */
-export async function postReply(bvid, rootRpid, parentRpid, rawMessage, { go = false, inReplyTo = '', aid = 0, title = '', image = '' } = {}) {
+// ── ⑧ 审核可见性核查（10-27）──────────────────────────────────────────
+// 真实翻车：回评 API 返回 ok、rpid 也拿到了，但匿名（不带 cookie）拉楼中楼是空的 ——
+// B站 对低等级新号的评论会先**仅自己可见**（带 cookie 查得到，别人看不到）。
+// 光看"已回复"三个字会以为送达了，其实对方一个字都没收到。
+const ANON_HEADERS = {
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126.0 Safari/537.36',
+  Referer: 'https://www.bilibili.com/',
+}
+async function anonJson(u) {
+  try {
+    const r = await fetch(u, { headers: ANON_HEADERS, signal: AbortSignal.timeout(12000) })
+    if (!r.ok) return { ok: false, why: 'HTTP ' + r.status }
+    const j = await r.json().catch(() => null)
+    return { ok: true, j }
+  } catch (e) { return { ok: false, why: e.message } }
+}
+
+/**
+ * 这条评论/回复对外（未登录）看得见吗？
+ * @param {object} p { aid, rpid, rootRpid? }
+ * @returns {{checked:boolean, visible:boolean, how:string}}
+ */
+export async function replyVisibility({ aid, rpid, rootRpid = '' } = {}) {
+  const oid = encodeURIComponent(String(aid))
+  const rp = String(rpid || '')
+  const root = String(rootRpid || rp)
+  // ① 先当楼中楼查：root 下的子回复里有没有我这条
+  if (root) {
+    const { ok, j, why } = await anonJson(`https://api.bilibili.com/x/v2/reply/reply?type=1&oid=${oid}&root=${encodeURIComponent(root)}&ps=20&pn=1`)
+    if (ok) {
+      const rows = j?.data?.replies || []
+      if (rows.some((x) => String(x?.rpid) === rp)) return { checked: true, visible: true, how: '楼中楼' }
+      if (rows.length && root === rp) {
+        // root 就是它自己 → 说明它是别人的楼的楼中楼，我拿错了 root；往下走顶层扫描
+      }
+    } else if (why) return { checked: false, visible: false, how: why }
+  }
+  // ② 再当顶层评论查：翻前 3 页找 rpid
+  for (let pn = 1; pn <= 3; pn++) {
+    const { ok, j } = await anonJson(`https://api.bilibili.com/x/v2/reply?type=1&oid=${oid}&ps=20&sort=2&nohot=1&pn=${pn}`)
+    if (!ok) break
+    const rows = j?.data?.replies || []
+    if (!rows.length) break
+    if (rows.some((x) => String(x?.rpid) === rp)) return { checked: true, visible: true, how: '顶层第' + pn + '页' }
+  }
+  return { checked: true, visible: false, how: '匿名查不到（仅自己可见/审核中）' }
+}
+
+export async function postReply(bvid, rootRpid, parentRpid, rawMessage, { go = false, inReplyTo = '', aid = 0, title = '', image = '', bypassCap = false } = {}) {
   const cfg = config().bilibili?.replies ?? {}
   const message = guard.clean(String(rawMessage || ''), config()).slice(0, 100)
   // 10-27：回复不再只有文字 —— 带图回复走同一个 /x/v2/reply/add（`pictures` 参数），
@@ -288,23 +336,46 @@ export async function postReply(bvid, rootRpid, parentRpid, rawMessage, { go = f
   const tag = image ? ` [图:${path.basename(image)}]` : ''
   if (!go) return { ok: true, dry: true, why: `【干跑】回评 →《${String(info.title).slice(0, 18)}》：${message}${tag}` }
   if (cfg.enabled !== true) return { ok: false, why: 'bilibili.replies.enabled 是关的' }
-  if (!capOk('reply', Number(cfg.dailyMax ?? 10))) return { ok: false, why: '今日回评额度已用完' }
+  // bypassCap：主人的评论永远不受日额度限制（跟抖音那边一致 —— 主人说话不许因为额度被吞掉）
+  if (!bypassCap && !capOk('reply', Number(cfg.dailyMax ?? 10))) return { ok: false, why: '今日回评额度已用完' }
   const verdict = guard.allow(`bilibili:${bvid}`, message || '[图]', config())
   if (!verdict.ok) return { ok: false, why: '被风控闸门拦下：' + verdict.why }
   const cred = loadCred()
   let pics = ''
-  if (image) {
+  // 10-27 实测硬约束：**子评论（楼中楼）不能带图** —— B站 直接回「子评论不能带图」。
+  // 只有直接在视频下发的一级评论能带 pictures。回别人的评论时一律降级成纯文字。
+  const isNested = String(rootRpid ?? '0') !== '0' || String(parentRpid ?? '0') !== '0'
+  let useImage = image
+  if (image && isNested) {
+    useImage = ''
+  }
+  if (useImage) {
     if (config().bilibili?.replies?.image !== true) return { ok: false, why: 'bilibili.replies.image 没开（带图回复要显式开启）' }
-    const pic = await uploadImage(image)
+    const pic = await uploadImage(useImage)
     pics = JSON.stringify([pic])
   }
-  const j = await formPost(cred, 'https://api.bilibili.com/x/v2/reply/add', {
+  const post = (withPics) => formPost(cred, 'https://api.bilibili.com/x/v2/reply/add', {
     oid: String(info.aid), type: '1', plat: '1', message, root: String(rootRpid), parent: String(parentRpid),
-    ...(pics ? { pictures: pics } : {}),
+    ...(withPics ? { pictures: withPics } : {}),
   })
-  const res = okOf(j)
-  if (res.ok) { capRecord('reply'); guard.commit(`bilibili:${bvid}`, message || '[图]'); recordMyComment(bvid, info.aid, j?.data?.rpid); try { const { recordBili } = await import('./outbox.mjs'); recordBili({ kind: image ? '回评(图)' : '回评', title: info.title, bvid, to: inReplyTo, text: message, extra: image ? path.basename(image) : '' }) } catch {} }
-  return { ...res, why: res.ok ? `已回复「${(message || '[图]').slice(0, 30)}」` : `回评失败 ${res.message}` }
+  let j = await post(pics)
+  let res = okOf(j)
+  // 兜底重试：万一还有别的情况带图被拒（文案会变，但意思很硬），去掉图再来一次，别让整条回复丢掉
+  if (!res.ok && pics && /图/.test(String(res.message || ''))) {
+    j = await post('')
+    res = okOf(j)
+    if (res.ok) useImage = ''
+  }
+  if (res.ok) {
+    capRecord('reply')
+    guard.commit(`bilibili:${bvid}`, message || '[图]')
+    recordMyComment(bvid, info.aid, j?.data?.rpid)
+    try { const { recordBili } = await import('./outbox.mjs'); recordBili({ kind: image ? '回评(图)' : '回评', title: info.title, bvid, to: inReplyTo, text: message, extra: useImage ? path.basename(useImage) : '' }) } catch {}
+  }
+  const why = res.ok
+    ? `已回复「${(message || '[图]').slice(0, 30)}」${image && !useImage ? '（楼中楼不能带图，已降级纯文字）' : ''}`
+    : `回评失败 ${res.message}`
+  return { ...res, why, rpid: j?.data?.rpid ?? 0, checkedVisibility: false }
 }
 
 // ── ⑦ 自己作品评论区（10-27）──────────────────────────────────────────────
@@ -339,10 +410,13 @@ export async function listOwnVideos({ ps = 10 } = {}) {
     }
   } catch {}
 
-  // ③ 空间接口（能拿到标题/时间；**默认不调**）
-  //    10-27 实测：`/x/space/wbi/arc/search` 在这个 IP 上稳定 -412，而且会把 apiGet 熔断 20 分钟，
-  //    连带堵住回评/弹幕。所以默认关掉，要开就 config `bilibili.useSpaceList: true`（并且走 soft 不熔断）。
-  if (cfg.useSpaceList === true && out.length < Math.min(3, ps)) {
+  // ③ 空间接口（能拿到标题/时间）
+  //    10-27 实测：这个 IP 上 `/x/space/wbi/arc/search` 有时 -412，而且会把 apiGet 熔断 20 分钟，
+  //    连带堵住回评/弹幕 —— 所以走 `soft: true`（不熔断），并且**默认开**：
+  //    不自己找到投稿，`replies` 那条"回自己作品评论"的路就永远是空的
+  //    （10-27 真实翻车：她的简介视频 BV1oExK6yEDn 下有 2 条评论，因为 bvid 没落库，一条都没回）。
+  //    真被风控就静默退回本地记录，不影响别的动作。
+  if (cfg.useSpaceList !== false && out.length < Math.min(3, ps)) {
     try {
       const cred = loadCred()
       const H = makeHeaders(cred)

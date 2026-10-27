@@ -368,6 +368,15 @@ locks/                  自由进程单实例锁
     - 提示词侧：`persona.quoteBlock()` 注入【他这条是在接上面那一条说的】+ 原文 + "引用≠新话题，不许装没看见、不许反问'你指的是哪句'"；引用行只进**记忆**（`memText`），不进事实抽取（`userText`），否则会把她自己的旧话当成主人新说的话去抽 food/plan。
     - 配置：`qq.quote = { enabled:true, seeImage:true, historyCount:50 }`；引用的是图片时走一次 VL（`seeImage`）把图里内容补进那句话里。
     - 验证：拿真实 `message_id=50854801`（她自己 19:06 那条）走完整链路 → 日志 `📎 引用解析：【他引用的是你自己刚说的这一句（19:06）：「哪条呀，我这边看不到引用的是啥 …」】`，干跑回复从"看不到引用"变成"我前面说的那句就是……"。`memory-hygiene-test` 加 5 条（27/27）。
+
+- ⑩ **B站"自己作品下的评论没回"（10-27 第三批）**：主人报"B站视频（自己的作品下）好像没有实现和抖音一样的回复评论"。查下来是**三层叠加**，前两层是代码，第三层是平台：
+    1. **bvid 从没落库**：`bili-debut.json` 的 `bvid` 是空串 —— 首条视频 12:46 就发出去了（`BV1oExK6yEDn`），但 `produce --debut-posted` 一次都没跑，投稿包里也没有 `bvid.txt`。于是 `listOwnVideos()` 返回 `[]`，`replies` 张口就是"自己还没有投稿，评论区空着"（实际那条视频下有 2 条评论：`[蹲蹲]` 和 `加油小肥鱼`）。
+    2. **space 兜底被默认关掉**：`/x/space/wbi/arc/search` 实测现在稳定 `code:0`（2 个投稿），但代码要 `useSpaceList === true` 才走，默认 `!== true` → 永远不会自己发现投稿。改成 `!== false`（默认开、仍 `soft:true` 不熔断）。
+    3. **"发现即算看过"**：`ownWorks()` 在发现阶段就 `wm.seen` 记下 —— 一旦某轮因为额度/风控没发成，这条评论就**永久失联**。改成只在真回过时写 seen，失败什么都不记（下一轮还看得见）。
+    - 顺手修的：楼中楼**不能带图**（B站 直接回「子评论不能带图」，第一轮就吃到），`postReply` 现在判断 `isNested` 主动降级纯文字，并有"被图拒了就再去图重试一次"的兜底；主人评论 `bypassCap` 免额度（跟抖音一致）。
+    - 🩸 **最要紧的发现**：回评 API 返回 ok、rpid 也拿到了，但**匿名（不带 cookie）拉楼中楼是空的** —— B站 把低等级新号的评论挂成"仅自己可见"（`state=17`）。实测今天 27 条评论**匿名可见 0 条**，视频 `stat.reply` 一直是 2（没算她那两条回复）。验证方法很重要：拿**别人的**评论喂给同一个检查器，它说"可见" —— 说明不是检查器错了。所以新增 `replyVisibility()` + `replies --audit`（匿名视角体检）+ 发完自动核一眼 + `holdCheck` 自刹车（最近 3 条里 ≥2 条被挂就不发了，要发得 `--force`）。
+    - 配置：`bilibili.replies = { enabled:true, dailyMax:5, ownWorks:true, ownMax:5, image:true, verifyAfterPost:true, holdCheck:true }`。原来 `dailyMax:0` 在代码里是"不限额"（`capOk` 对 0 返回 true），一天刷了 27 条评论 —— 这是账号信用的直接杀手，改成 5。
+    - 账号侧的治理（主人要做的）：完善资料、绑定手机/实名、把等级抬上去；这期间**别刷评论量**，每天几条就够。她的评论会被审核放出来或一直挂着，`--audit` 随时能看
     - 回归：`test/memory-hygiene-test.mjs`（22 条）锁死上面每一项 —— 饥饿封顶/按次衰减/心情不再被砍、`recallAll` 排掉 `kind:'push'`、ops 与干活流水不进价值观池、同主题刷屏折叠到 ≤2 条、事实抽取与"问第二遍"闸门、承诺落账/去重/终态、`focus` 认 `binge`、能力清单里每条命令都真在 `feiyu.mjs` 注册、网志钩子不再 `slice(-3)`。`tools/run-tests.mjs` 现为 **23 套全绿**。
     - 端到端演练：`tools/drill-promise.mjs` —— 主人说"中午吃了烧鸭/在改插件/推荐看可塑性记忆"→ 事实落库并渲染成【今天已经知道的事】→ 她说"这就去看"自动落账 → 到点执行 `binge` → 真拿到第 1 集剧情（司回收老婆婆的 Giftia / 艾菈寿命只剩不到十年）→ 承诺 `done` → 写进记忆。首次跑还抓出 `--json` 输出前面带一行"→ 选了 BV…"导致 `JSON.parse` 炸的问题（已改成截取第一个 `{`）。
     - 配置新增：`mood={hungerCap:70,mealGain:7,decayPerTick:6,moodBase:62,hungryMoodPenalty:1}`、`binge={enabled:true,dailyMax:1,minEpisodeMin:15}`（日上限：一天一集是"真看"，一天十集是"刷数据"，`--force` 可破）。`qq.proactive` 收敛为 `{dailyMax:12,minGapMin:25,minQuietMin:20,chance:0.12,typeCooldownMin:120,similarityMax:0.32}`。

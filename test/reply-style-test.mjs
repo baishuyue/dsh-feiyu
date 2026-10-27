@@ -140,9 +140,11 @@ await ok('抖音 engage：带图/官方表情时走 UI 那条路（useUi）', ()
 })
 
 await ok('B站 postReply：能带 pictures 发图', () => {
-  assert.match(bw, /pictures: pics/)
-  assert.match(bw, /uploadImage\(image\)/)
+  // 10-27 起带图走 `post(withPics)`（楼中楼不能带图，要能去掉图重试），参数名统一叫 withPics
+  assert.match(bw, /\.\.\.\(withPics \? \{ pictures: withPics \} : \{\}\)/)
+  assert.match(bw, /uploadImage\(useImage\)/)
   assert.match(bw, /bilibili\?\.replies\?\.image/)
+  assert.match(bw, /子评论（楼中楼）不能带图/)
 })
 
 await ok('B站 replies：⓪①② 三条路都过了一遍 styleReply', () => {
