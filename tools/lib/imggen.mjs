@@ -43,12 +43,37 @@ function refUrlCached(refPath) {
 }
 function uploadRef(localPath) {
   const exe = fs.existsSync('C:/Windows/System32/curl.exe') ? 'C:/Windows/System32/curl.exe' : 'curl'
-  const r = execFileSync(exe, ['-sS', '-m', '90', '-x', REF_UPLOAD_PROXY(), '-F', `file=@${String(localPath).replace(/\//g, path.sep)}`, 'https://tmpfiles.org/api/v1/upload'],
-    { encoding: 'utf8', timeout: 100000, windowsHide: true })
-  const j = JSON.parse(r)
-  const page = String(j?.data?.url || '')
-  if (!page) throw new Error('tmpfiles 上传失败：' + r.slice(0, 120))
-  const url = page.replace('tmpfiles.org/', 'tmpfiles.org/dl/')   // 页面链 → 直链
+  const sep = String(localPath).replace(/\//g, path.sep)
+  const opts = { encoding: 'utf8', timeout: 100000, windowsHide: true }
+  // 10-27 起 tmpfiles.org 在本机彻底不可达（走代理连不上、直连 RST），原来唯一的通道挂了，
+  // 结果是"没有可用参考图 → 每一幕都跳过 → 成片 0 幕"。这里改成再加一条兜底：
+  // uguu.se（直连、files[] 字段、output=text 直接回图片直链）。先试主路，失败再试兜底。
+  const attempts = [
+    {
+      name: 'tmpfiles',
+      run: () => {
+        const r = execFileSync(exe, ['-sS', '-m', '90', '-x', REF_UPLOAD_PROXY(), '-F', `file=@${sep}`, 'https://tmpfiles.org/api/v1/upload'], opts)
+        const page = String(JSON.parse(r)?.data?.url || '')
+        if (!page) throw new Error('tmpfiles 没回 url')
+        return page.replace('tmpfiles.org/', 'tmpfiles.org/dl/')   // 页面链 → 直链
+      },
+    },
+    {
+      name: 'uguu',
+      run: () => {
+        const r = execFileSync(exe, ['-sS', '-m', '90', '--noproxy', '*', '-A', 'feiyu/1.0', '-F', `files[]=@${sep}`, 'https://uguu.se/upload?output=text'], opts)
+        const u = String(r).trim().split('\n').pop().trim()
+        if (!/^https?:\/\//.test(u)) throw new Error('uguu 没回直链：' + String(r).slice(0, 80))
+        return u
+      },
+    },
+  ]
+  let url = ''
+  const errs = []
+  for (const a of attempts) {
+    try { url = a.run(); if (url) break } catch (e) { errs.push(`${a.name}: ${String(e?.message ?? e).slice(0, 70)}`) }
+  }
+  if (!url) throw new Error('参考图上传全通道失败 → ' + errs.join(' | '))
   const urls = refCacheRead()
   urls[localPath] = { url, at: Date.now() }
   const keep = Object.entries(urls).sort((a, b) => b[1].at - a[1].at).slice(0, 8)

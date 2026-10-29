@@ -304,5 +304,37 @@ await ok('主人评论免额度：跟抖音一致', () => {
   assert.ok(/主人的评论永远不受日额度限制/.test(w), '语义要写清')
 })
 
+// ⑩ 辅助服务守护（10-27 第三批·下半）：
+//    病根是"抖音私信陪聊 09:46 起过一次，之后进程没了，主人发私信一整天没人回" ——
+//    没人崩了不管。也要保证"别人来她视频下评论"不被主动出击的日额度卡死。
+await ok('辅助服务：探活靠端口 /health，不是靠手里有没有 child', () => {
+  const aux = fs.readFileSync(path.join(import.meta.dirname, '..', 'tools', 'lib', 'aux.mjs'), 'utf8')
+  assert.ok(/export async function probeHealth/.test(aux), '要有探活函数')
+  assert.ok(/http:\/\/127\.0\.0\.1:\$\{port\}\/health/.test(aux), '探 /health 而不是只看进程')
+  assert.ok(/export async function ensureDouyinDm/.test(aux), '抖音私信要能自愈')
+  assert.ok(/tries\.length >= 3/.test(aux), '要有退避，别 crash-loop 刷进程')
+  const idx = fs.readFileSync(path.join(import.meta.dirname, '..', 'lib', 'index.js'), 'utf8')
+  assert.ok(/function portHealthy/.test(idx), '插件侧也要端口级探活')
+  assert.ok(/async function watchServices/.test(idx), '插件要有 60s 看门狗')
+  assert.ok(/startWithDsh === true/.test(idx), '看门狗只在该自启的服务上动手')
+})
+
+await ok('B站：别人来她视频下评论走独立额度桶，不被主动出击额度卡死', () => {
+  const w = fs.readFileSync(path.join(import.meta.dirname, '..', 'tools', 'lib', 'bili-write.mjs'), 'utf8')
+  const r = fs.readFileSync(path.join(import.meta.dirname, '..', 'tools', 'commands', 'replies.mjs'), 'utf8')
+  assert.ok(/capKind = 'reply'/.test(w), 'postReply 要能指定额度桶')
+  assert.ok(/capRecord\(bucket\)/.test(w), '记账也要跟着桶走')
+  assert.ok(/capKind: 'ownReply'/.test(r), 'ownWorks 要写进 ownReply 桶')
+  assert.ok(/ownDailyMax/.test(r) && /ownDailyMax/.test(w), '要能单独配这个桶的上限')
+})
+
+await ok('被挂审核时不再一律停手：holdMode=limit 照回但一轮只发 1 条', () => {
+  const r = fs.readFileSync(path.join(import.meta.dirname, '..', 'tools', 'commands', 'replies.mjs'), 'utf8')
+  assert.ok(/holdMode \|\| 'limit'/.test(r), '默认是 limit 不是 block')
+  assert.ok(/holdLimit = 1/.test(r), 'limit 模式一轮只发一条')
+  assert.ok(/holdLimit \|\| Infinity/.test(r), '预算要夹紧')
+  assert.ok(/'block'/.test(r), '仍保留彻底停手的分支')
+})
+
 console.log(`\n记忆卫生测试：${pass}/${pass} 通过`)
 if (process.exitCode) console.log('（有失败项，见上）')

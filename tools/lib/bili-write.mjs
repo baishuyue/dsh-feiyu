@@ -42,10 +42,18 @@ export const actStats = () => { const j = readActs(); return j.day === dayKey() 
 
 // ── 我的评论登记（回评论扫描用）───────────────────────────────────────────
 const MY_COMMENTS = dataPath('my-comments.json')
-export function recordMyComment(bvid, aid, rpid) {
+/**
+ * 登记一条我说过的话。
+ * 10-29 加 exists/visible：台账曾经被我判成"记了根本没发出去的话"，后来带登录态一查两条都在——
+ * 错在仪器，不在账。所以把两种核验结果一起存下来：
+ *   exists  = 带登录态查库：true 存在 / false 库里没有 / null 没验成
+ *   visible = 匿名视角：true 别人看得见 / false 被挂仅自己可见 / null 没验成
+ */
+export function recordMyComment(bvid, aid, rpid, check = {}) {
   let list = []
   try { list = JSON.parse(fs.readFileSync(MY_COMMENTS, 'utf8')) } catch {}
-  list.push({ bvid, aid, rpid, ts: Date.now() })
+  const { exists = null, visible = null } = check ?? {}
+  list.push({ bvid, aid, rpid, ts: Date.now(), exists, visible })
   try { fs.writeFileSync(MY_COMMENTS, JSON.stringify(list.slice(-100), null, 1)) } catch {}
 }
 
@@ -296,6 +304,30 @@ async function anonJson(u) {
 }
 
 /**
+ * 这条评论到底存不存在？（带登录态问，平台自己的库）
+ * 10-29 的教训：不带 cookie 问 /x/v2/reply/detail 一律返回 code=12006「评论不存在」，
+ * 我因此把两条真发出去的评论误判成"从未发出"，差点把台账判成假的。
+ * 存在性用带登录态的 detail；可见性（别人看不看得见）才用匿名 replyVisibility —— 两件事。
+ */
+export async function commentExists(aid, rpid, rootRpid = '') {
+  try {
+    const cred = loadCred()
+    const H = makeHeaders(cred)
+    const roots = [...new Set([String(rootRpid || ''), String(rpid || '')].filter(Boolean))]
+    for (const root of roots) {
+      const j = await apiGet(`https://api.bilibili.com/x/v2/reply/detail?type=1&oid=${encodeURIComponent(String(aid))}&root=${encodeURIComponent(root)}&ps=20`, H)
+      if (Number(j?.code) !== 0) continue
+      const root0 = j?.data?.root
+      const kids = j?.data?.replies || []
+      // 自己那条可能是楼主，也可能是这楼里的子回复
+      if (String(root0?.rpid ?? '') === String(rpid)) return { checked: true, exists: true, why: '带登录态查得到' }
+      if (kids.some((x) => String(x?.rpid) === String(rpid))) return { checked: true, exists: true, why: '带登录态在楼里查得到' }
+    }
+    return { checked: true, exists: false, why: '查询没返回' }
+  } catch (e) { return { checked: false, exists: null, why: e.message } }
+}
+
+/**
  * 这条评论/回复对外（未登录）看得见吗？
  * @param {object} p { aid, rpid, rootRpid? }
  * @returns {{checked:boolean, visible:boolean, how:string}}
@@ -326,7 +358,7 @@ export async function replyVisibility({ aid, rpid, rootRpid = '' } = {}) {
   return { checked: true, visible: false, how: '匿名查不到（仅自己可见/审核中）' }
 }
 
-export async function postReply(bvid, rootRpid, parentRpid, rawMessage, { go = false, inReplyTo = '', aid = 0, title = '', image = '', bypassCap = false } = {}) {
+export async function postReply(bvid, rootRpid, parentRpid, rawMessage, { go = false, inReplyTo = '', aid = 0, title = '', image = '', bypassCap = false, capKind = 'reply', capMax = null } = {}) {
   const cfg = config().bilibili?.replies ?? {}
   const message = guard.clean(String(rawMessage || ''), config()).slice(0, 100)
   // 10-27：回复不再只有文字 —— 带图回复走同一个 /x/v2/reply/add（`pictures` 参数），
@@ -337,7 +369,9 @@ export async function postReply(bvid, rootRpid, parentRpid, rawMessage, { go = f
   if (!go) return { ok: true, dry: true, why: `【干跑】回评 →《${String(info.title).slice(0, 18)}》：${message}${tag}` }
   if (cfg.enabled !== true) return { ok: false, why: 'bilibili.replies.enabled 是关的' }
   // bypassCap：主人的评论永远不受日额度限制（跟抖音那边一致 —— 主人说话不许因为额度被吞掉）
-  if (!bypassCap && !capOk('reply', Number(cfg.dailyMax ?? 10))) return { ok: false, why: '今日回评额度已用完' }
+  const bucket = String(capKind || 'reply')
+  const cap = Number(capMax ?? (bucket === 'reply' ? cfg.dailyMax : (cfg.ownDailyMax ?? 20)) ?? 10)
+  if (!bypassCap && !capOk(bucket, cap)) return { ok: false, why: bucket === 'reply' ? '今日回评额度已用完' : '今日回自己作品评论的额度已用完' }
   const verdict = guard.allow(`bilibili:${bvid}`, message || '[图]', config())
   if (!verdict.ok) return { ok: false, why: '被风控闸门拦下：' + verdict.why }
   const cred = loadCred()
@@ -367,7 +401,7 @@ export async function postReply(bvid, rootRpid, parentRpid, rawMessage, { go = f
     if (res.ok) useImage = ''
   }
   if (res.ok) {
-    capRecord('reply')
+    capRecord(bucket)
     guard.commit(`bilibili:${bvid}`, message || '[图]')
     recordMyComment(bvid, info.aid, j?.data?.rpid)
     try { const { recordBili } = await import('./outbox.mjs'); recordBili({ kind: image ? '回评(图)' : '回评', title: info.title, bvid, to: inReplyTo, text: message, extra: useImage ? path.basename(useImage) : '' }) } catch {}

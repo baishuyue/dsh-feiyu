@@ -12,6 +12,27 @@ function arg(argv, name) {
   return i >= 0 ? String(argv[i + 1] ?? '') : ''
 }
 
+// 字幕和这条视频对不对得上？标题+简介里的中文二字组，有多少能在字幕里翻到。
+// 串片的时候两边几乎零重合（10-27 串成卖瓜、10-29 串成 BLG 采访和充电头广告都是这样）。
+// 返回 null 表示数据太少、判断不了——不猜。
+function coherenceHint(titleIntro, lines) {
+  const cjk = (s) => String(s || '').replace(/[^\u4e00-\u9fa5]/g, '')
+  const grams = (s) => {
+    const out = new Set()
+    for (let i = 0; i + 1 < s.length; i++) out.add(s.slice(i, i + 2))
+    return out
+  }
+  const src = cjk(titleIntro)
+  const sub = cjk((lines || []).join(''))
+  if (src.length < 8 || sub.length < 20) return null
+  const bag = grams(sub)
+  const want = [...grams(src)]
+  if (!want.length) return null
+  let hit = 0
+  for (const g of want) if (bag.has(g)) hit++
+  return { ratio: hit / want.length }
+}
+
 export async function run(argv = []) {
   const bvid = arg(argv, '--bvid')
   const json = argv.includes('--json')
@@ -59,9 +80,36 @@ export async function run(argv = []) {
       } catch {}
       let su = String(pick.subtitle_url ?? '')
       if (su.startsWith('//')) su = 'https:' + su
-      const subRes = await fetch(su, { headers: { 'user-agent': H['user-agent'], referer: 'https://www.bilibili.com/' }, signal: AbortSignal.timeout(20000) })
-      const subJson = await subRes.json()
-      subtitles = (subJson?.body ?? []).slice(0, 60).map(x => String(x.content ?? '').trim()).filter(Boolean)
+      // 10-29：真因查明了。同一个视频连调三次，字幕内容分别是「造车技术…」「♪ 音乐 ♪」「这是德国人最喜欢吃的烤鸡」——
+      // subtitle_url 每次给的东西本身就可能串到别处（不是"选错轨"，是源就随机）。
+      // 所以「人审轨优先」那套顺序救不了：对着唯一一条错轨，选得再对也是错的。
+      // 现在每次拉完先验贴合度，最多试 3 次，留最贴合的那份；够贴合（≥15%）就提前收手。
+      let best = null
+      const attempts = []
+      const sleep = (ms) => new Promise(r => setTimeout(r, ms))
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        if (attempt > 1) await sleep(700) // 同一轮里连拉三次常常拿到同一份错料，隔一下再试
+        try {
+          const subRes = await fetch(su, { headers: { 'user-agent': H['user-agent'], referer: 'https://www.bilibili.com/' }, signal: AbortSignal.timeout(20000) })
+          const subJson = await subRes.json()
+          const lines = (subJson?.body ?? []).slice(0, 60).map(x => String(x.content ?? '').trim()).filter(Boolean)
+          const ratio = lines.length ? (coherenceHint(String(d.title ?? ''), lines)?.ratio ?? null) : null
+          attempts.push(`${attempt}:${lines.length}行/${ratio === null ? '?' : Math.round(ratio * 100) + '%'}`)
+          if (!best || (ratio !== null && (best.ratio === null || ratio > best.ratio))) best = { lines, ratio }
+          if (ratio !== null && ratio >= 0.15) break
+        } catch {
+          attempts.push(`${attempt}:失败`)
+        }
+      }
+      // 实测正常字幕的贴合度是 23%~48%，串片的一律 0%~9%，中间没有重叠。
+      // 所以低于 5% 就不当"参考"，直接丢掉：宁可少一路材料，也不拿别人的字幕写自己的话。
+      if (best?.ratio !== null && best?.ratio !== undefined && best.ratio < 0.05) {
+        process.stderr.write(`[debrief] ⚠ 字幕像串片（最贴合一次只有 ${(best.ratio * 100).toFixed(1)}%），整段丢弃，这条只走元信息+热评+简介\n`)
+        subtitles = []
+      } else {
+        subtitles = best?.lines ?? []
+      }
+      if (attempts.length > 1) process.stderr.write(`[debrief] 字幕重试 ${attempts.length} 次：${attempts.join(' ')}\n`)
     }
   } catch { /* 字幕是可选路：没有照样能看懂四路里的其余三路 */ }
 
@@ -110,6 +158,11 @@ export async function run(argv = []) {
     topComments,
     seenVia: ['元信息', subtitles.length ? '官方字幕' : null, topComments.length ? '热评' : null, '简介'].filter(Boolean),
   }
+  // 10-29：字幕串片第三次（10-27 两次、10-29 两次，全是"只有一条 ai-zh 轨"）。
+  // 选轨顺序救不了"唯一一条就是错的"，所以补一道贴合度检查：标题+简介的中文二字组，
+  // 有多少能在字幕里找到。重合率极低就当材料不可信，直接把警告印在字幕前面。
+  const hint = coherenceHint(String(d.title ?? ''), subtitles)
+  if (hint) pack.subtitleCoherence = Number(hint.ratio.toFixed(3))
 
   if (json) { console.log(JSON.stringify(pack, null, 2)); return }
 
@@ -120,6 +173,12 @@ export async function run(argv = []) {
   if (pack.intro) console.log(`【简介】${pack.intro}\n`)
   if (pack.subtitleLines?.length) {
     console.log(`【字幕节选 · 轨 ${pack.subtitleLang ?? '?'} · 仅供参考，可能串片/由 AI 生成】`)
+    if (typeof pack.subtitleCoherence === 'number') {
+      const pct = Math.round(pack.subtitleCoherence * 100)
+      console.log(pack.subtitleCoherence < 0.05
+        ? `  ⚠ 字幕与标题重合只有 ${pct}%，八成串片了 —— 下面这段别当材料用`
+        : `  （字幕与标题重合 ${pct}%）`)
+    }
     for (const l of pack.subtitleLines) console.log('  ' + l)
     console.log('')
   }

@@ -135,7 +135,24 @@ export async function run(argv = []) {
   memory.remember('bilibili', chatId, cfg.identity?.name ?? 'feiyu', 'assistant', message)
   try { const { recordBili } = await import('../lib/outbox.mjs'); recordBili({ kind: isShare ? '分享评论' : (root ? '回评' : '评论'), title, bvid, text: message }) } catch {}
   // 登记 rpid：回评论扫描（replies 命令）靠它找到这条评论下的新回复
-  try { const { recordMyComment } = await import('../lib/bili-write.mjs'); recordMyComment(bvid, aid, j?.data?.rpid) } catch {}
+  // 10-29：先分清两件事再记账 ——
+  //   ① 存在性：带登录态问 /x/v2/reply/detail（不带 cookie 一律 12006，会误判成"没发出去"）
+  //   ② 可见性：匿名能不能看到（低等级号会被挂"仅自己可见"，这一条才是"别人看不看得见"）
+  let exists = null
+  let visible = null
+  try {
+    const { commentExists, replyVisibility } = await import('../lib/bili-write.mjs')
+    const ex = await commentExists(aid, j?.data?.rpid, root)
+    exists = ex.checked ? ex.exists : null
+    if (exists === false) console.log(`  ⚠ 刚发完立刻查不到（${ex.why}）—— 可能是接口有延迟，也可能被挂「仅自己可见」，过几分钟再看一眼再说`)
+    if (exists === true && cfg.bilibili?.replies?.verifyAfterPost !== false) {
+      const vis = await replyVisibility({ aid, rpid: j?.data?.rpid, rootRpid: root })
+      visible = vis.checked ? vis.visible : null
+      if (visible === true) console.log('  ✓ 匿名也看得见：这条真出去了（' + vis.how + '）')
+      if (visible === false) console.log('  ⚠ 存在，但匿名看不到 —— 被挂「仅自己可见」了，别人还没看见')
+    }
+  } catch {}
+  try { const { recordMyComment } = await import('../lib/bili-write.mjs'); recordMyComment(bvid, aid, j?.data?.rpid, { exists, visible }) } catch {}
   console.log(`✓ 已发送（rpid=${j?.data?.rpid ?? '?'}）${isShare ? ' · 分享额度已扣' : ''}`)
   console.log(`  ${title} → ${message.slice(0, 60)}`)
 

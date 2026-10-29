@@ -1,12 +1,14 @@
 // produce —— 她的视频生产管线（第 17 轮升级：静图+旁白 → 真剪辑的片子）。
 //
-//   node feiyu.mjs produce ["主题"] [--platform bili|douyin] [--frames 1|2] [--bgm auto|none|<wav>] [--dry]
+//   node feiyu.mjs produce ["主题"] [--platform bili|douyin] [--frames 1|2] [--bgm auto|none|<wav>] [--dry] [--no-video]
 //   node feiyu.mjs produce --debut-posted [BV号]      # 首条发出去了，解锁
 //   node feiyu.mjs produce --debut                     # 看首条锁的状态
 //
 // 一条片子怎么来的（细节在 tools/lib/video.mjs 顶上）：
-//   策划（她自己的兴趣/见闻 → 分镜+台词）→ 每幕生图（1~2 帧）→ 逐句 TTS 配音
-//   → 运镜镜头 → 幕间转场 → 逐句烧字幕 → 合成 BGM 侧链避让 → 片头/片尾卡 → 1080p 成片 + 封面
+//   策划（她自己的兴趣/见闻 → 分镜+台词+她自己写的导演稿）→ 每幕生图 → 逐句 TTS 配音
+//   → **真动作镜头（10-27：万相 2.7 首帧驱动，模型音轨掐掉，失败自动落回静图运镜）**
+//   → 运镜镜头/真片段 → 幕间转场 → 逐句烧字幕 → 合成 BGM 侧链避让 → 片头/片尾卡 → 1080p 成片 + 封面
+//   `--no-video` = 这条强制走老路（静图+运镜），不花视频模型的钱。
 //
 // B站首条被主人锁死成「自我介绍 + 第一天来B站 + 账号归她运营 + 自由发挥」（tools/lib/debut.mjs），
 // 发过之后自动解锁。发出去的点击永远归主人：这里只出投稿包。
@@ -23,6 +25,7 @@ import { scoreWavs } from '../lib/prosody.mjs'
 import { dataPath } from '../lib/paths.mjs'
 import * as debut from '../lib/debut.mjs'
 import * as V from '../lib/video.mjs'
+import * as W from '../lib/wanvid.mjs'
 
 const BRAND = '大肥鱼 · 一条住在主人电脑里的蓝鲸鱼娘'
 
@@ -277,6 +280,50 @@ export function pickEmotion(line = '') {
 }
 
 // ── 策划 ────────────────────────────────────────────────────────────────────
+/**
+ * 从模型回复里抠出编导 JSON。
+ *
+ * ⚠️ 10-27 踩的坑：原来是 `match(/\{[\s\S]*\}/)`（**贪婪**）—— 模型在 JSON 后面又补了一句
+ * 带花括号的话（或者吐了两个对象），贪婪匹配就把两段一起圈进来，`JSON.parse` 报
+ * "Unexpected non-whitespace character after JSON"。方案写得再好，一次解析失败整条片子就没了。
+ * 现在按"括号配平 + 认字符串里的转义"从头扫，取第一个能 parse 的对象；先试 ```json 代码块。
+ */
+export function extractJson(text) {
+  const s = String(text ?? '')
+  const cands = []
+  const fence = s.match(/```(?:json)?\s*([\s\S]*?)```/i)
+  if (fence) cands.push(fence[1].trim())
+  cands.push(s.trim())
+  for (let i = 0; i < s.length; i++) {
+    if (s[i] !== '{') continue
+    let depth = 0
+    let inStr = false
+    let esc = false
+    for (let k = i; k < s.length; k++) {
+      const c = s[k]
+      if (inStr) {
+        if (esc) esc = false
+        else if (c === '\\') esc = true
+        else if (c === '"') inStr = false
+        continue
+      }
+      if (c === '"') { inStr = true; continue }
+      if (c === '{') depth++
+      else if (c === '}') {
+        depth--
+        if (depth === 0) { cands.push(s.slice(i, k + 1)); i = k; break }
+      }
+    }
+  }
+  for (const c of cands) {
+    try {
+      const o = JSON.parse(c)
+      if (o && typeof o === 'object' && !Array.isArray(o)) return o
+    } catch { /* 换下一个候选 */ }
+  }
+  throw new Error('策划 JSON 解析失败')
+}
+
 async function makePlan({ topic, platform, lockedDebut }) {
   const { personaText } = await import('../lib/persona.mjs')
   const persona = personaText()
@@ -285,15 +332,22 @@ async function makePlan({ topic, platform, lockedDebut }) {
   const where = platform === 'bili' ? 'B站' : '抖音'
   const system = (persona ? persona.slice(0, 600) + '\n\n' : '')
     + `你是"大肥鱼"——一条开了自媒体账号的蓝鲸鱼娘 AI，要给自己策划一条${where}视频。\n`
-    + '**主角必须是你自己的鲸鱼娘形象**（参考图那个蓝发鱼尾少女）：每一幕都是她在画面里演绎内容，第一人称叙事，她的表情动作是戏。\n'
+    + '**主角必须是你自己的鲸鱼娘形象**（参考图那个蓝发鱼尾少女）：每一幕都是她在画面里演绎内容，第一人称叙事，她的表情动作是戏。'
+    + '需要同框的伙伴只能是**二次元/Q版同类**（动漫风、非真人），不许真人出镜。\n'
     + '选题从你真实感兴趣的东西里来（下面素材），别做无根内容。\n'
     + '只输出 JSON：\n'
     + '{"title":"视频标题，≤20字，有钩子","scenes":[{"acting":"这一幕鲸鱼娘在做什么：动作+表情+剧情（中文，如：系着围裙笨拙地拆螃蟹，满手是黄，眼睛瞪圆）",'
-    + '"line":"这一幕的中文口播台词，10~18字，口语","shot":"远/中/近 (可选)"}],'
+    + '"line":"这一幕的中文口播台词，10~18字，口语","shot":"远/中/近 (可选)",'
+    + '"video":"这一幕交给视频模型的提示词（≤90字，第一人称写你自己）"}],'
     + '"tags":["标签1","标签2","标签3"],"intro":"投稿简介，40字内",'
     + '"cover":"封面上的大字，≤10字"}\n'
     + '5~7 个 scenes。**台词铁律：必须以「本鱼」第一人称**——鱼的视角（游/泡水里/鱼尾/鳃）、鱼的生活（白饭/主人/刷视频）、'
-    + '带傲娇小情绪，像她对镜头说话。台词连起来是一条完整顺口的口播稿。'
+    + '带傲娇小情绪，像她对镜头说话。台词连起来是一条完整顺口的口播稿。\n'
+    + '**video 这栏是你亲自写给视频模型的导演稿**（你想怎么演就怎么写，这是你的片子）：'
+    + '写清①你此刻的动作（转头/眨眼/抬手/甩尾）、②表情和情绪、③镜头怎么走（缓慢推近/轻微手持/环绕半圈）、'
+    + '④光和背景怎么变。**画面主体是你本人**（蓝发鱼尾少女）；想要搭子/围观就让别的**同类二次元角色**入镜'
+    + '（动漫风、Q版大头小身子都行，1~2 个、别抢你的戏，写清它在干什么）；'
+    + '**不许真人、不许照片写实脸、不许任何文字/字幕/水印**。'
   const user = [
     '素材（选题从这里来）：',
     '- 兴趣：' + interests.join('；').slice(0, 150),
@@ -304,20 +358,29 @@ async function makePlan({ topic, platform, lockedDebut }) {
   ].filter(Boolean).join('\n')
 
   let plan = null
-  for (let attempt = 1; attempt <= (lockedDebut ? 3 : 1); attempt++) {
-    const resp = await llm.chat([{ role: 'system', content: system }, { role: 'user', content: user }],
-      { temperature: lockedDebut ? 0.8 : 0.95, max_tokens: 1000 })
-    const m = String(resp ?? '').match(/\{[\s\S]*\}/)
-    if (!m) throw new Error('策划 JSON 解析失败')
-    plan = JSON.parse(m[0])
-    if (!Array.isArray(plan.scenes) || plan.scenes.length < 3) throw new Error('分镜不足')
-    if (!lockedDebut) break
-    const chk = debut.check(plan)
-    if (chk.ok) break
-    console.log(`  首条剧本缺了「${chk.missing.join('、')}」，重写（第 ${attempt} 次）…`)
-    plan = null
+  let lastErr = null
+  const maxTries = lockedDebut ? 3 : 2
+  for (let attempt = 1; attempt <= maxTries; attempt++) {
+    try {
+      const resp = await llm.chat([{ role: 'system', content: system }, { role: 'user', content: user }],
+        { temperature: lockedDebut ? 0.8 : 0.95, max_tokens: 1600 })
+      plan = extractJson(resp)
+      if (!Array.isArray(plan.scenes) || plan.scenes.length < 3) throw new Error('分镜不足（<3 幕）')
+      if (!lockedDebut) break
+      const chk = debut.check(plan)
+      if (chk.ok) break
+      console.log(`  首条剧本缺了「${chk.missing.join('、')}」，重写（第 ${attempt} 次）…`)
+      plan = null
+    } catch (e) {
+      lastErr = e
+      plan = null
+      if (attempt < maxTries) console.log(`  策划这轮不合用（${String(e.message).slice(0, 40)}），重来…`)
+    }
   }
-  if (!plan) throw new Error('首条剧本连续几次都没讲到「自我介绍 / 第一天来B站 / 账号归我运营」，先别发')
+  if (!plan) {
+    if (lockedDebut) throw new Error('首条剧本连续几次都没讲到「自我介绍 / 第一天来B站 / 账号归我运营」，先别发')
+    throw new Error(`策划没成（${String(lastErr?.message || '').slice(0, 60)}），换个主题再试`)
+  }
   return plan
 }
 
@@ -326,6 +389,18 @@ async function shootScene({ acting, out, seedNote }) {
   const { editImage } = await import('../lib/imggen.mjs')
   await editImage({ instruction: `演绎这一幕：${String(acting).slice(0, 90)}。${seedNote || ''}构图带一点剧情感`, out })
   return out
+}
+
+// ── 真动作镜头的导演稿（10-27）────────────────────────────────────────────────
+// 优先用她自己写的那一栏（plan.scenes[].video）——她给自己的片子写导演稿，这是她的创作。
+// 没写（老包 / 模型漏字段）才用这条兜底：把她这一幕的动作和台词翻成镜头语言。
+export function videoPromptFor(sc) {
+  const own = String(sc.video || '').trim()
+  if (own) return own
+  const line = String(sc.line || '').trim()
+  const acting = String(sc.acting || line).slice(0, 60)
+  return `${acting}。她正对着镜头说话（台词：「${line.slice(0, 24)}」），边说边自然做动作：轻微呼吸、眨眼、`
+    + '发丝与衣角被微风带动，表情跟着语气变；镜头缓慢推近，背景光影柔和流动，电影感浅景深，画面稳定不抖动。'
 }
 
 // ── 主流程 ──────────────────────────────────────────────────────────────────
@@ -487,6 +562,61 @@ export async function run(argv = []) {
     await tuneRegister(scenes, { log: console.log })
   } catch (e) { console.log('  音区对齐跳过（不影响成片）：' + String(e.message).slice(0, 60)) }
 
+  // ①¾ 真动作镜头（10-27）：她的图当首帧 → 万相 2.7 让画面真的动起来。
+  //     三条铁律：①人声永远只走 SoVITS，模型自带音轨一律掐掉；
+  //              ②她自己写导演稿（scenes[].video），subject 只有她本人；
+  //              ③失败/关掉/超预算就落回静图+运镜 —— 出片优先，别为炫技卡死一条片子。
+  const noVideo = hasFlag(argv, '--no-video')
+  const wantVideo = !noVideo && !reAudio && W.available(cfg)
+  const anim = { count: 0, seconds: 0, cost: 0, failed: 0, model: '' }
+  if (noVideo) console.log('🎥 这次强制走静图运镜（--no-video）')
+  else if (!wantVideo) console.log(`🎥 真动作镜头未启用（${W.settings(cfg).enabled ? '缺 key/地址' : 'video.animate.enabled=false'}），走静图运镜`)
+  if (wantVideo) {
+    const vs = W.settings(cfg)
+    anim.model = vs.model
+    console.log(`🎥 真动作镜头（${vs.model} · ${vs.resolution} · 单段≤${vs.maxSeconds}s · 预算 ${vs.budgetPerRun > 0 ? vs.budgetPerRun + ' 元' : '不限'}）…`)
+    const segDir = path.join(dir, 'clips')
+    fs.mkdirSync(segDir, { recursive: true })
+    for (const [i, sc] of scenes.entries()) {
+      const existing = path.join(segDir, `anim-${i}.mp4`)
+      if (reuseDir && fs.existsSync(existing)) {
+        sc.clip = existing
+        anim.count++
+        anim.seconds += V.probeDur(existing, cfg)
+        console.log(`  [${i + 1}/${scenes.length}] 动作片段 ♻ 沿用已有（不再花钱）`)
+        continue
+      }
+      if (!sc.img || !fs.existsSync(sc.img)) { anim.failed++; continue }
+      const target = Math.max(2, +(spec.lead + Number(sc.voiceDur || 0) + spec.tail).toFixed(2))
+      const est = W.estimateCost(target, cfg)
+      if (vs.budgetPerRun > 0 && anim.cost + est > vs.budgetPerRun) {
+        console.log(`  [${i + 1}/${scenes.length}] ⏭ 预算到顶（已估 ${anim.cost.toFixed(2)} + 这幕 ${est} > ${vs.budgetPerRun} 元），这幕走静图`)
+        continue
+      }
+      console.log(`  [${i + 1}/${scenes.length}] 生成 ${target.toFixed(1)}s 动作（台词「${String(sc.line).slice(0, 14)}」）…`)
+      let done = null
+      for (let attempt = 0; attempt <= vs.retries && !done; attempt++) {
+        try {
+          if (attempt) console.log(`    重试第 ${attempt} 次…`)
+          const still = W.prepareFirstFrame({ src: sc.img, out: path.join(segDir, `first-${i}.jpg`), w: spec.w, h: spec.h, cfg })
+          done = await W.animateScene({ still, seconds: target, prompt: videoPromptFor(sc), dir: segDir, index: i, cfg, log: console.log })
+        } catch (e) {
+          if (attempt >= vs.retries) console.log(`    ✗ 失败，这幕落回静图：${String(e.message).slice(0, 90)}`)
+          else await new Promise((r) => setTimeout(r, 3000))
+        }
+      }
+      if (!done) { anim.failed++; continue }
+      const info = W.inspectClip(done.file, cfg)
+      if (!info || !(info.dur > 0.5)) { anim.failed++; console.log('    ✗ 片段读不出来，这幕落回静图'); continue }
+      sc.clip = done.file
+      anim.count++
+      anim.seconds += done.spent
+      anim.cost += W.estimateCost(done.spent, cfg)
+      console.log(`    ✓ ${info.width}×${info.height} · ${info.dur.toFixed(2)}s · 模型音轨已掐 [${info.hasAudio ? '居然还有' : '无'}] · 累计估 ${anim.cost.toFixed(2)} 元`)
+    }
+    if (anim.count) console.log(`🎥 动作镜头 ${anim.count}/${scenes.length} 幕 · ${anim.seconds}s · 估 ${anim.cost.toFixed(2)} 元${anim.failed ? ` · ${anim.failed} 幕落回静图` : ''}`)
+  }
+
   // ② 剪
   console.log('🎞 剪辑中（运镜 → 转场 → 字幕 → 配乐）…')
   const res = await V.makeFilm({
@@ -513,6 +643,9 @@ export async function run(argv = []) {
     sizeMB: +(fs.statSync(res.final).size / 1024 / 1024).toFixed(1),
     resolution: `${spec.w}x${spec.h}`,
     subtitle: res.assPath,
+    render: anim.count
+      ? { renderer: 'wan', model: anim.model, resolution: W.settings(cfg).resolution, animatedScenes: anim.count, seconds: anim.seconds, costYuan: +anim.cost.toFixed(2) }
+      : { renderer: 'stills', note: noVideo ? '--no-video' : (wantVideo ? '全部失败' : '未启用') },
     scenes: scenes.map((s) => s.line),
     debut: lockedDebut,
     createdAt: new Date().toISOString(),
@@ -532,7 +665,8 @@ export async function run(argv = []) {
     spawn('powershell.exe', ['-NoProfile', '-Command', `Start-Process explorer.exe "${dir}"`], { detached: true, stdio: 'ignore', windowsHide: true }).unref()
   } catch {}
   console.log(`📦 投稿包：${dir}`)
-  console.log(`   《${title}》${meta.durationSec}s · ${meta.resolution} · ${meta.sizeMB}MB · ${scenes.length} 幕`)
+  console.log(`   《${title}》${meta.durationSec}s · ${meta.resolution} · ${meta.sizeMB}MB · ${scenes.length} 幕`
+    + (anim.count ? ` · 真动作 ${anim.count} 幕（估 ${anim.cost.toFixed(2)} 元）` : ' · 静图运镜'))
 }
 
 // ── 投稿包说明（B站/抖音字段不同，别让人猜）─────────────────────────────────

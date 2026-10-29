@@ -301,6 +301,42 @@ export function renderShot({ img, out, dur, w, h, fps = 30, move = 'in', cfg = c
   return out
 }
 
+/**
+ * 把"真视频片段"（万相 i2v 出的动作镜头）套进时间轴：裁成平台规格、钉住帧率、精确到 dur 秒、无声。
+ *
+ * 三种情况分开处理（10-27）：
+ *   片段够长 → 直接截；
+ *   差一点（≤1.6 倍）→ 轻微放慢，正好用完这一段（AI 片段放慢 1.1~1.6 倍观感自然，比循环好）；
+ *   差很多 → 正放 + 倒放接成"回旋"，再循环裁到 dur（这样接缝不跳，循环看不出接点）。
+ * ⚠️ 一定带 -an：模型自己生成过一条音轨，一个字节都不许进成片（人声只走 SoVITS）。
+ */
+export function conformClip({ src, out, dur, w, h, fps = 30, cfg = config() }) {
+  const need = Math.max(0.2, Number(dur) || 0)
+  const srcDur = probeDur(src, cfg)
+  if (!(srcDur > 0.05)) throw new Error(`片段读不出时长：${src}`)
+  const base = `scale=${w}:${h}:force_original_aspect_ratio=increase,crop=${w}:${h},setsar=1,fps=${fps},format=yuv420p`
+  const ratio = need / srcDur
+  fs.mkdirSync(path.dirname(out), { recursive: true })
+  if (ratio <= 1.02) {
+    const ss = Math.min(0.05, Math.max(0, srcDur - need - 0.05))
+    ff(['-ss', ss.toFixed(3), '-i', src, '-t', need.toFixed(3), '-vf', base,
+      '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-pix_fmt', 'yuv420p', '-an', out], { cfg })
+    return out
+  }
+  if (ratio <= 1.6) {
+    ff(['-i', src, '-vf', `${base},setpts=${ratio.toFixed(4)}*PTS`, '-t', need.toFixed(3),
+      '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-pix_fmt', 'yuv420p', '-an', out], { cfg })
+    return out
+  }
+  const pp = out.replace(/\.mp4$/, '.pp.mp4')
+  ff(['-i', src, '-filter_complex', `${base}[a];[a]split[x][y];[y]reverse[r];[x][r]concat=n=2:v=1:a=0[o]`,
+    '-map', '[o]', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-pix_fmt', 'yuv420p', '-an', pp], { cfg })
+  ff(['-stream_loop', '-1', '-i', pp, '-t', need.toFixed(3), '-vf', base,
+    '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-pix_fmt', 'yuv420p', '-an', out], { cfg })
+  try { fs.rmSync(pp, { force: true }) } catch {}
+  return out
+}
+
 /** 标题卡/署名卡：纯色底 + 居中叠字（drawtext + 微软雅黑粗体，淡入）。 */
 export function renderCard({ out, dur, w, h, fps = 30, lines = [], bg = '0x0b1220', cfg = config() }) {
   const font = fontFile(cfg)
@@ -674,12 +710,24 @@ export async function makeFilm({ scenes, spec, text = {}, dir, opts = {}, log = 
     log('  片头卡 ✓')
   }
 
-  // ② 每一幕：静图 → 运镜镜头（有第二帧就在幕内交叉淡入，像"动了一下"）
+  // ② 每一幕：**有真视频片段就用它**（万相首帧驱动，人物真的在动）；
+  //    没有就落回静图 + 运镜（有第二帧就在幕内交叉淡入，像"动了一下"）。
   for (const [i, sc] of scenes.entries()) {
     const dur = timeline.durs[i]
     const moveA = sc.move || MOVE_KEYS[i % MOVE_KEYS.length]
-    // 统一产物名 shot-{i}.mp4（单帧/双帧都一样，后面拼片和排查都省事）
+    // 统一产物名 shot-{i}.mp4（单帧/双帧/真片段都一样，后面拼片和排查都省事）
     const clipFile = path.join(clipsDir, `shot-${i}.mp4`)
+    if (sc.clip && fs.existsSync(sc.clip)) {
+      try {
+        if (!sc.realClip) conformClip({ src: sc.clip, out: clipFile, dur, w: spec.w, h: spec.h, fps: spec.fps, cfg })
+        else fs.copyFileSync(sc.clip, clipFile)
+        clips.push({ file: clipFile, dur })
+        log(`  [${i + 1}/${scenes.length}] 真镜头 ✓ ${dur.toFixed(1)}s（首帧驱动，已掐模型音轨）`)
+        continue
+      } catch (e) {
+        log(`  [${i + 1}/${scenes.length}] 真片段套不进时间轴（${String(e.message).slice(0, 50)}），落回静图`)
+      }
+    }
     if (sc.img2 && fs.existsSync(sc.img2)) {
       const a = path.join(clipsDir, `shot-${i}-a.mp4`)
       const b = path.join(clipsDir, `shot-${i}-b.mp4`)

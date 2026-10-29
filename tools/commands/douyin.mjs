@@ -42,10 +42,21 @@ function douyinDry(cfg) {
 }
 
 function runPy(argv, cfg, { soft = false } = {}) {
-  const cmd = [scriptPath(cfg), ...argv, '--cookie', cookiePath(cfg)]
+  const runOnce = (cmd) => execFileSync(pyPath(cfg), cmd, { encoding: 'utf8', timeout: 300000, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
+  const withCookie = [scriptPath(cfg), ...argv, '--cookie', cookiePath(cfg)]
   try {
-    return execFileSync(pyPath(cfg), cmd, { encoding: 'utf8', timeout: 300000, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
+    return runOnce(withCookie)
   } catch (e) {
+    // 10-28：cdp-start 这类子命令不接受 --cookie。原来不管什么子命令都硬塞，python 的 argparse
+    // 直接报 "unrecognized arguments: --cookie" 退出——连浏览器都起不来，后面 reply/comment 全跟着挂。
+    // 见到这个错就退回不带 --cookie 再跑一次；别的错误照原样往下报。
+    if (/unrecognized arguments: --cookie/.test(String(e.stderr ?? ''))) {
+      try {
+        return runOnce([scriptPath(cfg), ...argv])
+      } catch (e2) {
+        e = e2
+      }
+    }
     // 失败时 python 的日志全在 stdout（[reply] ✗ … ），以前只打印 stderr → 空报错，白跑一次
     const out = String(e.stdout ?? '').trim().split('\n').filter(Boolean).slice(-6).join('\n')
     const err = String(e.stderr ?? '').trim().slice(-400)
@@ -279,7 +290,23 @@ export function run(argv = []) {
           console.log(`  ⏭ 今天已经回过「${uKey}」${used} 次（douyin.engage.maxPerUserPerDay=${capPerUserRaw}），这条先放着`)
           continue
         }
-        console.log(`  ↩ 回 ${n.user}${n.isReply ? '（接着上一轮）' : ''}：${replyText}`)
+        // 10-29：同一楼里把同一句话说两遍（实测：对朴昌范说过两遍「所以说到底还是饭便宜，蟹黄是奢侈品」，
+// 两条 cid 相隔几十秒）。原因：去重只按评论 cid，对方连发两条评论就各回一次，文案重复。
+        // 现在加两道闸：同一人 5 分钟内不再回第二句；同一人同一句话 60 分钟内不再重复。
+        const saidKey = `${n.vid}:${String(n.user || '')}`
+        const lastSaid = (wm.said || {})[saidKey]
+        if (lastSaid) {
+          const gap = Date.now() - Number(lastSaid.ts || 0)
+          const norm = (s) => String(s || '').replace(/\s+/g, '').replace(/\[[^\]]{1,8}\]/g, '')
+          if (gap < 5 * 60_000) {
+            console.log(`  ⏭ 刚跟「${String(n.user || '')}」说过话（${Math.round(gap / 1000)} 秒前），这条先放着，别追着刷屏`)
+            continue
+          }
+          if (norm(lastSaid.text) === norm(replyText) && gap < 60 * 60_000) {
+            console.log(`  ⏭ 同一句话刚跟「${String(n.user || '')}」说过，换一句再说`)
+            continue
+          }
+        }
         // 10-27：回复也不一定只用文字 —— 按配置概率挑「表情包图 / 官方表情 / 文字」。
         // 注意：图片和官方表情只能走 UI 那条路（comment-reply），`reply --cid` 是接口直发、吃不了图。
         const style = cfg.comment?.styles?.auto === false
@@ -324,6 +351,9 @@ export function run(argv = []) {
           wm.seen = wm.seen.slice(-500)
           memory.remember('douyin', `douyin:${n.vid}`, n.user, 'assistant', `（回复了 ${n.user} 的评论「${String(n.label || n.text).slice(0, 30)}」：${replyText}）`)
           wm.perUser.counts[uKey] = used + 1
+          // 10-29：记下"我刚跟谁说了什么"，给上面的两道闸用（落盘，重启也记得）
+          wm.said = wm.said && typeof wm.said === 'object' ? wm.said : {}
+          wm.said[saidKey] = { text: replyText, ts: Date.now() }
           try { fs.writeFileSync(WM, JSON.stringify(wm)) } catch {}   // 每人每天的次数要落盘，不然重启就清零
           done++
           await new Promise((r2) => setTimeout(r2, 60000 + Math.random() * 60000))   // 回复间隔 1~2 分钟防风控
@@ -399,7 +429,22 @@ export function run(argv = []) {
     if (!vid) { console.error('用法：node feiyu.mjs douyin comments --vid <视频id> [--headed]'); process.exit(2) }
     // 默认无头（快）；要肉眼看就加 --headed
     const headed = argv.includes('--headed') ? ['--headed'] : []
-    console.log(runPy(['comments', '--vid', vid, ...headed], cfg))
+    const out = runPy(['comments', '--vid', vid, ...headed], cfg)
+    // 10-28：原来这里直接把整页原始 JSON 倒进终端（每条带 user_sec_uid、时间戳、完整字段，
+    // 一次几千行），读起来费劲还烧 token。默认只打「用户 / 正文 / 赞」三列；
+    // 要看原始数据加 --raw，要看全部不截断加 --all。
+    if (argv.includes('--raw')) { console.log(out); return }
+    let data = null
+    try { const m = out.match(/\{[\s\S]*\}/); if (m) data = JSON.parse(m[0]) } catch { /* 解析不了就走下面的兜底 */ }
+    const rows = (data?.comments || []).filter((c) => String(c.text || c.plain || '').trim())
+    if (!rows.length) { console.log('（没取到可用评论；加 --raw 看原始返回）'); return }
+    const top = argv.includes('--all') ? rows : rows.slice(0, 15)
+    console.log(`热评 ${top.length}/${rows.length} 条：`)
+    for (const c of top) {
+      const zan = Number(c.digg_count ?? 0)
+      console.log(`  ${c.user}（${zan} 赞 · cid=${c.cid}${c.is_reply ? ' · 回复' : ''}）：${String(c.plain || c.text).slice(0, 60)}`)
+    }
+    console.log('（--all 看全部 · --raw 看原始 JSON）')
     return
   }
   if (cmd === 'cdp-start') {

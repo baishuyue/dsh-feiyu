@@ -1,4 +1,4 @@
-// replies —— B站社交引擎。
+﻿// replies —— B站社交引擎。
 // ⓪ 自己投稿的评论区：别人的评论（**任何类型**：文字 / 只有表情 / 图片评论）→ LLM 接话（10-27 新增）
 // ① 有人回我的评论 → LLM 接话（被动响应）
 // ② 主动出击：去自己评论过的视频评论区，挑条有意思的评论搭话（主动交鱼友）
@@ -52,6 +52,7 @@ function arg(argv, name, d) { const i = argv.indexOf(name); return i >= 0 ? (arg
  * 真好几句回不上（LLM 憋不出话）时用轮换的兜底话术，不让任何一条评论石沉大海。
  */
 async function ownWorks(maxLeft, go, log = console.log) {
+  const ownCfg = config().bilibili?.replies ?? {}
   const wm = readJson(OWN_STATE, { seen: [] })
   if (!Array.isArray(wm.seen)) wm.seen = []
   if (!wm.repliedTo || typeof wm.repliedTo !== 'object') wm.repliedTo = {}
@@ -135,7 +136,7 @@ async function ownWorks(maxLeft, go, log = console.log) {
     log(`  ↩ 回 ${n.uname}（${n.kind}）：${text}${kind !== 'text' ? ` 〔${kind}〕` : ''}`)
     const own = isOwnerRow(n)
     if (own) log('  👑 主人的评论——免额度、优先回')
-    const r = await postReply(n.bvid, n.rootRpid, n.rpid, text, { go, inReplyTo: `${n.uname}：${n.label || n.text}`, aid: n.aid, title: n.vtitle, image: kind === 'image' || kind === 'sticker' ? lastPickedImage : '', bypassCap: own })
+    const r = await postReply(n.bvid, n.rootRpid, n.rpid, text, { go, inReplyTo: `${n.uname}：${n.label || n.text}`, aid: n.aid, title: n.vtitle, image: kind === 'image' || kind === 'sticker' ? lastPickedImage : '', bypassCap: own, capKind: 'ownReply', capMax: Number(ownCfg.ownDailyMax ?? 20) })
     log('  ' + (r.why || '?'))
     // 发出去了 ≠ 别人看得见（10-27）：B站 会给低等级号挂"仅自己可见"。
     // 每次发完匿名拉一遍楼中楼，看不见就照实记成"审核中"，别让她以为已经跟人聊上了。
@@ -226,6 +227,7 @@ async function outreach(maxLeft, go) {
 export async function run(argv = []) {
   const go = argv.includes('--go')
   const cfg = config().bilibili?.replies ?? {}
+  let holdLimit = 0   // 被挂审核时 >0：这一轮最多发这么多条
 
   // --audit：审自己最近的评论对外到底看不看得见（10-27 新号风控体检）
   if (argv.includes('--audit')) {
@@ -249,8 +251,9 @@ export async function run(argv = []) {
   if (go && cfg.enabled !== true) { console.log('bilibili.replies.enabled 是关的（面板 B站卡片），不社交'); return }
 
   // 自刹车（10-27）：先看最近几条评论在别人眼里到底看不看得见。
-  // 真实情况是 27 条全被挂成"仅自己可见" —— 这时候继续发只会把账号信用越刷越低，
-  // 所以默认停下来喊一声（真要继续就 --force）。
+  // 真实情况是 27 条全被挂成"仅自己可见"。但**一律停手也不对** —— 主人要的是"有新评论就去回"，
+  // 所以默认 holdMode='limit'：照发，但每轮只发 1 条，并在日志里喊清楚"这条别人暂时看不见"。
+  // 想彻底停就 holdMode:'block'；想无视就 --force。
   if (go && !argv.includes('--force') && cfg.holdCheck !== false) {
     const mine = readJson(dataPath('my-comments.json'), [])
     const probe = mine.slice(-3)
@@ -262,9 +265,14 @@ export async function run(argv = []) {
       if (!v.visible) hid++
     }
     if (checked >= 2 && hid >= 2) {
-      console.log('⛔ 最近 ' + checked + ' 条评论里 ' + hid + ' 条「仅自己可见」——B站 正在挂审核，继续发只会伤信用。')
-      console.log('   已停手。要抬信用：完善资料/绑定手机、看点东西、别刷评论量；确认要发就加 --force。')
-      return { held: true, checked, hidden: hid }
+      if (String(cfg.holdMode || 'limit') === 'block') {
+        console.log('⛔ 最近 ' + checked + ' 条评论里 ' + hid + ' 条「仅自己可见」——B站 正在挂审核，按 holdMode:block 停手。')
+        console.log('   要抬信用：完善资料/绑定手机、看点东西、别刷评论量；确认要发就加 --force。')
+        return { held: true, checked, hidden: hid }
+      }
+      holdLimit = 1
+      console.log('⚠ 最近 ' + checked + ' 条评论里 ' + hid + ' 条「仅自己可见」（B站 在审核这个号）——')
+      console.log('  照主人要求继续回，但这一轮只发 ' + holdLimit + ' 条，且会盯一眼别人到底看不看得见。')
     }
   }
   const dailyMax = Number(cfg.dailyMax ?? 10)
@@ -277,7 +285,8 @@ export async function run(argv = []) {
   if (cfg.ownWorks !== false) {
     console.log('🐟 自己作品评论区：')
     // --max 是这个"轮次"的总预算：先回自己作品下面的，剩下的留给 ①②
-    const ownBudget = Math.max(1, Math.min(maxOnce, Number(cfg.ownMax ?? 5) || 5))
+    // holdLimit 来自上面的自刹车：被挂审核时这一轮只发 1 条（别刷量，但也别让新评论永远等不到回）
+    const ownBudget = Math.max(1, Math.min(holdLimit || Infinity, Math.min(maxOnce, Number(cfg.ownMax ?? 5) || 5)))
     done += await ownWorks(ownBudget, go)
     if (ownOnly) { console.log(`处理了 ${done} 条。今日动作账本：${JSON.stringify(actStats())}`); return { own: done, done } }
   }

@@ -14,8 +14,13 @@
 //
 //   node feiyu.mjs binge --search "可塑性记忆"
 //   node feiyu.mjs binge --show 可塑性记忆 --ep 1 [--go]
+//   node feiyu.mjs binge --show 可塑性记忆 --ep next --count 3 [--go]   ← 连着看三集（节奏她自己定）
+//   node feiyu.mjs binge --show 可塑性记忆 --ep next --count all [--go] ← 一口气看完
 //   node feiyu.mjs binge --bvid BV1xx [--go] --promise p1abc
 //   node feiyu.mjs binge --list
+//
+// 10-28 主人拍板："不做限制，给她自主性" → `binge.dailyMax` 默认 0（不限），
+// 一晚看一集还是看完一整部，由她自己的兴趣和状态决定。
 import fs from 'node:fs'
 import path from 'node:path'
 import { apiGet, makeHeaders } from '../lib/bili-api.mjs'
@@ -24,6 +29,7 @@ import { config } from '../lib/config.mjs'
 import { dataPath } from '../lib/paths.mjs'
 import * as memory from '../lib/memory.mjs'
 import * as promises from '../lib/promises.mjs'
+import * as jsontext from '../lib/jsontext.mjs'
 
 const DIR = dataPath('binge')
 const arg = (argv, name) => {
@@ -41,6 +47,23 @@ function save(name, obj) {
     fs.mkdirSync(DIR, { recursive: true })
     fs.writeFileSync(fileOf(name), JSON.stringify(obj, null, 1) + '\n')
   } catch {}
+}
+
+// ── 挑投稿的规则（10-28 提到模块级：续看时要能给"备选"再排一次序）──────────────
+//   第 1 集：标题写着 01/第1集/EP01 → 重加分；时长像单集（15~40 分）再加分。
+//   第 N 集：只有"整部合集"（时长 >40 分且分 P ≥ N）才真能跳到那一集；
+//            单集投稿哪怕标题写着 #14，也不是"第 2 集"。
+const mins = (s) => { const p = String(s).split(':').map(Number); return p.length === 2 ? p[0] : (p.length === 3 ? p[0] * 60 + p[1] : 0) }
+const epTagFor = (n) => new RegExp(`(?:^|[^0-9])(?:0?${n}|第[一${'一二三四五六七八九十'[n - 1] || n}]集|第${n}话|EP\\.?0?${n})(?:[^0-9]|$)`, 'i')
+function rankFor(list, n) {
+  const tag = epTagFor(n)
+  const score = (x) => {
+    const m = mins(x.duration)
+    if (n > 1) return (m > 40 && Number(x.pages) >= n ? 4 : 1) + (tag.test(String(x.title)) ? 1 : 0)
+    const dur = m >= 15 && m <= 40 ? 2 : (m > 40 ? 0 : (m < 5 ? -2 : 1))
+    return dur + (tag.test(String(x.title)) ? 3 : 0)
+  }
+  return list.slice().sort((a, b) => score(b) - score(a) || Math.abs(mins(a.duration) - 24) - Math.abs(mins(b.duration) - 24))
 }
 
 /**
@@ -111,6 +134,22 @@ async function watchOne(bvid, opt = {}) {
   // 分 P 合集：第 1 集直接用 P1（"正片"）；第 2 集往后先按分 P 标题对"第 N 集/0N"，对不上再退回 pages[ep-1]
   const epRe = new RegExp(`(?:^|[^0-9])(?:0?${ep}|第\\s*${ep}\\s*[集话])(?:[^0-9]|$)`)
   const byTitle = ep > 1 ? pages.findIndex((p) => epRe.test(String(p?.part ?? ''))) : -1
+  // 10-28 抓到的坑：有些投稿是"单集 + 好几个备份分 P"（比如《【4月】可塑性记忆 01【幻樱】》
+  // 的 4 个分 P 是 正片/备份2/备份3/备份4，**全是第 1 集**）。以前会把"备份3"当成第 4 集记下来，
+  // 于是她以为看了第 4 集，其实还是第 1 集。单集/备份型的投稿必须靠标题认集数。
+  const isSingle = pages.length <= 1 || pages.every((p) => /备份|备用|分流|补档|重传|修正/i.test(String(p?.part || '')))
+  if (ep > 1 && byTitle < 0 && isSingle && !epTagFor(ep).test(String(d.title))) {
+    return {
+      ok: false, bvid, ep, title: d.title, part: '', cid: d.cid, total: pages.length || 1,
+      at: Date.now(), subs: 0, via: `这条不是第 ${ep} 集（单集投稿：${String(d.title).slice(0, 26)}）`,
+      plot: '这条看不到剧情', feel: '',
+    }
+  }
+  // 10-28：这条投稿凑不出第 N 集就别硬看 —— 以前会静默退回 pages[0]，
+  // 结果把第 1 集的内容记成"第 2 集"，账本和记忆全错位。
+  if (ep > 1 && byTitle < 0 && pages.length < ep) {
+    return { ok: false, bvid, ep, title: d.title, part: '', cid: d.cid, total: pages.length || 1, at: Date.now(), subs: 0, via: `这条只有 ${pages.length} P，凑不出第 ${ep} 集`, plot: '这条看不到剧情', feel: '' }
+  }
   const page = pages[byTitle >= 0 ? byTitle : ep - 1] || pages[0] || null
   const cid = page?.cid ?? d.cid
   const part = page?.part || ''
@@ -177,21 +216,30 @@ async function watchOne(bvid, opt = {}) {
             : (subs.length ? '\n\n（有字幕轨，但内容跟本片对不上，已忽略）' : '\n\n（这条没有字幕轨）'))
           + (danmaku.length ? `\n\n【弹幕 · 观众当场打的，主要材料】\n${danmaku.slice(0, 120).join(' / ').slice(0, 3800)}` : '')
           + (hot.length ? `\n\n【热评】${hot.map((x) => x.text).slice(0, 4).join(' / ')}` : '')
-          + '\n\n只根据上面这些写，输出 JSON：'
+          + '\n\n只根据上面这些写，输出 JSON（**字符串里不要再用英文双引号包词，要强调就用「」**）：'
           + '{"understood":true|false,"plot":"这一集讲了什么（60~140字，只能用材料里出现过的人名/事件）；看不出来就 understood=false 且 plot 写「这条看不到剧情」",'
           + '"feel":"你自己的感受（30~60字，第一人称，像看完一集随口跟人说）"}',
       },
     ]
     const resp = await chat(msgs, { temperature: 0.85, max_tokens: 600 })
-    const m = String(resp ?? '').match(/\{[\s\S]*\}/)
-    if (m) {
-      const j = JSON.parse(m[0])
+    // 10-28：这里以前是 `JSON.parse(resp.match(/\{[\s\S]*\}/)[0])` —— 模型一旦在 plot 里塞了
+    // 未转义的双引号（"他说"别走""），整条材料就被判成"看不到剧情"。现在先配平解析，坏了再按 key 抠。
+    let j = null
+    try {
+      j = jsontext.extractJson(resp)
+    } catch {
+      const f = jsontext.salvageFields(resp, ['plot', 'feel'])
+      if (f.plot) j = { ...f, understood: f.understood !== false && !/看不到剧情/.test(f.plot) }
+    }
+    if (j) {
       take = {
         plot: String(j.plot || '').trim(),
         feel: String(j.feel || '').trim(),
         understood: j.understood !== false && !/看不到剧情/.test(String(j.plot || '')),
         via: [useSubs ? '字幕轨' : '', danmaku.length ? `弹幕${danmaku.length}条` : '', hot.length ? '热评' : ''].filter(Boolean).join('+') || '只有简介',
       }
+    } else {
+      take = { plot: '', feel: '', via: 'LLM 输出不是 JSON（已丢弃）', understood: false }
     }
   } catch (e) {
     take = { plot: '', feel: '', via: 'LLM 失败：' + e.message, understood: false }
@@ -265,62 +313,200 @@ export async function run(argv = []) {
   }
 
   let bvid = arg(argv, '--bvid')
-  const show = arg(argv, '--show')
-  let ep = Number(arg(argv, '--ep') || 1)
+  let show = arg(argv, '--show')
+  const epArg = arg(argv, '--ep')
+  let ep = Number(epArg || 1)
+  // 10-28 修的三个病根（主人："说了要去看可塑性记忆，一直没行动"）：
+  //   ① 承诺里常常只有"番/剧/动画"这种笼统词 —— 以前被当片名去搜，搜出个 asmr 然后算失败；
+  //   ② `--ep` 缺省就是 1 → 每次执行都在**重看第 1 集**，seen 永远停在 [1]（账本里连着三条都是第 1 集）；
+  //   ③ 根本没有"接着看"这个概念，13 集的番永远走不到第 2 集。
+  // 现在：笼统词 → 落到"最近真在追的那部"；`--ep next`（或不给集数但账本里已有这本）→ 下一集。
+  const GENERIC_SHOW = /^(?:番|番剧|剧|动画|动漫|番组|追番|那个|这部|那部|它)$/
+  // "像不像一个作品名"：账本里混进过整句（"行，看完就回来讲 （这次不看手机了）"），
+  // 那是解析错的产物 —— 挑"最近在追的那部"时不许被它带偏。
+  const looksTitle = (s) => {
+    const t = String(s ?? '').trim()
+    return t.length >= 2 && t.length <= 20 && !/[\s，,。！!？?、；;：:（）()「」“”"]/.test(t)
+  }
+  const books = () => {
+    try {
+      return fs.readdirSync(DIR).filter((f) => f.endsWith('.json'))
+        .map((f) => { try { return JSON.parse(fs.readFileSync(path.join(DIR, f), 'utf8')) } catch { return null } })
+        .filter(Boolean)
+    } catch { return [] }
+  }
+  if (!bvid && show && GENERIC_SHOW.test(String(show).trim())) {
+    const recent = books().filter((b) => looksTitle(b.show) && (b.seen?.length || 0) > 0)
+      .sort((a, b) => (b.log?.at?.(-1)?.at || 0) - (a.log?.at?.(-1)?.at || 0))[0]
+    if (recent) {
+      console.log(`（「${show}」太笼统 —— 接着追最近在看的《${recent.show}》）`)
+      show = String(recent.show)
+    }
+  }
   if (!bvid && show) {
-    const list = await search(show)
-    if (!list.length) { console.log(`✗ 搜不到「${show}」`); process.exit(1) }
-    // 挑哪一条（同一套规则按目标集数算一遍，所以写成函数）：
-    //   第 1 集：标题写着 01/第1集/EP01 → 重加分；时长像单集（15~40 分）再加分。
-    //   第 N 集：只有"整部合集"（时长 >40 分且分 P ≥ N）才真能跳到那一集；
-    //            单集投稿哪怕标题写着 #14，也不是"第 2 集"。
-    const mins = (s) => { const p = String(s).split(':').map(Number); return p.length === 2 ? p[0] : (p.length === 3 ? p[0] * 60 + p[1] : 0) }
-    const epTagFor = (n) => new RegExp(`(?:^|[^0-9])(?:0?${n}|第[一${'一二三四五六七八九十'[n - 1] || n}]集|第${n}话|EP\\.?0?${n})(?:[^0-9]|$)`, 'i')
-    const choose = (n) => {
-      const tag = epTagFor(n)
-      const score = (x) => {
-        const m = mins(x.duration)
-        if (n > 1) return (m > 40 && Number(x.pages) >= n ? 4 : 1) + (tag.test(String(x.title)) ? 1 : 0)
-        const dur = m >= 15 && m <= 40 ? 2 : (m > 40 ? 0 : (m < 5 ? -2 : 1))
-        return dur + (tag.test(String(x.title)) ? 3 : 0)
+    const book = load(show)
+    const seenMax = book?.seen?.length ? Math.max(...book.seen.map(Number).filter((n) => Number.isFinite(n))) : 0
+    if (/^next$/i.test(String(epArg).trim()) || (!epArg && seenMax > 0)) {
+      const nextEp = seenMax + 1
+      if (book?.total && nextEp > Number(book.total)) {
+        console.log(`《${book.show}》${book.total} 集已经全看完了（seen ${seenMax}/${book.total}）—— 没有下一集了`)
+        return
       }
-      const ranked = list.slice().sort((a, b) => score(b) - score(a) || Math.abs(mins(a.duration) - 24) - Math.abs(mins(b.duration) - 24))
-      const exact = n > 1 ? ranked.find((x) => tag.test(String(x.title))) : null
-      return { pick: exact || ranked[0], tag }
+      ep = Math.max(1, nextEp)
+      console.log(`（接着看：第 ${ep} 集 —— 这本已看过 ${seenMax}${book?.total ? '/' + book.total : ''} 集）`)
     }
-    let { pick } = choose(ep)
-    if (ep > 1 && Number(pick.pages) < ep) {
-      // 没有能跳集的分 P 合集，也没有标题写着第 N 集的单集 → 老实退回第 1 集
-      console.log(`（搜到的这些都凑不出第 ${ep} 集 —— 改成看第 1 集；想指定就 --bvid）`)
-      ep = 1
-      pick = choose(1).pick
+    // 只要目标是第 N 集（`--ep next` 或显式 `--ep N` 都算），先看账本里有没有能跳到那一集的投稿。
+    // 账本里可能同时躺着"单集投稿(4P)"和"全 13 集合集(13P)"—— 续看要挑**分 P 最多的那条**，
+    // 否则第 2 集会跳到另一条投稿的第 2 个分 P 上（内容对不上）。
+    if (ep > 1) {
+      const same = [...(book?.log || [])].filter((x) => x.bvid && Number(x.total) >= ep)
+        .sort((a, b) => Number(b.total) - Number(a.total))[0]
+      if (same) {
+        bvid = same.bvid
+        console.log(`（沿用《${same.title || same.bvid}》这条投稿，共 ${same.total} P）`)
+      }
     }
-    bvid = pick.bvid
-    console.log(`→ 选了 ${bvid}　${pick.title.slice(0, 50)}（${pick.duration}${pick.pages > 1 ? '，' + pick.pages + 'P' : ''}）`)
+  }
+  const altBvids = []
+  if (show) {
+    const list = await search(show)
+    if (!list.length && !bvid) { console.log(`✗ 搜不到「${show}」`); process.exit(1) }
+    const ranked = rankFor(list, ep)
+    const tag = epTagFor(ep)
+    const exact = ep > 1 ? ranked.find((x) => tag.test(String(x.title))) : null
+    let pick = exact || ranked[0]
+    // 10-28：这里原来会"凑不出第 N 集 → 偷偷改成看第 1 集"。
+    // 那正是"看了七次都是第 1 集"的病根之一 —— 现在**绝不降级**：
+    // 搜索接口的 `videos` 字段常把分 P 报成 1，本来就不可信；能不能凑出这一集交给
+    // watchOne 自己验（P 数不够会立刻返回 false，不烧 LLM），全都不行就照实说没找到。
+    if (!bvid && ep > 1 && pick && Number(pick.pages) < ep) {
+      console.log(`（没有明显能跳到第 ${ep} 集的投稿 —— 先拿最像合集的一条试，凑不出会照实说）`)
+    }
+    // 备选：同一集还凑得出来的其他投稿。同一集在不同投稿里的弹幕密度能差三倍（实测
+// 13P 合集第 2 集只有 100 条弹幕、判不出剧情；换另一条单集投稿就够），
+// 看不明白不是她的错，是没挑对源 —— 所以让 binge 自己换一条再试。
+    // 注意：搜索接口的 `videos` 字段常写成 1（分 P 数不准），别用它当门槛，
+    // 真正能不能凑出这一集由 watchOne 自己验（P 数不够会立刻返回 false，不烧 LLM）。
+    for (const x of ranked) {
+      if (altBvids.length >= 3) break
+      const t = String(x.title || '')
+      if (x.bvid === bvid) continue
+      if (/ED|OP|结局|一口气|解说|MAD|AMV|混剪|剪辑|测评|歌词/i.test(t)) continue
+      if (mins(x.duration) < 15) continue      // 1~2 分钟的短片不是正片
+      altBvids.push(x.bvid)
+    }
+    if (!bvid && pick) {
+      bvid = pick.bvid
+      console.log(`→ 选了 ${bvid}　${pick.title.slice(0, 50)}（${pick.duration}${pick.pages > 1 ? '，' + pick.pages + 'P' : ''}）`)
+    }
   }
   if (!bvid) {
-    console.error('用法：binge --search "番名" | --show "番名" [--ep N] | --bvid BVxxx [--ep N] [--promise id] [--go]', 
+    console.error('用法：binge --search "番名" | --show "番名" [--ep N] | --bvid BVxxx [--ep N] [--promise id] [--go]',
       '| --list')
     process.exit(2)
   }
 
   const go = argv.includes('--go')
-  // 日上限（默认 1 集）：一天一集是"真看"，一天十集是"刷数据"。她承诺的是前者。
-  const cap = Number(config().binge?.dailyMax ?? 1)
+  // 节奏她自己定（10-28 主人拍板："不做限制，给她自主性"）。
+  // `binge.dailyMax` 退化成一道**可选保险**：0 或负数 = 不限（默认就是不限）。
+  // 一晚看一集还是看五集，由她自己的兴趣和状态决定，不由配置决定。
+  const cap = Number(config().binge?.dailyMax ?? 0)
   if (go && !argv.includes('--force') && cap > 0 && dailyUsed() >= cap) {
-    console.log(`（今天已经看过 ${dailyUsed()} 集了，上限 ${cap} 集 —— 明天再看；真想接着看就加 --force）`)
+    console.log(`（今天已经看过 ${dailyUsed()} 集了，你给自己设的上限是 ${cap} 集 —— 想接着看就 --force）`)
+    // 调用方（qq-server 的承诺执行器）要靠 JSON 才知道"是额度满了"，好把承诺顺延，
+    // 而不是当成"看不到剧情"反复重试。
+    if (argv.includes('--json')) console.log(JSON.stringify({ ok: false, via: `今天的看番额度用完了（${dailyUsed()}/${cap} 集）`, ep, total: 0, title: '', plot: '这条看不到剧情', feel: '', quota: true }))
     return
   }
-  const r = await watchOne(bvid, { ep, go, show, promise: arg(argv, '--promise') })
+
+  // 一次看几集 —— 同样她自己定：
+  //   `--count N` 看 N 集；`--count all` 一直看到这本补完；不给就 1 集。
+  //   承诺执行器会从她自己说的话里读（"连看三集"→3，"看完这部"→all）。
+  const countArg = String(arg(argv, '--count') ?? '').trim()
+  let want = 1
+  if (/^(?:all|全部|整部|完|∞)$/i.test(countArg)) want = 999
+  else if (countArg) want = Math.max(1, Math.min(999, Number(countArg) || 1))
+  // `--to N`：她说的常常是"看到第 6 集"而不是"再看 6 集" —— 从下一集一路看到第 N 集为止。
+  const toArg = Math.max(0, Number(arg(argv, '--to')) || 0)
+  if (toArg && toArg >= ep) want = Math.min(999, toArg - ep + 1)
+
+  // 承诺的结账放到最后统一做：探测阶段不许把承诺判死（换源之后成功才是成功）。
+  const promiseId = arg(argv, '--promise')
+  const order = [bvid, ...altBvids.filter((b) => b !== bvid)].slice(0, 3)
+  const book0 = show ? load(show) : null
+  let totalKnown = Number(book0?.total || 0)
+
+  const done = []
+  let pipe = bvid
+  for (let k = 0; k < want; k++) {
+    const thisEp = ep + k
+    if (totalKnown && thisEp > totalKnown) break
+    let r = null
+    if (!go) {
+      r = await watchOne(pipe, { ep: thisEp, go: false, show, promise: '' })
+      done.push(r)
+      break
+    }
+    // ① 先在候选投稿里挑（合集/单集投稿/搬运），第一个看得明白的才真落账
+    const tries = order.length > 1 ? order : [pipe]
+    for (let i = 0; i < tries.length && !r?.ok; i++) {
+      const cand = tries[i]
+      // 只有多条候选时才"先探再落"（探测不写记忆、不结承诺）；单条就直接看，省一次 LLM
+      if (tries.length > 1) {
+        const probe = await watchOne(cand, { ep: thisEp, go: false, show, promise: '' })
+        if (!probe.ok) {
+          if (i + 1 < tries.length) console.log(`（第 ${thisEp} 集这条看不明白：${probe.via} → 换 ${tries[i + 1]} 再试）`)
+          continue
+        }
+      }
+      r = await watchOne(cand, { ep: thisEp, go: true, show, promise: '' })
+      if (r.ok) pipe = cand
+    }
+    // ② 候选全没材料 → 直接按"番名 第N集"搜单集投稿再来一次（合集某几集弹幕太稀时最灵）
+    if (!r?.ok && show) {
+      const l2 = await search(`${show} 第${thisEp}集`)
+      const cands = l2.filter((x) => mins(x.duration) >= 15).slice(0, 2)
+      for (const c of cands) {
+        console.log(`（换按集搜的投稿试：${c.bvid}　${String(c.title).slice(0, 30)}）`)
+        const r2 = await watchOne(c.bvid, { ep: thisEp, go: true, show, promise: '' })
+        if (r2.ok) { r = r2; pipe = c.bvid; break }
+        r = r || r2
+      }
+    }
+    done.push(r || { ep: thisEp, ok: false, title: show || '', via: '没有可用材料' })
+    if (Number(r?.total)) totalKnown = Math.max(totalKnown, Number(r.total))
+    if (!r?.ok) break                    // 这一集真看不明白就停，不空转、不硬编
+  }
+
+  const okOnes = done.filter((x) => x?.ok)
+  const last = okOnes[okOnes.length - 1] || done[done.length - 1] || {}
+  if (go && promiseId) {
+    if (okOnes.length) {
+      const first = okOnes[0]
+      const span = okOnes.length > 1 ? `第 ${first.ep}~${last.ep} 集（${okOnes.length} 集）` : `第 ${last.ep} 集`
+      promises.done(promiseId, `看完了《${last.title}》${span}`)
+    } else {
+      promises.fail(promiseId, `《${last.title || show || ''}》${last.via || '没有材料'} —— 看不到剧情`)
+    }
+  }
   if (argv.includes('--json')) {
-    console.log(JSON.stringify(r, null, 2))
-  } else if (r.ok) {
-    console.log(`📺 《${r.title}》第 ${r.ep}/${r.total} 集${r.part ? '（' + r.part + '）' : ''}　材料：${r.via}（字幕 ${r.subs} 段）`)
-    console.log(`【剧情】${r.plot}`)
-    if (r.feel) console.log(`【我】${r.feel}`)
-    if (!r.dry) console.log(`（看过 ${r.seen}/${r.total} 集，进度存在 ~/.feiyu-ai/binge/）`)
+    console.log(JSON.stringify({
+      ...last,
+      ok: okOnes.length > 0,
+      watched: okOnes.length,
+      episodes: done.map((x) => ({ ep: x?.ep, ok: !!x?.ok, title: x?.title, via: x?.via })),
+    }, null, 2))
+  } else if (okOnes.length) {
+    for (const r of okOnes) {
+      console.log(`📺 《${r.title}》第 ${r.ep}/${r.total} 集${r.part ? '（' + r.part + '）' : ''}　材料：${r.via}（字幕 ${r.subs} 段）`)
+      console.log(`【剧情】${r.plot}`)
+      if (r.feel) console.log(`【我】${r.feel}`)
+    }
+    if (!last.dry) console.log(`（看过 ${last.seen}/${last.total} 集，进度存在 ~/.feiyu-ai/binge/）`)
+    const failed = done.find((x) => !x?.ok)
+    if (failed) console.log(`（第 ${failed.ep} 集没看上：${failed.via} —— 想换条投稿就 --bvid）`)
   } else {
-    console.log(`✗ 没真看上：${r.via}｜${r.plot || '没有可用的剧情材料'}`)
+    console.log(`✗ 没真看上：${last.via}｜${last.plot || '没有可用的剧情材料'}`)
     console.log('（照实说"这条我看不到内容"，别编 —— 这是设计允许的结果）')
   }
   if (!go) console.log('（干跑：--go 才记账/写记忆/结清承诺）')

@@ -807,7 +807,9 @@ export async function run(argv = []) {
     // 顺带每 autoMin 分钟跑一次 B站 自己作品评论巡检（"有新评论就自己去回"）。
     void (async () => {
       try {
-        const { ensureDouyinDm, ensureBiliOwnReply, superviseAux } = await import('../lib/aux.mjs')
+        // 注意：文件名不能叫 aux.mjs —— AUX 是 Windows 的保留设备名，Win32 打开它一律报"找不到路径"，
+        // 动态 import 会静默失败（aux.mjs 时代监工从没真正启动过，抖音私信崩了没人管就是这个）。
+        const { ensureDouyinDm, ensureBiliOwnReply, superviseAux } = await import('../lib/auxsvc.mjs')
         const dm = await ensureDouyinDm({ force: true })
         log(`[aux] 抖音私信：${dm.alive ? (dm.started ? `已拉起 PID ${dm.pid}` : '本来就在跑') : (dm.skipped || dm.backedOff ? '跳过（' + (dm.skipped || '退避中') + '）' : '没活')}`)
         superviseAux()
