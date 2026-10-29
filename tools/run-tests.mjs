@@ -1,7 +1,7 @@
 // run-tests —— 不依赖 npm 的测试跑轮（这台机器上 PATH 里没有 node/npm，
 // `npm test` 跑不了，而她自己改完代码必须验证）。
 //
-//   node tools/run-tests.mjs            # 顺序跑全部 31 套，全绿退出 0
+//   node tools/run-tests.mjs            # 顺序跑全部 32 套，全绿退出 0
 //   node tools/run-tests.mjs memory     # 只跑文件名含 "memory" 的
 //
 // 与 package.json 的 `test` 脚本等价：同样的文件、同样的顺序、失败即停。
@@ -44,6 +44,7 @@ const TESTS = [
   'brain-intents-test.mjs',
   'brain-isolation-test.mjs',
   'brain-meta-test.mjs',
+  'brain-claim-test.mjs',
 ]
 
 const filter = process.argv[2] || ''

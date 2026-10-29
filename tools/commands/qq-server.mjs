@@ -502,7 +502,8 @@ export async function run(argv = []) {
       }
       if (!out) return
 
-      // 声称-证据闸（v3 O11）：只有 live 模式才改口（影子期不动她一个字）。
+      // 声称-证据闸（v3 O11）：开关是 brain.claim.enabled；没证据就把"做完了"降时态。
+      // （10-29 更正：早先这行注释写"只有 live 才改口"，但 code 里 craftReply 只看 claim.enabled —— 注释比实现慢了两天。）
       try {
         const gated = brain.craftReply(out, { chat: chatId })
         if (gated.changed) {
