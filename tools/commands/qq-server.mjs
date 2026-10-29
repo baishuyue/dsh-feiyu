@@ -502,8 +502,8 @@ export async function run(argv = []) {
       }
       if (!out) return
 
-      // 声称-证据闸（v3 O11）：开关是 brain.claim.enabled；没证据就把"做完了"降时态。
-      // （10-29 更正：早先这行注释写"只有 live 才改口"，但 code 里 craftReply 只看 claim.enabled —— 注释比实现慢了两天。）
+      // 声称-证据闸（v3 O11）：有证据放行；账本有反证才改成「还没…」；查不到一个字都不改（只记账）。
+      // ⚠️ 10-29 事故：旧版把完成态反转成"正要接着看"，主人当场引用质问 —— 证据缺失≠没发生。
       try {
         const gated = brain.craftReply(out, { chat: chatId })
         if (gated.changed) {
