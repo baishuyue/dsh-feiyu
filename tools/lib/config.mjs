@@ -265,6 +265,26 @@ export const DEFAULTS = {
     font: '',
     biliProduce: { enabled: true, dailyMax: 2 },
     bili: { tid: 21, tname: '生活·日常' },
+    // ── 真动作镜头（10-27）：万相 2.7 图生视频，首帧 = 她那张图，人物真的会动 ──
+    // 走 llm 那条中转站的 DashScope 原生路径（同一个 key），失败/关掉自动落回静图+运镜。
+    //   maxSeconds：单段上限（万相只收 2~15 的整数，超了就自动切段 + 用上段末帧续首帧）
+    //   pricePerSecond / budgetPerRun：只用来估算和刹车，真实单价去后台核完填进来
+    //   resolution：720P | 1080P（是"像素档位"，输出宽高比跟着首帧走）
+    animate: {
+      enabled: true,
+      baseUrl: '',                          // 空 = 从 llm.base_url 剥 host；也可写 https://dashscope.aliyuncs.com
+      apiKey: '',                           // 空 = 用 llm.api_key
+      model: 'wan2.7-i2v-2026-04-25',
+      resolution: '1080P',
+      maxSeconds: 15,
+      negative: '',                         // 空 = 内置那串（防换人/防字幕/防崩脸）
+      pricePerSecond: 0.35,                 // 元/秒（估算用）
+      budgetPerRun: 20,                     // 一条片子最多花多少（元），0 = 不限
+      pollSec: 8,
+      maxWaitSec: 420,
+      keepRaw: true,                        // 留着模型原片（含它的音轨）方便对比，成片里绝不使用
+      retries: 1,
+    },
   },
 
   // B站（生物钟在 night 段；这里放自由刷的限度 + 活人感写通道）
@@ -281,6 +301,25 @@ export const DEFAULTS = {
     replies: { enabled: false, dailyMax: 10 },                      // 回应别人对我评论的回复（replies 命令）
     fishCircle: { enabled: false },                                 // 鱼圈社交：选题加入「大肥鱼」相关视频
     follow: { enabled: false },                                     // 关注好 UP（act follow）
+  },
+
+  // ── 脑（v3，10-29）：记忆/注意力/意图/元认知那套 ─────────────────────────
+  // mode 三档：off=完全不写（纯旧行为）｜shadow=只写不读（默认，先对照一周）｜live=新装配接管
+  // livePlatforms/liveChats/liveGroups 决定谁能走新装配：私聊按平台切，群聊必须逐群列进 liveGroups。
+  brain: {
+    enabled: true,
+    mode: 'shadow',                 // shadow | live | off
+    livePlatforms: ['qq', 'douyin-dm'], // live 时切哪些通道的私聊
+    liveChats: [],                  // 空 = livePlatforms 里的私聊全切；填了就只切这几个 chatId
+    liveGroups: [],                 // 群聊要逐群切（群里的对照最要紧）：填 chatId 才走新装配
+    executor: 'promises',           // promises=旧账本执行 | intents=脑的意图账本执行（S4）
+    ownerIds: [],                   // 主人 QQ/uid（空 = 私聊一律当主人；群友永远不是主人）
+    consolidateAt: '04:30',         // 每天巩固时刻（睡过头靠 shouldConsolidate + 子进程补）
+    budget: { promptChars: 5650, consolidateCalls: 6, consolidateTokens: 40000 },
+    recall: { weights: {} },        // 空 = 用 brain/recall.mjs 的校准值（10-29 量过：Recall@6 0.875）
+    claim: { enabled: true },       // 声称-证据闸（只在 live 模式下真的改口）
+    wechatIsolated: true,           // 微信独立代理：不写、不读、不进叙事（I7）
+    task: { enabled: true, pollSec: 20, maxPerTick: 1 }, // 身体/工具协议：认领队列里的活
   },
 }
 

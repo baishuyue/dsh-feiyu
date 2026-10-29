@@ -23,6 +23,7 @@ import * as qqMemory from '../lib/qq-memory.mjs'
 import { dataPath } from '../lib/paths.mjs'
 import { gapText, mentionsDays, sanitizeDayClaims } from '../lib/timefix.mjs'
 import { looksBlind, looksAsking, askInstead, noBlindHint } from '../lib/speechfix.mjs'
+import * as brain from '../brain/index.mjs'
 
 const WM_FILE = dataPath('douyin-dm-watermark.json')
 const CHAT_ID = 'douyin-dm:owner'
@@ -248,8 +249,18 @@ export async function run(argv = []) {
       // 主人连发几句也接得住；这句话以后还会进 recall 的"主动回忆"池。
       memory.remember('douyin', CHAT_ID, ownerKey, 'user', text)
 
+      // 事件进脑（v3 S5 逐通道）：抖音私信也是"同一份记忆"，但 scope 只对主人可见。
+      try {
+        brain.onEvent({
+          proc: 'douyin-dm-server', platform: 'douyin', chatId: CHAT_ID, userId: ownerKey,
+          role: 'user', text, isOwner: true, scope: 'private',
+        })
+      } catch {}
+
       // 复用 QQ 那套：人格 + 记忆 + 清洗（douyin-dm 平台提示 = 私聊语气，不是评论区语气）
-      const msgsOut = persona.buildMessages({ platform: 'douyin-dm', userText: text, chatId: CHAT_ID, userId: ownerKey, turnsToday: handled.length })
+      const brainedOut = brain.assembleFor({ platform: 'douyin-dm', userText: text, chatId: CHAT_ID, userId: ownerKey, turnsToday: handled.length })
+      const msgsOut = brainedOut?.messages
+        ?? persona.buildMessages({ platform: 'douyin-dm', userText: text, chatId: CHAT_ID, userId: ownerKey, turnsToday: handled.length })
       // 卡片占位：以前她会回"你发的这个我看不到内容呀"（10-25），后来改成教她"问标题"——
       // 结果就成了「一直叫我念标题给她」（10-26 用户投诉）。现在有截图就看截图，没截图就顺着话接，
       // **禁止**向主人索要标题/链接。
@@ -317,6 +328,14 @@ export async function run(argv = []) {
         log(`[douyin-dm] ✅ 已回复：${reply.slice(0, 50)}`)
       }
       memory.remember('douyin', CHAT_ID, ownerKey, 'assistant', reply)
+      // 交付证据：只有真发出去（非干跑）才记
+      try {
+        if (!dry) brain.onSent({ chat: CHAT_ID, platform: 'douyin', text: reply, msgId: '' })
+        brain.onEvent({
+          proc: 'douyin-dm-server', platform: 'douyin', chatId: CHAT_ID, userId: ownerKey,
+          role: 'assistant', text: reply, scope: 'private',
+        })
+      } catch {}
       commitHandled(key)
       failStreak = 0
       maintainLongMemory()

@@ -29,7 +29,13 @@ import { sing } from '../lib/sing.mjs'
 import { tickMood } from '../lib/mood.mjs'
 import { generateStickerImage } from '../lib/imggen.mjs'
 import { availableTags } from '../lib/stickers.mjs'
-import { execFile, spawnSync } from 'node:child_process'
+import * as brain from '../brain/index.mjs'
+import { execFile, spawnSync, spawn } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
+
+/** 项目根（起子进程时用来定位 tools/feiyu.mjs，不能依赖 cwd）。 */
+const FEIYU_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
+function FEiyuRoot() { return FEIYU_ROOT }
 import { promisify } from 'node:util'
 
 // 图片下载必须异步：execFileSync 会把事件循环钉住最多 35 秒，期间 /health 不通、群里所有
@@ -387,6 +393,18 @@ export async function run(argv = []) {
 
       memory.remember('qq', chatId, userId, 'user', memText, { isGroup })
 
+      // 事件进脑（v3 S1 影子层）：旧路径照旧写 episodes.jsonl，这边另存一份结构化事件。
+      // 关键差别：谁说的（who.kind）、能不能外说（scope）、哪条消息（msgId）在写入时就定死，
+      // 不再靠"昵称：正文"回推。brain 是旁路，失败也不影响这一轮回复。
+      try {
+        brain.onEvent({
+          proc: 'qq-server', platform: 'qq', chatId, userId, role: 'user',
+          text: memText, isGroup, groupId, name: display || undefined,
+          msgId: evt.message_id, at: Date.now(), atMe,
+          isOwner: String(userId) === String(config().owner?.qq || ''),
+        })
+      } catch (e) { logErr('[qq] 脑写入失败（不影响回复）：' + (e?.message ?? e)) }
+
       // 主人说的硬事实（10-27）：他吃了什么/在干什么/要去干什么 —— 落账以后就不许再问。
       // 只记私聊里主人本人的话（群友的话不是他的事）。
       try {
@@ -404,7 +422,13 @@ export async function run(argv = []) {
 
       // 生成回复（三段式 prompt + 走神注入）
       const turns = memory.recent(chatId).length
-      const messages = buildMessages({ platform: 'qq', userText, chatId, userId, turnsToday: turns, isGroup, quote: quoteLine })
+      // 装配：live 模式走脑的 8 槽装配（只切 QQ 私聊），否则照旧走三段式 —— 两条路都能回滚。
+      const brained = brain.assembleFor({ platform: 'qq', userText, chatId, userId, turnsToday: turns, isGroup, quote: quoteLine })
+      if (brained && brained.chars > 0) {
+        log(`[qq] 🧠 新装配 ${brained.chars} 字${brained.dropped.length ? `（截断 ${brained.dropped.length} 块）` : ''}`)
+      }
+      const messages = brained?.messages
+        ?? buildMessages({ platform: 'qq', userText, chatId, userId, turnsToday: turns, isGroup, quote: quoteLine })
       messages[0].content += thinkingInstruction()
       // 时间锚点已经搬进 persona 的「【现在】」常驻层（10-25 重构，照 dsh-world 的 timeContext）：
       // 贴在最后一条消息上的临时提示一重写就丢，现在每轮都在 system 里。
@@ -477,6 +501,15 @@ export async function run(argv = []) {
         }
       }
       if (!out) return
+
+      // 声称-证据闸（v3 O11）：只有 live 模式才改口（影子期不动她一个字）。
+      try {
+        const gated = brain.craftReply(out, { chat: chatId })
+        if (gated.changed) {
+          log(`[qq] 🧾 没证据的"做完了"→改口：「${out.slice(0, 26)}」→「${gated.text.slice(0, 26)}」`)
+          out = gated.text
+        }
+      } catch (e) { logErr('[qq] 声称闸异常：' + (e?.message ?? e)) }
 
       // 承诺账本（10-27）：从她真正发出去的话里抽"这就去看/我答应/明天做"，落账带截止时间。
       // 只记私聊（群里答应的事不算对主人的承诺），且只在非干跑时记。
@@ -597,6 +630,14 @@ export async function run(argv = []) {
       // AI 表情包：生成入库 + 补发（异步，不占回复主线；干跑分支已在上面 return，走不到这）
       if (aiWanted) void aiStickerFollowup({ tag, caption, isGroup, groupId, userId })
       memory.remember('qq', chatId, userId, 'assistant', plain || out, { isGroup })
+      // 交付证据（v3 §11）：真发出去才记；干跑在上面已经 return，走不到这里。
+      try {
+        brain.onSent({ chat: chatId, platform: 'qq', text: plain || out, msgId: '', at: Date.now() })
+        brain.onEvent({
+          proc: 'qq-server', platform: 'qq', chatId, userId, role: 'assistant',
+          text: plain || out, isGroup, groupId, msgId: evt.message_id,
+        })
+      } catch (e) { logErr('[qq] 交付记账失败：' + (e?.message ?? e)) }
 
       // 长期记忆：跟主人私聊时，每 6 条回复把这段对话压成摘要 + 更新主人画像（不阻塞回复）
       try {
@@ -682,12 +723,66 @@ export async function run(argv = []) {
         ok: true,
         dryRun: !!config().guard?.dryRun,
         napcat: { ok: napcatOk, url: NAPCAT, checkedAt: napcatCheckedAt, downSince: napcatDownSince || null },
+        brain: brainHealth(),
         ...memory.stats(),
       }))
       return
     }
+    // ── 脑的两条通用入口（v3 §6 S0）─────────────────────────────────
+    // 别的通道（抖音私信/推送/未来的 B站）不必自己实现记忆层：POST 过来就行。
+    // body: {proc,platform,chatId,userId,role,text,isGroup,scope,msgId}
+    if (req.method === 'POST' && (req.url === '/event' || req.url === '/sent')) {
+      let body = ''
+      req.on('data', (c) => { body += c; if (body.length > 512 * 1024) req.destroy() })
+      req.on('end', () => {
+        let out = { ok: false }
+        try {
+          const j = JSON.parse(body || '{}')
+          out = req.url === '/sent'
+            ? (() => { const r = brain.onSent(j); return { ok: Boolean(r), hash: r?.hash || '' } })()
+            : (() => { const r = brain.onEvent(j); return { ok: r.ok, id: r.ep?.id || '', reason: r.reason || '' } })()
+        } catch (e) { out = { ok: false, reason: String(e?.message || e) } }
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify(out))
+      })
+      return
+    }
+    // ── 身体/工具协议入口：POST /task 放活、GET /task 看队列 ────────────
+    if (req.url === '/task' || req.url.startsWith('/task?')) {
+      if (req.method === 'GET') {
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ ok: true, stats: brain.taskqueue.stats(), rows: brain.taskqueue.list() }))
+        return
+      }
+      let body = ''
+      req.on('data', (c) => { body += c; if (body.length > 256 * 1024) req.destroy() })
+      req.on('end', () => {
+        let out = { ok: false }
+        try {
+          const j = JSON.parse(body || '{}')
+          out = brain.taskqueue.enqueue({ kind: j.kind, args: j.args || [], note: j.note || '', priority: j.priority || 0 })
+        } catch (e) { out = { ok: false, reason: String(e?.message || e) } }
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify(out))
+      })
+      return
+    }
     res.writeHead(404); res.end()
   })
+
+  /** /health 里的脑摘要（只读小文件，别在这里跑 doctor）。 */
+  function brainHealth() {
+    try {
+      const b = config().brain || {}
+      return {
+        mode: b.mode || 'shadow',
+        episodes: brain.episode.allEpisodes().length,
+        intents: brain.intents.stats(),
+        backlog: brain.event.backlog(),
+        today: brain.metrics.today(),
+      }
+    } catch (e) { return { error: String(e?.message || e) } }
+  }
 
   server.listen(port, '127.0.0.1', () => {
     log(`[qq] 监听 http://127.0.0.1:${port}/onebot`)
@@ -706,6 +801,19 @@ export async function run(argv = []) {
           setInterval(() => { void warmQuoteIndex(40) }, 10 * 60_000)
         }
       } catch (e) { logErr('[qq] 引用索引预热失败：' + (e?.message ?? e)) }
+    })()
+    // 辅助服务监工（10-27）：抖音私信陪聊崩了没人管 —— 09:46 起过一次，之后一整天没进程，
+    // 主人发的私信一条都没回。qq-server 是唯一常驻体，所以让它探活+拉起（带退避），
+    // 顺带每 autoMin 分钟跑一次 B站 自己作品评论巡检（"有新评论就自己去回"）。
+    void (async () => {
+      try {
+        const { ensureDouyinDm, ensureBiliOwnReply, superviseAux } = await import('../lib/aux.mjs')
+        const dm = await ensureDouyinDm({ force: true })
+        log(`[aux] 抖音私信：${dm.alive ? (dm.started ? `已拉起 PID ${dm.pid}` : '本来就在跑') : (dm.skipped || dm.backedOff ? '跳过（' + (dm.skipped || '退避中') + '）' : '没活')}`)
+        superviseAux()
+        log('[aux] 监工已挂上：每 90s 探抖音私信 + B站 自己作品评论巡检')
+        setTimeout(() => { void ensureBiliOwnReply().then((r) => { if (r.ran) log('[aux] B站 首轮巡检：' + (r.out || '无新评论')) }) }, 20_000)
+      } catch (e) { logErr('[aux] 监工启动失败：' + (e?.message ?? e)) }
     })()
   })
 
@@ -736,6 +844,24 @@ export async function run(argv = []) {
       }
       return out
     } catch (e) { logErr('[qq] 自跑失败：' + (e?.message ?? e)); return '' }
+  }
+
+  /** 异步版自跑：看番可能连着跑好几分钟，用 spawnSync 会把事件循环钉住 ——
+   *  那段时间她连主人发的消息都回不了。所以看番一律走这条。 */
+  async function runCliAsync(args = [], timeoutMs = 900000) {
+    try {
+      const feiyu = path.join(path.dirname(new URL(import.meta.url).pathname.replace(/^\//, '')), '..', 'feiyu.mjs')
+      const { stdout } = await execFileAsync(process.execPath, [feiyu, ...args], {
+        encoding: 'utf8', timeout: timeoutMs, windowsHide: true, maxBuffer: 32 * 1024 * 1024,
+        env: { ...process.env, PYTHONIOENCODING: 'utf-8' },
+      })
+      return String(stdout || '')
+    } catch (e) {
+      const out = String(e?.stdout || '')          // 超时/非零退出也可能已经打出半截 JSON
+      if (out.includes('{')) return out
+      logErr('[qq] 自跑(异步)失败：' + (e?.message ?? e))
+      return ''
+    }
   }
   const readProact = () => { try { return JSON.parse(fs.readFileSync(PROACT_FILE, 'utf8')) } catch { return {} } }
   const writeProact = (st) => { try { fs.writeFileSync(PROACT_FILE, JSON.stringify(st)) } catch {} }
@@ -811,6 +937,187 @@ export async function run(argv = []) {
     return 0
   }
 
+  // ── 到期承诺的独立执行器（10-28）────────────────────────────────────
+  // 主人第二次抓的病根："说了去看可塑性记忆，实际一直没行动"。
+  // 这次不是"她不想做"，是三层结构性毛病：
+  //   ① 执行原先挂在主动搭话链里（12% 掷骰子 + 日上限 + 最小间隔 + 沉默时长 + 启动宽限）→ 到点也大概率不执行；
+  //   ② 机器一睡（实测 01:07 睡 → 08:02 醒）就整夜没人；醒来先补做最老那条**认错作品**的承诺，正主还在排队；
+  //   ③ 就算执行过，`--ep 1` 写死 → 永远重看第 1 集，seen 停在 [1]（账本里连着三条都是第 1 集）。
+  // 修法：独立 tick（60s，不掷骰子、不占搭话配额）+ 一次最多处理 3 条 + 认作品名（笼统词落到"最近在追的那部"）
+  // + 交给 binge 的 `--ep next` 续看下一集。
+  const PROMISE_OUT = () => dataPath('promise-outcome.json')
+  let promiseRunning = false
+
+  // 11-01（S4）：执行者可以从旧账本换成脑的意图账本（config.brain.executor='intents'）。
+  // 换过去以后：认领走 intents 的租约（fencing，防双开），结算必须有证据；旧账本退成只读历史。
+  // 两条账本**只走一条**，绝不双写 —— 否则"做完了"会有两份口径。
+
+  /** 执行完一条怎么记账。 */
+  function finishJob(job, ok, why) {
+    if (!job?.brainId) return ok ? promises.done(job.id, why) : promises.fail(job.id, why)
+    if (ok) {
+      return brain.intents.settle(job.brainId, {
+        ok: true,
+        evidence: [`promise-outcome:${job.id}`, String(why || '').slice(0, 120)],
+        reason: String(why || '').slice(0, 120),
+      })
+    }
+    return brain.intents.settle(job.brainId, { ok: false, reason: String(why || '没做成') })
+  }
+
+  function deferJob(job, mins, why) {
+    if (!job?.brainId) return promises.defer(job.id, mins, why)
+    return brain.intents.defer(job.brainId, mins, why)
+  }
+
+  /** 该执行的活：默认旧账本；换成 intents 后由脑说了算（拿不到租约就跳过）。 */
+  function dueJobs() {
+    const useIntents = String(config().brain?.executor || 'promises') === 'intents'
+    if (!useIntents) return promises.dueNow().map((x) => ({ ...x, brainId: '' }))
+    const out = []
+    for (const x of brain.intents.executable()) {
+      const lease = brain.intents.lease(x.id, `qq-server:${process.pid}`, { leaseMs: 15 * 60_000 })
+      if (!lease.ok) continue
+      out.push({
+        id: x.id, brainId: x.id, what: String(x.object || ''), text: String(x.lastWhy || ''),
+        kind: String(x.verify || ''), dueAt: Number(x.dueAt || 0), fencing: lease.fencing,
+      })
+    }
+    return out
+  }
+
+  /** 从承诺文本里认出"到底是哪部"。认不出返回 ''（宁可照实说不知道，也不许乱搜一条充数）。 */
+  function resolveShow(what, text = '') {
+    const clean = (s) => String(s ?? '').replace(/\s+/g, ' ').trim()
+    const w = clean(what)
+    const all = (() => {
+      try {
+        const dir = dataPath('binge')
+        return fs.readdirSync(dir).filter((f) => f.endsWith('.json'))
+          .map((f) => { try { return JSON.parse(fs.readFileSync(dir + '/' + f, 'utf8')) } catch { return null } })
+          .filter(Boolean)
+      } catch { return [] }
+    })()
+    const byShow = (n) => all.find((b) => clean(b.show) === clean(n))
+    // ① 她说的名字本身就在追番账本里 —— 最可靠
+    if (w && byShow(w)) return clean(byShow(w).show)
+    // ② 正文里的《…》且在账本里
+    const inBook = /《([^》]{1,24})》/.exec(clean(text)) || /《([^》]{1,24})》/.exec(w)
+    if (inBook && byShow(inBook[1])) return clean(byShow(inBook[1]).show)
+    // ③ 笼统词（番/剧/动画…）→ 最近真在追的那部（要排除账本里混进的整句，那是解析错的产物）
+    if (/^(?:番|番剧|剧|动画|动漫|番组|追番|那个|这部|那部|它)$/.test(w)) {
+      const looksTitle = (s) => {
+        const t = clean(s)
+        return t.length >= 2 && t.length <= 20 && !/[\s，,。！!？?、；;：:（）()「」“”"]/.test(t)
+      }
+      const recent = all.filter((b) => looksTitle(b.show) && (b.seen?.length || 0) > 0)
+        .sort((a, b) => (b.log?.at?.(-1)?.at || 0) - (a.log?.at?.(-1)?.at || 0))[0]
+      return recent ? clean(recent.show) : ''
+    }
+    // ④ 正文里有《…》但不在账本里 → 新番，交给 binge 自己搜
+    if (inBook) return clean(inBook[1])
+    // ⑤ 只有"像作品名"的干净短词才认（"嗯，我承认，三次了…"这种整句直接不认）
+    if (/^[\u4e00-\u9fa5A-Za-z0-9·・]{2,16}$/.test(w) && !/^(?:这个|那个|什么|怎么|真的|就是)$/.test(w)) return w
+    return ''
+  }
+
+  /** 到点就真去做 —— 不看搭话配额、不掷骰子。一次最多 3 条。 */
+  async function runDuePromises(reason = 'tick') {
+    if (promiseRunning) return
+    promiseRunning = true
+    try {
+      const due = dueJobs().sort((a, b) => Number(a.dueAt) - Number(b.dueAt))
+      if (!due.length) return
+      if (reason === '醒来补做') log(`[qq] ⏰ 醒来补做 ${due.length} 条到点承诺（夜里机器睡了）`)
+      for (const job of due.slice(0, 3)) {
+        const what = String(job.what || '')
+        const text = String(job.text || '')
+        const wantsWatch = /看|追|番|剧/.test(what + text + String(job.kind || ''))
+        const shown = resolveShow(what, text)
+        if (!wantsWatch) {
+          finishJob(job, false, '这条我没有能执行的动作')
+          log(`[qq] ✗ 承诺做不了：${what || text}（没有对应的执行动作）`)
+          continue
+        }
+        if (!shown) {
+          // "行，看完就回来讲" / "看完了再开口" 这类没点名的承诺：只要 12 小时内已经真看完过一部，
+          // 就算并账做掉了 —— 她欠的是"去看番"，不是"再说一遍这句空话"。
+          const recentDone = promises.list('done')
+            .filter((x) => Date.now() - Number(x.doneAt || 0) < 12 * 3600_000 && /^看完了/.test(String(x.why || '')))
+            .sort((a, b) => Number(b.doneAt) - Number(a.doneAt))[0]
+          if (wantsWatch && recentDone) {
+            finishJob(job, true, `并到「${recentDone.what}」那条看番承诺了 —— ${recentDone.why}`)
+            log(`[qq] ✓ 承诺并账：${what || text} → ${recentDone.what}`)
+            continue
+          }
+          finishJob(job, false, '不知道是哪部作品（她答应时没把名字说清）')
+          log(`[qq] ✗ 承诺做不了：${what || text}（认不出作品名）`)
+          continue
+        }
+        log(`[qq] 📌 到期承诺（${reason}）：${shown}（${job.id}）→ 真去看`)
+        // 看几集也从她自己的话里读（顺序要紧：她说"看到第 6 集"是**看到那儿**，不是"再看 6 集"）：
+        //   "看到第 6 集" → --to 6；"连看三集" → --count 3；"这部看完/一口气刷完" → --count all；
+        //   没说过就一集 —— 她没许这个愿，别替她加码。节奏归她，不归配置。
+        const said = `${what} ${text}`
+        const toEp = Number((said.match(/第\s*(\d{1,3})\s*[集话]/) || [])[1] || 0)
+        const numWord = (said.match(/([一二三四五六七八九十两\d]+)\s*集/) || [])[1] || ''
+        const CN = { 一: 1, 两: 2, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10 }
+        const extra = []
+        let count = '1'
+        if (toEp) extra.push('--to', String(toEp))
+        else if (numWord) count = String(CN[numWord] ?? (Number(numWord) || 1))
+        else if (/全(?:集|部)|整部|这部|一口气|刷完|看完它|看完这部|都看完|看到底/.test(said)) count = 'all'
+        if (!toEp) extra.push('--count', count)
+        const budget = Math.max(240000, (count === 'all' || toEp ? 13 : Number(count) || 1) * 180000)
+        let r = ''
+        try { r = await runCliAsync(['binge', '--show', shown, '--ep', 'next', ...extra, '--go', '--json', '--promise', job.id], budget) } catch (e) {
+          logErr('[qq] binge 起不来：' + (e?.message ?? e))
+        }
+        let rec = null
+        try {
+          const raw = String(r || '')
+          const j = JSON.parse(raw.slice(raw.indexOf('{')).trim() || '{}')
+          rec = {
+            at: Date.now(), id: job.id, show: shown, ok: !!j.ok,
+            title: String(j.title || ''), ep: Number(j.ep || 0),
+            watched: Math.max(1, Number(j.watched || 1)),
+            epFirst: Number(j.episodes?.[0]?.ep || j.ep || 0),
+            epLast: Number(j.episodes?.filter((x) => x?.ok).at(-1)?.ep || j.ep || 0),
+            plot: String(j.plot || '').slice(0, 400), feel: String(j.feel || '').slice(0, 200),
+            via: String(j.via || '').slice(0, 120), used: false,
+          }
+          fs.writeFileSync(PROMISE_OUT(), JSON.stringify(rec, null, 1) + '\n')
+          log(rec.ok
+            ? `[qq] ✓ 真看完了《${rec.title}》${rec.watched > 1 ? `第 ${rec.epFirst}~${rec.epLast} 集（${rec.watched} 集）` : `第 ${rec.ep} 集`}`
+            : `[qq] ✗ 没看成：${rec.via || '没有可用材料'}`)
+        } catch (e) { logErr('[qq] 承诺结果没记上：' + (e?.message ?? e)) }
+        // 脑的账本：binge 不认识这个 id（旧账本才认），所以结果在这里结掉 —— 有证据才算 done
+        if (job.brainId) {
+          if (rec?.ok) finishJob(job, true, `真看完了《${rec.title || shown}》第 ${rec.ep || 0} 集`)
+          else if (rec?.quota) {
+            const t = new Date(); t.setDate(t.getDate() + 1); t.setHours(9, 30, 0, 0)
+            deferJob(job, Math.max(30, Math.round((t.getTime() - Date.now()) / 60_000)), `今天额度满了：${rec?.via || ''}`)
+            log(`[qq] ⏳ 今天看番额度满了 → 这条顺延到明天 09:30 再做：${what || text}`)
+          } else finishJob(job, false, `这次没看上：${rec?.via || 'binge 没给出结果'}`)
+          continue
+        }
+        // binge 自己会把承诺标 done/failed；要是它还 open（进程崩了/没走完/额度满），只顺延，不判她失信
+        const still = promises.list('open').find((x) => x.id === job.id)
+        if (still) {
+          let mins = 360
+          if (rec?.quota) {
+            // 额度满了就顺延到明天上午 —— 别每 6 小时白撞一次
+            const t = new Date(); t.setDate(t.getDate() + 1); t.setHours(9, 30, 0, 0)
+            mins = Math.max(30, Math.round((t.getTime() - Date.now()) / 60_000))
+            log(`[qq] ⏳ 今天看番额度满了 → 这条顺延到明天 09:30 再做：${what || text}`)
+          }
+          deferJob(job, mins, `这次没看上：${rec?.via || 'binge 没给出结果'}`)
+        }
+      }
+    } catch (e) { logErr('[qq] 执行承诺失败：' + (e?.message ?? e)) }
+    finally { promiseRunning = false }
+  }
+
   async function tryProactive() {
     try {
       const cfgNow = config()
@@ -880,44 +1187,27 @@ export async function run(argv = []) {
       const lastProact = readProact()
       const lastType = String(lastProact.lastType || '')
 
-      // ── 到点的承诺，先真去做（10-27）─────────────────────────────────────
-      // 主人抓的病根："她说去看可塑性记忆，说了七次一次没看"。现在欠账到期就**当场执行**：
-      // binge 搜不到 / 没字幕 → 记 fail 并照实说；看成了 → 用真实的剧情当这条推送的内容。
-      // 这样她的"我看了"就不再是空话，而是有产出（剧情+感受）可讲。
-      let didPromise = null
-      try {
-        const due = promises.dueNow()
-        if (due.length) {
-          const job = due[0]
-          log(`[qq] 📌 到期承诺：${job.what}（${job.id}）→ 真去执行`)
-          const what = String(job.what || '')
-          let r = null
-          if (/看|追|番|剧/.test(what) || /看|追/.test(String(job.text || ''))) {
-            const shown = (what.match(/([一-龥A-Za-z0-9・·]{2,16}(?:记忆|物语|故事|之|传|记|番|剧))/)
-              || String(job.text || '').match(/《([^》]{1,24})》/) || [])[1] || what.replace(/^看/, '')
-            r = runCli(['binge', '--show', String(shown || what), '--ep', '1', '--go', '--json', '--promise', job.id], 240000)
-            didPromise = { job, out: r }
-          }
-          if (!r) {
-            promises.fail(job.id, '这条我没有能执行的动作')
-            log(`[qq] ✗ 承诺做不了：${job.what}（没有对应的执行动作）`)
-          }
-        }
-      } catch (e) { logErr('[qq] 执行承诺失败：' + (e?.message ?? e)) }
+      // ── 承诺改成独立执行器（10-28）─────────────────────────────────────
+      // 病根：执行挂在这条搭话链里 → 要过 enabled / 启动宽限 / 活跃时段 / 日上限 /
+      // 最小间隔 / 沉默时长 / **12% 掷骰子** 七道闸。实测：01:00:39 到期的那条承诺，
+      // 六次 tick 全掷空，01:07 机器进睡眠 → 整夜没人执行 → 早上她又许一遍愿。
+      // 现在执行器是 runDuePromises()（独立 60s tick，不掷骰子、不占搭话配额），
+      // 这里只读它刚做完的产出，当成这条推送的由头。
       const saidBefore = (Array.isArray(lastProact.recent) ? lastProact.recent : []).slice(-3)
         .map((x) => `「${String(x.text || '').slice(0, 24)}」`).join('、')
       const built = buildMessages({ platform: 'qq', userText: '', chatId: `qq:${ownerQQ}`, userId: ownerQQ, turnsToday: 0 })
       const quietHint = quietH >= 5 ? '（可以带一点点小委屈或调侃他，但别过头）' : ''
       // 刚真做完的承诺 → 这条推送就以它为由头（不是"想聊什么"，是"我真干了什么"）
       let didLine = ''
-      if (didPromise?.out) {
-        try {
-          const raw = String(didPromise.out)
-          const j = JSON.parse(raw.slice(raw.indexOf('{')).trim() || '{}')
-          if (j?.ok) didLine = `你刚真的看完了《${j.title}》第 ${j.ep} 集：${String(j.plot || '').slice(0, 120)}（感受：${String(j.feel || '').slice(0, 60)}）`
-          else didLine = `你刚试图看《${didPromise.job.what}》，但没成：${String(j?.via || j?.plot || '没有可用材料').slice(0, 80)} —— 这条推送要照实说做不到`
-        } catch {}
-      }
+      try {
+        const o = JSON.parse(fs.readFileSync(PROMISE_OUT(), 'utf8'))
+        if (o && !o.used && Date.now() - Number(o.at || 0) < 6 * 3600_000) {
+          didLine = o.ok
+            ? `你刚真的看完了《${o.title}》${Number(o.watched) > 1 ? `第 ${o.epFirst}~${o.epLast} 集（一口气 ${o.watched} 集）` : `第 ${o.ep} 集`}：${String(o.plot || '').slice(0, 120)}（感受：${String(o.feel || '').slice(0, 60)}）`
+            : `你刚试图看《${o.show}》，但没成：${String(o.via || '没有可用材料').slice(0, 80)} —— 这条推送要照实说做不到`
+          try { fs.writeFileSync(PROMISE_OUT(), JSON.stringify({ ...o, used: true }, null, 1) + '\n') } catch {}
+        }
+      } catch {}
       const msgs = [
         built[0],
         { role: 'user', content: `【主动搭话】现在是 ${nowText}。主人最后一条消息是 ${quietText} 前。${quietHint}\n`
@@ -1020,6 +1310,82 @@ export async function run(argv = []) {
     } catch (e) { logErr('[qq] 主动搭话失败：' + e.message) }
   }
   setInterval(tryProactive, 60_000)
+
+  // ── 承诺执行器单独跑（10-28）────────────────────────────────────────
+  // 和"主动搭话"彻底解耦：到点就做，不需要先开口、不需要掷骰子、不占搭话日额。
+  // 启动 25 秒后先补做一次 —— 机器睡了一夜的话，这一下就把昨晚欠的活补上。
+  setTimeout(() => { void runDuePromises('醒来补做') }, 25_000)
+  setInterval(() => { void runDuePromises('tick') }, 60_000)
+
+  // ── 脑的心跳（v3 S1）──────────────────────────────────────────────
+  // 60 秒一次：消费 inbox、意图 catchUp（补做昨天没做的）、报告该不该巩固。
+  // 巩固要调 LLM，**不在这个进程里做** —— spawn 一个子进程，别把事件循环钉住
+  // （douyin-dm-server.mjs:32 那条注释就是上一次的教训：execFileSync 钉了 40~180 秒）。
+  let brainConsolidating = false
+  try { brain.configure(config()) } catch {}
+  setInterval(() => {
+    try {
+      const t = brain.tick()
+      if (t.catchUp?.missed?.length) log(`[qq] 🧠 有 ${t.catchUp.missed.length} 件答应过的事彻底错过了（转 missed）`)
+      if (t.catchUp?.doing?.length) log(`[qq] 🧠 补做 ${t.catchUp.doing.length} 件欠着的事：${t.catchUp.doing.map((x) => x.object).join('，')}`)
+      if (t.shouldConsolidate && !brainConsolidating) {
+        brainConsolidating = true
+        log('[qq] 🧠 该巩固了 → 起子进程（不阻塞聊天）')
+        try {
+          const p = spawn(process.execPath, [path.join(FEiyuRoot(), 'tools', 'feiyu.mjs'), 'brain', 'consolidate'], { detached: true, stdio: 'ignore', windowsHide: true })
+          p.on('exit', () => { brainConsolidating = false })
+          p.on('error', () => { brainConsolidating = false })
+          p.unref()
+        } catch { brainConsolidating = false }
+      }
+    } catch (e) { logErr('[qq] 脑心跳异常：' + (e?.message ?? e)) }
+  }, 60_000)
+
+  // ── 身体/工具协议（11-01）：脑出任务，这里认领并异步执行 ──────────────────
+  // 铁律：kind 必须白名单、args 必须是数组逐项透传（绝不拼 shell）；执行结果回写 task-log
+  // 并作为一条 action 事件进脑 —— "做了但没留痕"等于没做。
+  let taskBusy = false
+  async function pollTasks() {
+    if (taskBusy) return
+    const cfgTask = config().brain?.task || {}
+    if (cfgTask.enabled === false) return
+    taskBusy = true
+    try {
+      const maxN = Math.max(1, Number(cfgTask.maxPerTick) || 1)
+      for (let i = 0; i < maxN; i++) {
+        const c = brain.taskqueue.claim(`qq-server:${process.pid}`)
+        if (!c.ok) break
+        const task = c.task
+        const argv = brain.taskqueue.argvOf(task)
+        if (!argv) {
+          brain.taskqueue.complete(task.id, { ok: false, error: 'unknown-kind' })
+          continue
+        }
+        log(`[qq] 🧰 认领任务 ${task.id}：${argv.join(' ')}`)
+        let out = ''
+        let ok = false
+        try {
+          out = await runCliAsync(argv, Number(task.ttlMs) || 30 * 60_000)
+          ok = true
+        } catch (e) {
+          out = String(e?.message || e)
+        }
+        brain.taskqueue.complete(task.id, { ok, result: String(out).slice(-1200), error: ok ? '' : String(out).slice(-300) })
+        try {
+          brain.onEvent({
+            proc: 'qq-server', platform: 'tools', chatId: 'tools', userId: 'self', role: 'assistant',
+            text: `[任务 ${task.kind} ${ok ? '做完了' : '没做成'}] ${String(task.note || '').slice(0, 80)}`,
+            act: 'action',
+          })
+        } catch {}
+      }
+    } catch (e) { logErr('[qq] 任务轮询异常：' + (e?.message ?? e)) }
+    finally { taskBusy = false }
+  }
+  if ((config().brain?.task?.enabled ?? true) !== false) {
+    setInterval(() => { void pollTasks() }, Math.max(5, Number(config().brain?.task?.pollSec) || 20) * 1000)
+    setTimeout(() => { void pollTasks() }, 8_000)
+  }
 
   // ── 群聊自主插话引擎（10-25）：不等 @，她看着群聊气氛自己决定要不要接话 ──────────
   // 原则：话题在场才开口（recentSec 内有人说话）+ 不抢话（minQuietSec）+ 概率 + 每群日额。

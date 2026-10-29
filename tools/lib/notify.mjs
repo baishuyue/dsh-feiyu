@@ -4,6 +4,8 @@
 // 鱼看自己的 QQ 聊天流不知道"我刚分享过"，主人问起就一脸懵。
 import { config } from './config.mjs'
 import * as memory from './memory.mjs'
+import * as brainDelivery from '../brain/delivery.mjs'
+import * as brainEvent from '../brain/event.mjs'
 
 /**
  * 给主人发一条 QQ 私聊（成功后记进 QQ 记忆，对话流里她"记得自己说过"）。
@@ -32,6 +34,15 @@ export async function sendOwnerQQ(text) {
       if (ok) {
         // 发送成功 = 她"亲口说过"这句话：记进 QQ 对话记忆，主人接着聊才接得上
         try { memory.remember('qq', `qq:${ownerQQ}`, ownerQQ, 'assistant', content, { kind: 'push' }) } catch {}
+        // 交付证据（v3 §11）：推送也是"她说出去的话"，声称闸要能查到这一条
+        try {
+          const msgId = j.message_id || j.data?.message_id || ''
+          brainDelivery.record({ chat: `qq:${ownerQQ}`, platform: 'qq', text: content, msgId, kind: 'push', intentId: '' })
+          brainEvent.emit({
+            proc: 'notify', platform: 'qq', chatId: `qq:${ownerQQ}`, userId: ownerQQ,
+            role: 'assistant', text: content, kind: 'push', msgId,
+          })
+        } catch {}
         if (attempt > 0) console.log(`[notify] 第 ${attempt + 1} 次尝试成功（前一次：${lastErr}）`)
         return true
       }

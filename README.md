@@ -9,6 +9,11 @@
 + **dsh-bili-whale 的 B站通道**（WBI 签名 / 缓存熔断 / 生物钟 / 会话注入），各文件头部注释逐条标了出处。
 记忆层的重构参考了 **[chenkezhen480/dsh-world](https://github.com/chenkezhen480/dsh-world)**（统一归档 / 时间常驻 / 我是谁快照 / 原文可检索）。
 
+> **10-29：记忆层升级成「脑」**（七器官四回路，`tools/brain/`，零依赖）。原文照旧一条不丢，
+> 但多了一层"她能不能用得上、说了算不算"：召回带证据、承诺必须兑现、自我认知可审计。
+> 结构、开关、实测数字见 [§3.8](#38-v3-脑七器官四回路1029-全量落地)；设计与交接见
+> [`FEIYU-BRAIN-PLAN.md`](FEIYU-BRAIN-PLAN.md) / [`FEIYU-BRAIN-HANDOFF.md`](FEIYU-BRAIN-HANDOFF.md)。
+
 ---
 
 ## 一、她是什么
@@ -127,6 +132,82 @@
 
 ---
 
+### 3.8 v3 脑：七器官四回路（10-29 全量落地）
+
+旧记忆层解决的是"原文不丢"，脑解决的是**她能不能用得上、说了算不算**。结构照大脑来：13 个器官挂在 4 条基础回路上，外加第 5 条"自我时间轴"。
+
+```
+事件(五感) → O1 感知 → O2 工作记忆 → O3 注意力 → O4 生成 → O5 情节记忆
+                                          ↓                        ↓
+                                     O6 图式 ←── 巩固(L2 睡眠) ──→ O7 意图/承诺
+                                          ↓                        ↓
+                                     O8 情绪底色 ──→ O9 调质(兑现才给奖励)
+                                     
+O10 自我模型 · O11 交付账 · O12 实体/关系 · O13 能力自评
+回路：L1 感知回环 · L2 睡-醒巩固 · L3 检索-重构（不是回放）· L4 说到做到（意图→执行→证据）· L5 自我时间轴
+```
+
+| 器官 | 落盘 | 一句话规矩 |
+|---|---|---|
+| O1 感知（`event`） | `brain/inbox/*.jsonl` | 事件写盘即定死 who/scope/act；**微信直接 reject**，一个字节都不落 |
+| O2 工作记忆（`working`） | `brain/working/<chat>.json` | 7 槽 ≤1000 字，当轮焦点，不参与长期 |
+| O3 注意力（`attention`） | `brain/attention.json` | 打分排队 + 生成租约；**永不阻塞**，重活交给队列 |
+| O5 情节（`episode`） | `brain/ep/YYYY-MM.jsonl` | gist/feel/salience 写入时就定；msgId 重放只算一条 |
+| O6 图式（`schema`） | `brain/sem/schemata.json` | **30 天 × 同 (主,谓) 5 条**才归纳，不够就一个字不写 |
+| O7 意图（`intents`） | `brain/intent/intents.json` | 三态 `intent/blocked/wish`；**完成必须有证据**，无证据一律 `failed` |
+| O8 情绪（`affect`） | `brain/affect/state.json` | EMA 底色；**兑现才给奖励**，嘴上说不算 |
+| O10 自我（`self`） | `brain/self/me.md` 三段 | 主人层只读、自助层要理由、每周叙事；历史版本 + 漂移检测 |
+| O11 交付（`delivery`） | `brain/log/delivery.jsonl` | 她真说出去的每句都有账；声称闸没证据就改口 |
+| O13 能力（`competence`） | `brain/sem/competence.json` | **成功 3 次**才算"会"，做一次就自夸是吹牛 |
+
+**硬数字**（真数据实测，不是估算）：
+
+| 指标 | 值 |
+|---|---|
+| 历史导入 | 旧 `episodes.jsonl` 1175 行 → **1045 条情景**（拦掉 45 条微信行） |
+| 巩固 | 6 轮吃完 → **29 条结构化事实**，0 条无证据；第 7 轮 `processed=0`（幂等） |
+| 召回 | 120 道真题 **Recall@6 0.875 / MRR 0.757**（权重由评测台标定后写回） |
+| 提示词 | 真主人私聊装配 **5608 字**（旧版实测 7371），预算 5650，截断 0 块 |
+| 体检 | `brain doctor` **17 项全绿**（8 条不变量 + 派生层门槛 + 任务队列） |
+
+**"说到做到"是怎么被保证的**（这是主人在意的第一条）：
+
+1. 她说"这就去看" → `intents.create({verify:'ledger', dueAt})`，缺验收方式的自动降级 `blocked`（**不丢**，只是标成做不了）；
+2. 独立执行器 60s tick（不掷骰子、不占搭话配额）认领**租约**（fencing，防双开）→ 真跑 `binge`；
+3. 结果只有带证据（`promise-outcome:<id>`）才能 `settle(ok:true)`，否则 `failed` 并把情绪张力拉起来；
+4. 机器睡过头：`catchUp` 按迟到时长分三档 —— ≤6h 立刻做、6~24h 做+记债、>24h 标 `missed`（**不许静默消失**）；
+5. 额度满/材料缺这类"不是她的错" → `defer` 顺延，不算失信。
+
+**开关**（`config.json`）：
+
+```jsonc
+"brain": {
+  "mode": "shadow",              // off | shadow（默认，只写不读）| live（新装配接管）
+  "livePlatforms": ["qq", "douyin-dm"],
+  "liveChats": [],               // 空 = 该平台私聊全切
+  "liveGroups": [],              // 群聊必须逐群列进来才切（对照组最要紧）
+  "executor": "promises",        // promises（旧账本）| intents（脑的账本，S4）
+  "budget": { "promptChars": 5650 },
+  "task": { "enabled": true, "pollSec": 20 }   // 身体/工具协议
+}
+```
+
+回滚一行：`brain.mode = "off"`（旧路径原样）。脑的数据全在 `~/.feiyu-ai/brain/`，**删掉等于回到 10-29 早上**，旧记忆文件一个字节没动。
+
+**身体/工具协议**（脑出任务、常驻体执行，绝不在事件循环里干重活）：
+
+```
+node tools/feiyu.mjs brain task add binge -- --show "可塑性记忆" --ep next   # 排队
+curl -X POST localhost:<port>/task -d '{"kind":"produce","args":["--plan"]}'  # 外部投递
+node tools/feiyu.mjs brain task          # 看队列/历史
+```
+
+kind 是白名单（`binge/produce/dm-read/card-open/tts/web-search/backup`），args 必须数组逐项透传 —— **绝不拼 shell**。
+
+完整设计与交接见 [`FEIYU-BRAIN-PLAN.md`](FEIYU-BRAIN-PLAN.md)、[`FEIYU-BRAIN-HANDOFF.md`](FEIYU-BRAIN-HANDOFF.md)。
+
+---
+
 ## 四、她会自己过日子（完全自由 + 生物钟 + 每日回顾）
 
 | 机制 | 说明 |
@@ -134,10 +215,11 @@
 | **生物钟**（`night`） | 窗口内随机醒（拟人，不整点），跨零点、最小间隔，每次刷 N 条视频 |
 | **完全自由**（`freedom`） | 开了之后按间隔 + 概率给她"自由时间"：上网、刷B站/抖音、写小说、写游戏、发说说、自我升级 |
 | **自定唤醒**（`selfwake`） | 她自己说"我 23:40 再醒"，到点**真的**叫起来（优先于概率）。`node feiyu.mjs selfwake 23:40 --note "把那篇小说收尾"` |
-| **真的看番/看剧**（`binge`，10-27 新增） | 不是"看标题和热评"，是**真看完一集**：`binge --search "可塑性记忆"` → `binge --show "可塑性记忆" --ep 1 --go`。材料优先用弹幕（番剧字幕轨串片率极高，实测拿到过 ED 歌词和钢化膜测评），LLM 读完写 `{剧情, 感受}` 进她的记忆；进度落 `~/.feiyu-ai/binge/<番名>.json`，`--list` 查看到第几集。日上限 `binge.dailyMax=1`（一天一集是"真看"，一天十集是"刷数据"） |
-| **承诺有账本**（`promises`，10-27 新增） | 她说"这就去看"会被 `catchFromReply` 记成一条带截止时间的承诺；每次主动搭话前先跑到期的，`binge` 成功就结清、没材料就照实记失败（顺延 6 小时）。`promises` 查全部、`promises --due` 查到期 |
+| **真的看番/看剧**（`binge`，10-27 新增 / 10-28 修续集） | 不是"看标题和热评"，是**真看完一集**：`binge --search "可塑性记忆"` → `binge --show "可塑性记忆" --ep next --go`（不给 `--ep` 且账本里已有这本，也按下一集走）。材料优先用弹幕（番剧字幕轨串片率极高，实测拿到过 ED 歌词和钢化膜测评），LLM 读完写 `{剧情, 感受}` 进她的记忆；进度落 `~/.feiyu-ai/binge/<番名>.json`，`--list` 查看到第几集。**一个投稿看不明白会自动换源重试**（同一集在合集/单集投稿里的弹幕密度差三倍），P 数不够或"其实是别的集（备份分 P）"会立刻放弃、不硬看。**节奏她自己定**：`--count 3`=连看三集、`--count all`=看到底、`--to 6`=看到第 6 集；`binge.dailyMax` 默认 **0 = 不限**（只是可选保险，不是日常规矩） |
+| **承诺有账本**（`promises`，10-27 新增 / 10-28 改独立执行） | 她说"这就去看"会被 `catchFromReply` 记成一条带截止时间的承诺；**执行器独立跑**（`runDuePromises()` 60s tick，不掷骰子、不占搭话日额，启动 25 秒先补做一次夜里的欠账），`binge` 成功就结清、没材料才照实记失败；额度满就顺延到明天 09:30，进程崩了只顺延 6 小时不判她失信。`promises` 查全部、`promises --due` 查到期 |
 | **看得懂引用**（10-27 新增） | 主人引用她（或别人）某条消息再说话时，她读到的是**被引用的原文**，不是"【引用回复了一条消息】"。做法：她发出去的每条都记 `message_id → 正文`（环形表 400 条落 `msg-index.json`），收到引用先查本地表，没命中走 NapCat `get_msg`，再没有就把最近 40~50 条历史拉一遍（`get_msg` 对老消息只回"消息不存在"，所以启动时和每 10 分钟预热一次）。引用的是图片还会过一次 VL。开关 `qq.quote = {enabled, seeImage, historyCount}` |
-| **自己作品下的评论真的回**（10-27 修） | `replies --own-only` 走 ⓪ 路：先 `listOwnVideos()` 认出投稿（手填 `ownBvids` → 本地 `bvid.txt`/`bili-debut.json` → `space/wbi/arc/search`，space 路默认开且 `soft` 不熔断），再逐条回（任何类型：文字/图/纯表情）。`produce --debut-posted <BV>` 必须跑一次，否则本地不知道你发过什么，这条路永远是空的。楼中楼**不能带图**（B站 硬限制），带图稿会自动降级纯文字 |
+| **自己作品下的评论真的回**（10-27 修） | `replies --own-only` 走 ⓪ 路：先 `listOwnVideos()` 认出投稿（手填 `ownBvids` → 本地 `bvid.txt`/`bili-debut.json` → `space/wbi/arc/search`，space 路默认开且 `soft` 不熔断），再逐条回（任何类型：文字/图/纯表情）。`produce --debut-posted <BV>` 必须跑一次，否则本地不知道你发过什么，这条路永远是空的。楼中楼**不能带图**（B站 硬限制），带图稿会自动降级纯文字。额度走独立桶 `ownDailyMax`（默认 20），**不占**"主动出击"那条 `dailyMax` |
+| **常驻服务有人守**（10-27 新增） | 抖音私信陪聊（`douyin-dm-server` 8095）和 B站 自己作品巡检都由 **qq-server 每 90s 的监工**看着：探 `/health`，死了就 detached 拉起来（10 分钟最多 3 次退避），B站 巡检每 `autoMin`（默认 12 分钟）跑一轮。插件侧还有一层 `watchServices()`（60s，只在 `startWithDsh:true` 的服务上动手、端口有活服务就跳过）。**前提：`qq.startWithDsh` 必须是 true**，否则 DSH 重启后整条链没人起 |
 | **主人事实**（`owner-facts`，10-27 新增） | 他说"我中午吃了烧鸭""我在改插件""推荐你看《可塑性记忆》"→ 抽成 `food/doing/plan/mood/media` 五类事实，注入成【今天已经知道的事】，出门前还有一道闸门：命中"吃了吗/在干嘛"且已有事实就打回重写，**绝不再问第二遍** |
 | **每日回顾**（`personality.nightly`，默认 23:00） | 翻今天 → 写日记 → 更新"我是谁"（改前存快照）→ 记账 |
 | **人格进化**（`personality.evolve`） | 每 N 天一次复盘，更新 `persona.md` 自我迭代区 |
@@ -283,8 +365,9 @@ QQ 收到消息 → 摇中 voice_chance → lib/tts.mjs POST 9880/tts
 ### 4）做视频 —— 真剪辑的片子（她策划，你点发布）
 
 ```
-produce ["主题"] [--platform bili|douyin] [--frames 1|2] [--bgm auto|none] [--dry]
+produce ["主题"] [--platform bili|douyin] [--frames 1|2] [--bgm auto|none] [--dry] [--no-video]
 produce --reuse <已有投稿包目录>          # 图没毛病、只重做配音和剪辑（不再花生图钱）
+# --no-video = 这条强制走静图运镜（不花视频模型的钱）；已生成的动作片段会沿用，不重烧
 # 配音四条硬规矩：① 参考文本必须盖住整段参考音频（少一个字都会漏句尾，voice refcheck 可查）
 #                 ② 参考段里的大段死空气先挤掉（voice refclean，2.9s 死空气能把音色带偏）
 #                 ③ 语速/温度钉死 1.0，不按"起伏大"择优、不动态压缩（改一点就是变调/电音）
@@ -292,11 +375,16 @@ produce --reuse <已有投稿包目录>          # 图没毛病、只重做配�
 # 剪静音那步只能是"切"，绝不能重新量化 —— writeWavLocal 曾把 Int16 当 float 压成 ±1 方波，
 # 那就是主人报了一周的"电音机械音"（voice-*.wav 只有 3 个取值）。测试里用"不同取值 >200"兜住。
 # 配音是抽奖：抽到满意的用 --keep-voices 锁住；只改音轨不动画面用 --reaudio（复用 visual.mp4）
-  ① DeepSeek 出脚本/分镜（每幕：动作 + 台词 + 景别）
+  ① DeepSeek 出脚本/分镜（每幕：动作 + 台词 + 景别 + **她自己写的视频导演稿**）
   ② 硅基 Qwen-Image-Edit 逐幕 2 帧配图（锁她的形象，同场景换个动作/表情）
   ③ GPT-SoVITS 逐句念台词 → **念完还得验**：量真实说话段的字/秒，离谱就换参数重念，
      还不行拆成两句念再拼；最后把首尾静音剪掉 —— 字幕才和"开口"落在同一时刻
-  ④ ffmpeg 真剪辑：片头卡 → 各幕运镜（推/拉/摇/移）+ 幕内双帧交叉淡入 + 幕间转场
+  ③½ **真动作镜头（10-27）**：她那帧图当首帧 → 万相 2.7 图生视频 → 人物真的在动
+     （转头/眨眼/发丝/光斑）。**模型自己生成的音轨一律掐掉**，人声只走 SoVITS。
+     单幕超 15s 自动切段，段间用上一段末帧当下一段首帧；失败/关掉/超预算就落回静图运镜。
+     **画面主体是她，别的二次元/Q版同类可以同框**（动漫风、非真人，1~2 个、别抢戏）；
+     禁真人、禁文字/字幕/水印
+  ④ ffmpeg 真剪辑：片头卡 → 各幕（真片段，或静图运镜：推/拉/摇/移 + 幕内双帧交叉淡入）+ 幕间转场
      + 逐句 ASS 字幕烧制 + 本地合成 BGM（侧链避让人声）+ loudnorm 统一响度 → 1080p
   ⑤ 成片再自检一遍音画同步（逐句量偏差写 sync.json，>0.3s 会喊"建议重剪"）
   ⑥ 封面单独一张；落地 ~/.feiyu-ai/{bili,douyin}-posts/<日期-标题>/
@@ -308,6 +396,14 @@ produce --reuse <已有投稿包目录>          # 图没毛病、只重做配�
 > 10-26 修过一回「字幕和语音没对上、漏了很多字」：模型会把 13 个字念成 1.07 秒（12 字/秒，
 > 人嘴做不到），还会给每条音频头尾挂 0.2~0.3 秒静音。现在前者被"字/秒"闸门拦下重念，后者在
 > 剪辑前剪掉，成片逐句偏差从 0.14~0.38 秒压到 0.01~0.06 秒。
+
+> **10-27 接上万相 2.7 图生视频（真动作镜头）**：走的是 `llm` 那条中转站的 DashScope 原生路径，
+> **同一个 key，不用另开账号**。实测 1080×1920 / 30fps / 5 秒，41~69 秒出片，一条 20 秒片子约 4~5 段。
+> 三个坑记在 `tools/lib/wanvid.mjs` 顶上（少 `X-DashScope-Async: enable` 直接报错；
+> `duration` 只收 2~15 整数；`video_url` 24 小时过期必须立刻下载）；
+> `resolution` 是"像素档位"不是固定尺寸 —— **输出宽高比跟着首帧走**，所以首帧先裁成 1080×1920。
+> 配置在 `video.animate`：`enabled` / `resolution` / `maxSeconds` / `budgetPerRun`（一条片子最多花多少元）/
+> `pricePerSecond`（估算用的单价，去后台核完填准）。想回到老路：`produce --no-video` 或 `enabled=false`。
 
 **B站首条锁**：第一条只能做「介绍自己 + 今天第一天来B站 + 以后这个账号归她运营 + 自由发挥」。
 剧本出来会被复查（缺哪条就重写，三次不成就不做），做完仍然锁着（`ready`）；你发完跑
@@ -333,7 +429,7 @@ social [--days 3] [--kind 回评] [--invisible] [--md] [--push] [--json] [--back
    ├─ 刷B站/抖音（bili-watch --free / watch --free → 评论走额度+风控闸）
    ├─ 抖音评论区经营（engage：扫自己作品 → 任何类型的评论都回：文字/表情包/图片/只有表情）
    ├─ B站评论区经营（replies：⓪自己作品下的评论 ①别人对我的回复 ②主动搭话）
-   ├─ 做视频（produce：策划→配图→配音→真剪辑成片，等你发布）
+   ├─ 做视频（produce：策划→配图→配音→万相真动作→剪辑成片，等你发布）
    ├─ 唱歌/语音（sing / voice → 发 QQ）
    ├─ 真看一集番（binge --show "…" --ep N --go → 读完写剧情+感受进记忆）
    └─ 给自己约下一次（selfwake 23:40 --note "把小说收尾"）
@@ -398,15 +494,32 @@ node tools/feiyu.mjs diary --book private --append "…"
 node tools/feiyu.mjs selfwake 23:40 --note "把那篇小说收尾"   # 她定下次几点醒
 node tools/feiyu.mjs selfwake --show | --clear
 
-# ── 看番 / 承诺（10-27）──────────────────────────────────────
+# ── 看番 / 承诺（10-27，10-28 修"说了不做"）──────────────────
 node tools/feiyu.mjs binge --search "可塑性记忆"        # 搜番，看有哪几集能看
 node tools/feiyu.mjs binge --show "可塑性记忆" --ep 1 --go   # 真看完一集（写剧情+感受进记忆）
+node tools/feiyu.mjs binge --show "可塑性记忆" --ep next --go # 接着看下一集（续看会沿用账本里 P 数最多的那条投稿）
 node tools/feiyu.mjs binge --bvid BV1os411S7dL --ep 1 --go   # 指定投稿
 node tools/feiyu.mjs binge --list                       # 已经看过哪几部、看到第几集
 node tools/feiyu.mjs focus binge --min 40               # 接下来 40 分钟专心看番（其余循环停）
 node tools/feiyu.mjs promises                           # 她答应过、还没做的事
-node tools/feiyu.mjs promises --due                     # 只看到期的（主动搭话前会自己跑）
+node tools/feiyu.mjs promises --due                     # 只看到期的（qq-server 里 runDuePromises() 每 60s 自己跑）
 node tools/feiyu.mjs promises done <id> "看完了"         # 结清 / fail <id> "没字幕"
+
+# ── 脑（v3，10-29）：记忆/意图/自我/体检 ──────────────────────
+node tools/feiyu.mjs brain doctor                   # 17 项体检（8 条不变量 + 派生层门槛 + 任务队列）
+node tools/feiyu.mjs brain stats                    # 情景/事实/意图/巩固进度
+node tools/feiyu.mjs brain recall "烧鸭"             # 看它现在能召回什么（带 ‹ep-id› 可回溯）
+node tools/feiyu.mjs brain facts [--conflicts]      # 结构化事实（每条都带 prov）
+node tools/feiyu.mjs brain intents [--all]          # 意图三态：答应过/做不了/只能想想
+node tools/feiyu.mjs brain consolidate [--llm] [--dry]
+node tools/feiyu.mjs brain eval [--calibrate]       # 评测台：Recall@6 / MRR，可反推权重
+node tools/feiyu.mjs brain schema [--show]          # O6 图式（30 天 × 5 次才归纳）
+node tools/feiyu.mjs brain competence [--show]      # O13 能力自评（成功 3 次才算会）
+node tools/feiyu.mjs brain self [show|owner|narrative]
+node tools/feiyu.mjs brain task [list|add|done|fail|history]   # 身体/工具协议
+node tools/feiyu.mjs brain backfill [N]             # 把旧 episodes.jsonl 导进脑（去重、跳过微信）
+node tools/feiyu.mjs brain emit "一句话" --role user  # 手工灌一条事件（调试用）
+node tools/feiyu.mjs brain tick                     # 跑一次心跳（补做 + 该不该巩固）
 
 # ── 聊天通道 ────────────────────────────────────────────────
 node tools/feiyu.mjs qq-server 8080                # QQ 常驻（NapCat OneBot 上报 /onebot）

@@ -11,6 +11,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { dataPath } from './paths.mjs'
+import * as brainIntents from '../brain/intents.mjs'
 
 const FILE = dataPath('promises.json')
 
@@ -91,6 +92,20 @@ export function add(text, { what = '', kind = 'todo', dueMin = 120, id = '' } = 
   st.items.push(item)
   if (st.items.length > 80) st.items = st.items.slice(-80)
   write(st)
+  // 镜像进脑的意图账本（v3 O7）：旧账本仍是执行者，这边只观察 —— S4 再换它当主人。
+  try {
+    if (process.env.FEIYU_BRAIN_MIRROR !== '0') {
+      brainIntents.create({
+        kind: 'intent',
+        object: item.what,
+        text: item.text,
+        verify: /看|追|番|剧|片|集/.test(item.what) ? 'ledger' : 'delivery',
+        cue: { type: 'at', at: item.dueAt, label: '旧账本' },
+        origin: `promise:${item.id}`,
+        priority: 0.6,
+      })
+    }
+  } catch {}
   return item
 }
 
@@ -128,6 +143,11 @@ export function done(id, note = '') {
   it.doneAt = Date.now()
   it.why = norm(note).slice(0, 120)
   write(st)
+  // 脑的意图账本同步结算（旧账本先结算，脑跟着走 —— 两边都记，交叉核对）
+  try {
+    const mirror = brainIntents.all().find((x) => x.origin === `promise:${id}`)
+    if (mirror) brainIntents.settle(mirror.id, { ok: true, evidence: [`promise:${id}${note ? ':' + note.slice(0, 40) : ''}`], force: true })
+  } catch {}
   return it
 }
 
@@ -142,6 +162,24 @@ export function fail(id, why = '') {
   // 失败 2 次后推到 6 小时后再试（别每 10 分钟撞一次）
   if (it.tries >= 2) it.dueAt = Date.now() + 6 * 3600_000
   write(st)
+  // 做不成 → 脑里标 blocked（不是"没发生过"，是"现在做不了"，带重试时间）
+  try {
+    const mirror = brainIntents.all().find((x) => x.origin === `promise:${id}`)
+    if (mirror) brainIntents.settle(mirror.id, { ok: false, reason: why || 'failed' })
+  } catch {}
+  return it
+}
+
+/** 做不成（但还值得再试）：只把截止时间往后推，不记"失败"。
+ *  用途：机器睡了一夜、binge 这次没材料 —— 不该算她失信，也不该每 60 秒重撞一次。 */
+export function defer(id, min = 360, note = '') {
+  const st = read()
+  const it = st.items.find((x) => x.id === id)
+  if (!it) return null
+  it.tries = Number(it.tries || 0) + 1
+  it.dueAt = Date.now() + Math.max(10, Number(min) || 360) * 60_000
+  if (note) it.why = norm(note).slice(0, 200)
+  write(st)
   return it
 }
 
@@ -152,7 +190,9 @@ export function promptBlock(now = Date.now()) {
   const failed = st.items.filter((x) => x.state === 'failed').slice(-2)
   const open = st.items.filter((x) => x.state === 'open' && Number(x.dueAt) > now).slice(-3)
   // 最近 12 小时真做成的事 —— 让她能照实说"我今天看完了第一集"，而不是又许同样的愿
-  const justDone = st.items.filter((x) => x.state === 'done' && now - Number(x.doneAt || 0) < 12 * 3600_000).slice(-2)
+  // 并账进来的（"并到「X」那条"）不算独立成就，否则同一件事在提示词里出现两遍
+  const justDone = st.items.filter((x) => x.state === 'done' && now - Number(x.doneAt || 0) < 12 * 3600_000
+    && !/^并到/.test(String(x.why || ''))).slice(-2)
   const parts = []
   if (justDone.length) {
     parts.push('【你最近真做成的事】（可以拿出来说，别再许同一个愿）\n'
@@ -168,6 +208,13 @@ export function promptBlock(now = Date.now()) {
   if (failed.length) {
     parts.push('【这些你真没做成】（再被问起就照实说做不到，不许再空口答应）\n'
       + failed.map((x) => `· ${x.what}${x.why ? '：' + x.why : ''}`).join('\n'))
+  }
+  // 节奏归她自己（10-28 主人拍板："不做限制，给她自主性"）：
+  // 不给她设"一天只能看一集"的规矩，但把她现在的位置告诉她，让她自己安排几集、什么时候看。
+  if (justDone.length || due.length || open.length) {
+    parts.push('【你自己安排】（看番/看剧没有次数限制，也不占搭话额度：'
+      + '你可以一晚只看一集、也可以一口气连着看好几集，到点执行器会照你自己的话说去做；'
+      + '想连看几集就直说"连看三集"，想一次看完就说"这部我今晚看完"）')
   }
   return parts.join('\n\n')
 }

@@ -49,6 +49,7 @@ const COMMANDS = {
   focus: '她决定"接下来这一段时间干什么"：focus web|bilibili|douyin|binge --min 25 ｜focus rest --min 40 ｜focus off ｜focus（看现在在干什么）',
   binge: '看番/看剧（真的看完一集）：binge --search "番名" | binge --show "番名" --ep 2 --go | binge --bvid BV1xx --go | binge --list',
   promises: '承诺账本：promises（列）| promises done <id> | promises fail <id> "为什么" | promises --due（到点的）',
+  brain: '脑（v3）：brain doctor（8 条不变量体检）| brain stats | brain recall "线索" | brain consolidate [--llm] [--dry] | brain intents | brain facts | brain migrate [owner|lore|all] | brain eval [--calibrate] | brain self | brain emit "…" | brain tick',
 }
 
 const cmd = process.argv[2]
