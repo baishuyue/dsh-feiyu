@@ -308,7 +308,8 @@ await ok('主人评论免额度：跟抖音一致', () => {
 //    病根是"抖音私信陪聊 09:46 起过一次，之后进程没了，主人发私信一整天没人回" ——
 //    没人崩了不管。也要保证"别人来她视频下评论"不被主动出击的日额度卡死。
 await ok('辅助服务：探活靠端口 /health，不是靠手里有没有 child', () => {
-  const aux = fs.readFileSync(path.join(import.meta.dirname, '..', 'tools', 'lib', 'aux.mjs'), 'utf8')
+  // 名字是 auxsvc.mjs：aux.mjs 是 Windows 保留设备名（AUX），Win32 打不开 → 动态 import 静默失败
+  const aux = fs.readFileSync(path.join(import.meta.dirname, '..', 'tools', 'lib', 'auxsvc.mjs'), 'utf8')
   assert.ok(/export async function probeHealth/.test(aux), '要有探活函数')
   assert.ok(/http:\/\/127\.0\.0\.1:\$\{port\}\/health/.test(aux), '探 /health 而不是只看进程')
   assert.ok(/export async function ensureDouyinDm/.test(aux), '抖音私信要能自愈')

@@ -371,7 +371,8 @@ locks/                  自由进程单实例锁
 
 - ⑪ **"有新评论/新私信她怎么不回"（10-27 第四批）**：主人连问两件 —— B站 有新评论没主动回、抖音也不回私信了。查下来是**同一类病**：没人守着那些常驻服务。逐条：
     1. **抖音私信陪聊死了没人管**：`douyin-dm-server` 是插件启动时 spawn 一次的子进程，`app.on('exit')` 只把引用置空，**没有重拉**。日志证据：`douyin-dm.log` 最后一行是 `2026-10-27T01:46:22Z`（本地 09:46）"监听 8095"，之后一整天没有任何轮询记录；8095 端口空着、也没有 python/node 进程 → 主人发的私信全部石沉大海。
-       修法两层：`tools/lib/aux.mjs` 的 `ensureDouyinDm()`（探 `/health` → 死了就 `spawn detached` 拉起来，10 分钟内最多 3 次退避）由 **qq-server 每 90s** 跑；插件侧再加 `portHealthy()` + `watchServices()`（60s，只在配置 `startWithDsh:true` 的服务上动手，端口上有活服务就跳过，**不抢别人起的实例**）。
+       修法两层：`tools/lib/auxsvc.mjs` 的 `ensureDouyinDm()`（探 `/health` → 死了就 `spawn detached` 拉起来，10 分钟内最多 3 次退避）由 **qq-server 每 90s** 跑；插件侧再加 `portHealthy()` + `watchServices()`（60s，只在配置 `startWithDsh:true` 的服务上动手，端口上有活服务就跳过，**不抢别人起的实例**）。
+> 11-01 补注：这个文件原来叫 `aux.mjs` —— `AUX` 是 Windows 保留设备名，`git add` 报"文件不存在"、Node 的 `import` 也抛 ERR_MODULE_NOT_FOUND，而调用处在 `try/catch` 里，所以**监工其实从没启动过**。改名 `auxsvc.mjs` 后实测四个导出都在。
        **必须同时把 `qq.startWithDsh` 设成 true** —— 它原来没设，意味着 DSH 重启后连 qq-server 都不会自己起来，整条链（QQ 聊天 + 抖音私信 + B站 巡检）全靠手动。
     2. **B站 自己作品评论根本不巡检**：`replies --own-only` 只有手动跑过。现在 qq-server 的监工每 `bilibili.replies.autoMin`（默认 12 分钟）跑一次 `replies --own-only --go --max 2`，实测 20:04 那一轮自己接了一条（"管控归管控，我又没干啥。你喵啥，猫吗？离我远点…"）。
     3. **额度桶串了**：`dailyMax:5` 是"主动出击去别人评论区搭话"的额度，今天已经用了 27 条 → 别人来她视频下评论也被这句"今日回评额度已用完"挡住（真实发生，连吃两次）。改成两桶：`postReply({capKind:'ownReply', capMax: cfg.ownDailyMax ?? 20})`，自己作品下的回复单独记账（`bili-actions.json` 里多一个 `ownReply` 键）。
